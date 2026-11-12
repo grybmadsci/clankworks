@@ -1,8 +1,9 @@
 import { useFrame } from '@react-three/fiber';
 import { type Ref, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
-import { CELL, DEPTH, ISO, Mat, W } from '../config';
-import { footingMaterial } from './materials';
+import { CELL, DEPTH, ISO } from '../config';
+import { enabled } from '../debug';
+import { groutMaterial } from './materials';
 import type { Blast, Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
 import { Base } from './Base';
 
@@ -51,6 +52,7 @@ function DroneModel({ bot }: { bot: Bot }) {
   const shell = useRef<THREE.MeshStandardMaterial>(null!);
   const led = useRef<THREE.MeshBasicMaterial>(null!);
   const pod = useRef<THREE.Mesh>(null!);
+  const gauges = useRef<(THREE.Mesh | null)[]>([]);
   const beam = useRef<THREE.Mesh>(null!);
   const spot = useRef<THREE.Mesh>(null!);
   const state = useMemo(() => ({ phase: Math.random() * 10, spin: 0, angle: 0 }), []);
@@ -75,11 +77,24 @@ function DroneModel({ bot }: { bot: Bot }) {
     const blink = Math.sin(t * 5) > 0;
     const c = tantrum ? [3, 0.2, 0.1] : docked ? [0.2, blink ? 2 : 0.5, 0.4] : bot.state === 'toDepot' ? [0.3, 0.9, 2.5] : [2.5, 1.4, 0.2];
     led.current.color.setRGB(c[0], c[1], c[2]);
+    // Battery gauges on both flanks: green, yellow, then blinking red; a slow pulse while charging.
+    const level = bot.battery / 100;
+    const charging = docked && bot.battery < 99.5;
+    const glow = level < 0.25 ? (Math.sin(t * 9) > 0 ? 3 : 0.4) : charging ? 1.2 + Math.sin(t * 4) * 0.8 : 1.6;
+    gauges.current.forEach((g) => {
+      if (!g) return;
+      g.scale.x = Math.max(0.02, level);
+      g.position.x = -0.035 + 0.035 * Math.max(0.02, level);
+      const m = g.material as THREE.MeshBasicMaterial;
+      if (level > 0.5) m.color.setRGB(0.25 * glow, glow, 0.35 * glow);
+      else if (level > 0.25) m.color.setRGB(glow, 0.8 * glow, 0.1 * glow);
+      else m.color.setRGB(glow, 0.12 * glow, 0.08 * glow);
+    });
     const load = Math.min(1, (bot.cargo.ore + bot.cargo.scrap) / 6);
     pod.current.scale.set(1, 0.4 + load * 0.6, 1);
     // Mining laser from the emitter under the nose to the cell being cut.
     const dp = bot.drillPoint;
-    beam.current.visible = spot.current.visible = !!dp;
+    beam.current.visible = spot.current.visible = !!dp && enabled('laser');
     if (dp) {
       const ex = 0.05 * bot.facing, ey = -0.07;
       const dx = dp.x - p.x - ex, dy = dp.y - p.y - ey;
@@ -116,6 +131,14 @@ function DroneModel({ bot }: { bot: Bot }) {
             </mesh>
           </group>
         ))}
+        {/* battery gauges, one on each flank */}
+        {[1, -1].map((side, n) => (
+          <group key={side} position={[-0.005, 0.002, side * 0.0615]}>
+            <mesh><boxGeometry args={[0.082, 0.024, 0.003]} /><meshStandardMaterial color="#141210" /></mesh>
+            <mesh ref={(m) => { gauges.current[n] = m; }} position={[0, 0, side * 0.0022]}><boxGeometry args={[0.07, 0.014, 0.002]} /><meshBasicMaterial /></mesh>
+            <mesh position={[0.044, 0, 0]}><boxGeometry args={[0.006, 0.01, 0.003]} /><meshStandardMaterial color="#141210" /></mesh>
+          </group>
+        ))}
         {/* landing skids */}
         {[-0.05, 0.05].map((z) => (
           <mesh key={z} position={[0, -0.055, z]}><boxGeometry args={[0.13, 0.008, 0.008]} /><meshStandardMaterial color="#2c2b2a" /></mesh>
@@ -124,8 +147,10 @@ function DroneModel({ bot }: { bot: Bot }) {
         <mesh ref={pod} position={[-0.01, -0.04, 0]}><boxGeometry args={[0.07, 0.04, 0.06]} /><meshStandardMaterial color="#9a6440" roughness={0.8} /></mesh>
         <mesh position={[0.05, -0.05, 0]} rotation={[0, 0, 0.6]}><cylinderGeometry args={[0.008, 0.012, 0.04, 8]} /><meshStandardMaterial color="#bbb" metalness={0.8} roughness={0.3} /></mesh>
       </group>
-      <mesh ref={beam}><cylinderGeometry args={[0.008, 0.008, 1, 6]} /><meshBasicMaterial color={[4, 1.6, 0.4]} /></mesh>
-      <mesh ref={spot}><sphereGeometry args={[0.035, 10, 8]} /><meshBasicMaterial color={[5, 2.4, 0.7]} /></mesh>
+      {/* Pure light: additive and kept out of the depth buffer, so ambient occlusion doesn't paint
+          dark halos around the beam onto the rock. */}
+      <mesh ref={beam} renderOrder={5}><cylinderGeometry args={[0.008, 0.008, 1, 6]} /><meshBasicMaterial color={[4, 1.6, 0.4]} transparent depthWrite={false} blending={THREE.AdditiveBlending} /></mesh>
+      <mesh ref={spot} renderOrder={5}><sphereGeometry args={[0.035, 10, 8]} /><meshBasicMaterial color={[5, 2.4, 0.7]} transparent depthWrite={false} blending={THREE.AdditiveBlending} /></mesh>
     </group>
   );
 }
@@ -134,7 +159,7 @@ function DroneModel({ bot }: { bot: Bot }) {
 function HeadLamps({ game }: { game: Game }) {
   const lights = useRef<(THREE.PointLight | null)[]>([]);
   useFrame(() => {
-    const bots = game.bots.filter((b) => !b.dead && b.state !== 'docked');
+    const bots = enabled('lamps') ? game.bots.filter((b) => !b.dead && b.state !== 'docked') : [];
     lights.current.forEach((l, n) => {
       if (!l) return;
       const b = bots[n];
@@ -273,18 +298,14 @@ function StrutLamps({ game }: { game: Game }) {
   return <>{Array.from({ length: 10 }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={3} decay={1.4} />)}</>;
 }
 
-/** A lumpy rock: an icosahedron with its vertices pushed in and out. */
-const footingGeometry = (() => {
-  const g = new THREE.IcosahedronGeometry(1, 1);
-  const rand = seeded(42);
-  const pos = g.attributes.position;
-  const bumps = new Map<string, number>();
-  for (let v = 0; v < pos.count; v++) {
-    const key = `${pos.getX(v).toFixed(3)},${pos.getY(v).toFixed(3)},${pos.getZ(v).toFixed(3)}`;
-    if (!bumps.has(key)) bumps.set(key, 0.78 + rand() * 0.4);
-    const k = bumps.get(key)!;
-    pos.setXYZ(v, pos.getX(v) * k, pos.getY(v) * k, pos.getZ(v) * k);
-  }
+/**
+ * A grout plinth: a square frustum one unit tall, wide (0.38) where it meets the rock and as wide
+ * as the plate (0.28) where it meets the steel. Origin at the plate end; +y runs into the rock.
+ */
+const groutGeometry = (() => {
+  const g = new THREE.CylinderGeometry(0.27, 0.2, 1, 4, 1);
+  g.rotateY(Math.PI / 4);
+  g.translate(0, 0.5, 0);
   g.computeVertexNormals();
   return g;
 })();
@@ -305,35 +326,31 @@ function surfaceGap(game: Game, x: number, y: number, dir: number) {
 }
 
 /**
- * Rock packed between a strut's plates and the surfaces they bear on, so the plates never hang
- * in the air above an uneven or partly dug floor or ceiling. Re-measured as the rock changes.
+ * Grout poured between a strut's plates and the surfaces they bear on, like the base of a steel
+ * column, so the plates never hang in the air over an uneven or partly dug floor or ceiling.
+ * Re-measured as the rock changes.
  */
 function StrutFootings({ strut, game }: { strut: Strut; game: Game }) {
   const refs = [useRef<THREE.Mesh>(null!), useRef<THREE.Mesh>(null!)];
   const x = (strut.i + 0.5) * CELL;
-  const ends = useMemo(() => {
-    const at = (j: number) => {
-      const m = game.terrain.material[j * W + strut.i];
-      return m === Mat.Air || m === Mat.Bedrock ? Mat.Dirt : m;
-    };
-    return [
-      { y: strut.j0 * CELL, dir: -1, mat: footingMaterial(at(Math.max(0, strut.j0 - 1))) },
-      { y: (strut.j1 + 1) * CELL, dir: 1, mat: footingMaterial(at(strut.j1 + 1)) },
-    ];
-  }, [game, strut]);
+  const ends = useMemo(() => [
+    { y: strut.j0 * CELL, dir: -1 },
+    { y: (strut.j1 + 1) * CELL, dir: 1 },
+  ], [strut]);
   const next = useRef(0);
   useFrame(({ clock }) => {
     if (clock.elapsedTime < next.current) return;
     next.current = clock.elapsedTime + 0.5;
     ends.forEach((e, n) => {
-      // Bury the rock a little into the surface, and give it a minimum size so it reads as packing.
-      const h = surfaceGap(game, x, e.y, e.dir) + 0.12;
+      // Run the grout a little into the rock, with a minimum height so it always reads as a base.
+      const h = surfaceGap(game, x, e.y, e.dir) + 0.1;
       const mesh = refs[n].current;
-      mesh.scale.set(0.2, h / 2, 0.2);
-      mesh.position.set(x, e.y + e.dir * (h / 2 - 0.02), Z_STRUT);
+      mesh.scale.set(1, h, 1);
+      mesh.rotation.x = e.dir < 0 ? Math.PI : 0;
+      mesh.position.set(x, e.y, Z_STRUT);
     });
   });
-  return <>{ends.map((e, n) => <mesh key={n} ref={refs[n]} geometry={footingGeometry} material={e.mat} />)}</>;
+  return <>{ends.map((e, n) => <mesh key={n} ref={refs[n]} geometry={groutGeometry} material={groutMaterial()} />)}</>;
 }
 
 function StrutModel({ strut, game }: { strut: Strut; game: Game }) {

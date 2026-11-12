@@ -23,6 +23,19 @@ const MATERIAL_COLORS = ['#000000', '#7a5236', '#6f6c6a', '#8a5a3a', '#9fc8dc', 
 const PARTICLE_COLORS = [...MATERIAL_COLORS, new THREE.Color(4, 2.2, 0.7), new THREE.Color(0.75, 0.78, 0.8), new THREE.Color(4, 1.4, 0.3)];
 
 export const overlayMode = uniform(0, 'int');
+/** Materials shown by the material layer, one bit per material id. */
+export const materialMask = uniform(0xfe, 'uint');
+/** High-contrast pastels for the material layer, by material id (also used by the HUD key). */
+export const MATERIAL_KEY = [
+  { id: 1, name: 'Dirt', color: '#f2d79a' },
+  { id: 2, name: 'Granite', color: '#9db8ff' },
+  { id: 3, name: 'Copper ore', color: '#ff9a6b' },
+  { id: 4, name: 'Ice', color: '#a6f2ff' },
+  { id: 5, name: 'Bedrock', color: '#c9c9d6' },
+  { id: 6, name: 'Rubble', color: '#e2a8ff' },
+  { id: 7, name: 'Junk', color: '#b4f59a' },
+];
+const PASTELS = Array.from({ length: 8 }, (_, id) => new THREE.Color(MATERIAL_KEY.find((m) => m.id === id)?.color ?? '#000000'));
 /** Game clock (seconds), which crack start times in digMark are measured against. */
 export const gameTime = uniform(0);
 const surfaceY = (H - SKY_ROWS - 2) * CELL;
@@ -192,7 +205,7 @@ export function fluidMaterial(gpu: GpuSim, layer: number) {
   return m;
 }
 
-/** Diagnostic overlay drawn in front of the cutaway: 1 = temperature, 2 = oxygen, 3 = structural integrity. */
+/** Diagnostic overlay drawn in front of the cutaway: 1 temperature, 2 oxygen, 3 structural integrity, 4 materials. */
 export function overlayMaterial(gpu: GpuSim) {
   const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, depthTest: false });
   const p = positionWorld;
@@ -215,9 +228,16 @@ export function overlayMaterial(gpu: GpuSim) {
   const flash = sin(time.mul(10)).mul(0.5).add(0.5);
   integrity = select(cracking, mix(vec3(1.0, 0.1, 0.4), vec3(1.0, 1.0, 1.0), flash.mul(0.5)), integrity);
   const integrityAlpha = select(solid, select(cracking, float(0.8), stress.mul(0.5).add(0.2)), float(0));
-  m.colorNode = select(overlayMode.equal(1), heat, select(overlayMode.equal(3), integrity, select(tox, vec3(0.5, 0.9, 0.1), o2)));
-  const alpha = select(overlayMode.equal(0), float(0), select(overlayMode.equal(3), integrityAlpha,
-    select(overlayMode.equal(2).and(solid), float(0.08), float(0.55))));
+  // Materials: looked up through the same warp as the terrain so the colours match its boundaries.
+  const warped = gpu.mat.ro().element(cellAt(p.xy.add(warpOffset(p).mul(CELL * 1.4))));
+  const mat = select(warped.equal(uint(0)), gpu.mat.ro().element(k), warped);
+  const shown = materialMask.shiftRight(mat).bitAnd(uint(1)).equal(uint(1));
+  const materialColor = uniformArray(PASTELS, 'color').element(int(mat));
+  const materialAlpha = select(solid.and(shown).and(mat.greaterThan(uint(0))), float(0.85), float(0));
+  m.colorNode = select(overlayMode.equal(1), heat, select(overlayMode.equal(3), integrity, select(overlayMode.equal(4), materialColor,
+    select(tox, vec3(0.5, 0.9, 0.1), o2))));
+  const alpha = select(overlayMode.equal(0), float(0), select(overlayMode.equal(3), integrityAlpha, select(overlayMode.equal(4), materialAlpha,
+    select(overlayMode.equal(2).and(solid), float(0.08), float(0.55)))));
   m.opacityNode = alpha.mul(explored(gpu, p));
   return m;
 }
@@ -237,18 +257,18 @@ export function backWallMaterial(gpu: GpuSim) {
 }
 
 /**
- * Packed rock under and over strut plates, shaded like the terrain it sits on (by material id).
- * Shared per material.
+ * Grout poured under and over strut plates: mottled grey cement with faint horizontal pour lines.
  */
-const footingCache = new Map<number, THREE.MeshStandardNodeMaterial>();
-export function footingMaterial(mat: number) {
-  let m = footingCache.get(mat);
-  if (m) return m;
-  m = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
-  m.flatShading = true;
-  const surf = rock(positionWorld, uint(mat));
-  m.colorNode = surf.xyz.mul(1.15);
-  footingCache.set(mat, m);
+let grout: THREE.MeshStandardNodeMaterial | null = null;
+export function groutMaterial() {
+  if (grout) return grout;
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+  const p = positionWorld;
+  const mottle = noise(p.xy.mul(14).add(p.z.mul(9))).mul(0.5).add(noise(p.xy.mul(41)).mul(0.25));
+  const pour = smoothstep(0.85, 1, sin(p.y.mul(90)).mul(0.5).add(0.5)).mul(0.06);
+  m.colorNode = vec3(0.36, 0.35, 0.33).mul(mottle.mul(0.18).add(1).sub(pour));
+  if (!quality.low) m.normalNode = bumpNormal(mottle.mul(0.004));
+  grout = m;
   return m;
 }
 
@@ -269,7 +289,9 @@ export function hologramMaterial() {
 }
 
 export function particleMaterial(gpu: GpuSim) {
-  const m = new THREE.MeshBasicNodeMaterial();
+  // Particles don't write depth: thousands of specks in the depth buffer make ambient occlusion
+  // smudge shadows over the rock wherever drones are drilling.
+  const m = new THREE.MeshBasicNodeMaterial({ depthWrite: false });
   const pos = gpu.pPos.ro().element(instanceIndex);
   const vel = gpu.pVel.ro().element(instanceIndex);
   const kind = int(vel.w);

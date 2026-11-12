@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
-import type { Game, Tool } from '../game/Game';
+import type { Game, Overlay, Tool } from '../game/Game';
+import { MATERIAL_KEY } from '../render/materials';
 import { unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
@@ -22,6 +23,7 @@ const LAYERS = [
   { label: 'Heat', hint: 'Temperature: blue freezing, green comfortable, red hot' },
   { label: 'Oxygen', hint: 'Breathable air in blue, none in red, toxic gas in green' },
   { label: 'Integrity', hint: 'Structural stress: green sound, yellow to red near its limit, flashing when cracking' },
+  { label: 'Material', hint: 'What the ground is made of, in high-contrast colours. Click the key to show or hide each material' },
 ];
 
 /** DOM overlay: resources, tools, critter status, the status log, and emote speech bubbles. */
@@ -38,7 +40,7 @@ export function Hud({ game }: { game: Game }) {
       const tool = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
-      if (e.key === 't') game.overlay = ((game.overlay + 1) % 4) as 0 | 1 | 2 | 3;
+      if (e.key === 't') game.overlay = ((game.overlay + 1) % LAYERS.length) as Overlay;
       force((n) => n + 1);
     };
     window.addEventListener('keydown', key);
@@ -86,10 +88,23 @@ export function Hud({ game }: { game: Game }) {
         <aside className="panel layers">
           <h3>Layers <span>T cycles</span></h3>
           {LAYERS.map((l, n) => (
-            <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as 0 | 1 | 2 | 3; force((k) => k + 1); }}>
+            <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as Overlay; force((k) => k + 1); }}>
               {l.label}
             </button>
           ))}
+          {game.overlay === 4 && (
+            <div className="legend">
+              {MATERIAL_KEY.map((m) => {
+                const on = (game.materialMask >> m.id) & 1;
+                return (
+                  <button key={m.id} className={on ? 'on' : 'off'} title={`${on ? 'Hide' : 'Show'} ${m.name.toLowerCase()}`}
+                    onClick={() => { game.materialMask ^= 1 << m.id; force((k) => k + 1); }}>
+                    <i style={{ background: m.color }} />{m.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </aside>
       )}
 

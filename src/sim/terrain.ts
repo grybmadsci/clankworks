@@ -1,4 +1,4 @@
-import { CELL, CELLS, CHUNK, CH, CW, H, ISO, MATERIALS, Mat, W, cellIndex, chunkId } from '../config';
+import { CELL, CELLS, CHUNK, CH, CW, EXPLORED_BIT, H, ISO, MATERIALS, Mat, W, cellIndex, chunkId } from '../config';
 
 export interface Rect { i0: number; j0: number; i1: number; j1: number }
 
@@ -132,7 +132,8 @@ export class Terrain {
         const after = Math.max(0, before - amount * fall);
         this.density[k] = after;
         out[m] = (out[m] ?? 0) + (before - after);
-        if (after <= ISO) this.digMark[k] = 0;
+        // Dug out: its orders and stress go, but it stays explored (else the fog flickers back in).
+        if (after <= ISO) this.digMark[k] &= EXPLORED_BIT;
         if (after === 0) this.material[k] = Mat.Air;
         changed = true;
       }
@@ -148,7 +149,7 @@ export class Terrain {
       const i = k % W, j = (k / W) | 0;
       this.density[k] = 0;
       this.material[k] = Mat.Air;
-      this.digMark[k] = 0;
+      this.digMark[k] &= EXPLORED_BIT;
       i0 = Math.min(i0, i); j0 = Math.min(j0, j); i1 = Math.max(i1, i); j1 = Math.max(j1, j);
     }
     if (cells.length) this.markDirty(i0, j0, i1, j1, false);

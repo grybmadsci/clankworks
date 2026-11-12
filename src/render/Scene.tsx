@@ -10,7 +10,7 @@ import { enabled } from '../debug';
 import { unlockAudio } from '../game/audio';
 import type { Game } from '../game/Game';
 import { Entities, SmelterBody, StrutBody, Z_ACTORS } from './Entities';
-import { gameTime, hologramMaterial, overlayMode } from './materials';
+import { gameTime, hologramMaterial, materialMask, overlayMode } from './materials';
 import { quality } from './quality';
 import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
 
@@ -31,6 +31,7 @@ export function Scene({ game }: { game: Game }) {
   useFrame((_, dt) => {
     game.update(dt);
     overlayMode.value = game.overlay;
+    materialMask.value = game.materialMask;
     gameTime.value = game.time;
   }, -1);
   return (

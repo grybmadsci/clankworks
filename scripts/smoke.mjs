@@ -48,7 +48,7 @@ try {
     layers: [...document.querySelectorAll('.layers button')].map((b) => b.textContent),
     stacked: (() => { const b = [...document.querySelectorAll('.layers button')].map((e) => e.getBoundingClientRect()); return b.every((r, n) => n === 0 || r.top > b[n - 1].top); })(),
   }));
-  check(groups.toolbar.join(',') === 'Orders,Buildings' && groups.layers.length === 4 && groups.stacked,
+  check(groups.toolbar.join(',') === 'Orders,Buildings' && groups.layers.length === 5 && groups.stacked,
     `toolbar split into ${groups.toolbar.join(' / ')}, with ${groups.layers.length} layers stacked in their own panel`);
   console.log('quality:', await page.evaluate(() => document.querySelector('canvas')?.dataset.quality ?? 'high'));
   console.log('adapter:', await page.evaluate(async () => {
@@ -148,6 +148,22 @@ try {
     `dig orders flagged reachable vs unreachable (${m0.stripReach}/${m0.strip} reachable beside the base, ${m0.sealedReach}/${m0.sealed} sealed in rock)`);
   const launched = await page.evaluate(() => window.__game.bots.filter((b) => b.state !== 'docked').length);
   check(launched > 0, `drones launched from the base for the dig orders (${launched} airborne)`);
+  // Batteries: a drone running low abandons its job, flies home, and recharges on its pad.
+  const battery = await page.evaluate(async () => {
+    const g = window.__game;
+    const b = g.bots.find((o) => o.state !== 'docked');
+    if (!b) return null;
+    b.battery = 24.9;
+    for (let n = 0; n < 15; n++) g.update(1 / 30);
+    const heading = b.state;
+    for (let n = 0; n < 30 * 20 && b.state !== 'docked'; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 20)); }
+    const landed = b.battery;
+    for (let n = 0; n < 30 * 2; n++) g.update(1 / 30);
+    return { heading, docked: b.state, landed, charged: b.battery, log: g.log.some((l) => /low on battery/.test(l.text)) };
+  });
+  console.log('battery', JSON.stringify(battery));
+  check(battery && battery.heading === 'toDepot' && battery.docked === 'docked' && battery.charged > battery.landed + 20 && battery.log,
+    `a low-battery drone flies home and recharges (${battery?.landed.toFixed(0)}% → ${battery?.charged.toFixed(0)}%)`);
   await fastForward(26);
   const m1 = await marks();
   check(m1.stripReach === 0, `drones finished every reachable dig order (${m1.stripReach} left)`);
@@ -382,6 +398,15 @@ try {
   await shot('5-heat');
   await page.evaluate(() => { window.__game.overlay = 2; });
   await shot('6-oxygen');
+  // Material layer with a clickable key: hiding a material clears its bit.
+  await page.evaluate(() => { window.__game.overlay = 4; });
+  await page.waitForTimeout(400);
+  const key = await page.evaluate(() => [...document.querySelectorAll('.legend button')].map((b) => b.textContent));
+  await page.getByRole('button', { name: 'Granite' }).click();
+  const mask = await page.evaluate(() => window.__game.materialMask);
+  check(key.length === 7 && ((mask >> 2) & 1) === 0 && ((mask >> 1) & 1) === 1, `material layer key lists ${key.length} materials and toggles them (mask ${mask.toString(2)})`);
+  await shot('7-materials');
+  await page.getByRole('button', { name: 'Granite' }).click();
   await page.evaluate(() => { window.__game.overlay = 0; });
 } catch (e) {
   check(false, `exception: ${e.message}`);

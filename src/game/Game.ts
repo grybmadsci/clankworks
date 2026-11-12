@@ -16,6 +16,7 @@ import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
 export type Tool = 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast' | 'scrap';
+export type Overlay = 0 | 1 | 2 | 3 | 4;
 type Vec = { x: number; y: number };
 
 const BOT_RADIUS = 0.14;
@@ -24,6 +25,8 @@ const DRILL_RATE = 3.2;
 /** Mining-laser range. */
 const DRILL_REACH = 1.2;
 const CARGO_CAP = 6;
+/** Drone battery (percent): drain per second flying, extra while the laser runs, charge per second on the pad. */
+const BATTERY = { fly: 1.0, laser: 1.6, charge: 14, low: 25, launch: 70 };
 const QUOTA = 30;
 /** Tallest gap a single strut can brace, in cells. */
 const MAX_STRUT_CELLS = 16;
@@ -52,6 +55,9 @@ export interface Bot {
   name: string;
   /** Landing pad index (see dockSlot). */
   slot: number;
+  /** Charge, 0-100. Drones head home to recharge when it runs low. */
+  battery: number;
+  lowBattery: boolean;
   body: RAPIER.RigidBody;
   hp: number;
   heat: number;
@@ -128,8 +134,10 @@ export class Game {
   entityVersion = 0;
   shake = 0;
   tool: Tool = 'dig';
-  /** 0 normal, 1 heat, 2 oxygen, 3 structural integrity. */
-  overlay: 0 | 1 | 2 | 3 = 0;
+  /** 0 normal, 1 heat, 2 oxygen, 3 structural integrity, 4 materials. */
+  overlay: Overlay = 0;
+  /** Materials the material layer shows, one bit per material id (all solids by default). */
+  materialMask = 0b11111110;
   /** What the camera shows (world units), set by the renderer; drives chunk streaming. */
   view = { x: 0, y: 0, halfW: 12, halfH: 8 };
   readonly chunks: ChunkStreamer;
@@ -410,6 +418,8 @@ export class Game {
     const d = this.layout.depot;
     this.carveShaft(d.y - 0.25);
     this.intro = { phase: 'done', t: 0, offset: 0 };
+    // Drones rode down on their pads; make sure they're on them (skipping jumps the base down).
+    for (const bot of this.bots) bot.body.setTranslation(this.slotOf(bot), true);
     this.reveal(d.x, d.y + 1, 9);
     this.entityVersion++;
     this.info('Shift started. Designate rock near the base and the drones will mine it. Oxygen is strictly optional.');
@@ -696,7 +706,7 @@ export class Game {
     );
     const bot: Bot = {
       id: nextId++, name: BOT_NAMES[this.bots.length % BOT_NAMES.length] + (this.bots.length >= BOT_NAMES.length ? ' II' : ''),
-      slot, body, hp: 100, heat: 0, cargo: { ore: 0, scrap: 0 }, state: 'docked', target: -1, path: [], replanAt: 0,
+      slot, battery: 100, lowBattery: false, body, hp: 100, heat: 0, cargo: { ore: 0, scrap: 0 }, state: 'docked', target: -1, path: [], replanAt: 0,
       stuck: 0, progressPos: { x, y }, progressAt: this.time, stateTimer: 0, emoteAt: {}, blacklist: new Map(),
       drillPoint: null, drillFx: 0, facing: 1, dead: false,
     };
@@ -1232,6 +1242,20 @@ export class Game {
         if (critterGasping || Math.random() < 0.4) this.emote(bot, 'oxygenNotIncluded', 40);
       }
 
+      // Battery: drains in the air (more with the laser on), charges on the pad. Low drones drop
+      // what they're doing and fly home; they won't launch again until they're well charged.
+      if (bot.state === 'docked') {
+        bot.battery = Math.min(100, bot.battery + BATTERY.charge * dt);
+        if (bot.battery >= BATTERY.launch) bot.lowBattery = false;
+      } else {
+        bot.battery = Math.max(0, bot.battery - (BATTERY.fly + (bot.state === 'digging' ? BATTERY.laser : 0)) * dt);
+        if (bot.battery < BATTERY.low && !bot.lowBattery) {
+          bot.lowBattery = true;
+          this.info(`${bot.name} is low on battery and heading home to recharge.`);
+          if (bot.state !== 'toDepot') this.goDepot(bot);
+        }
+      }
+
       bot.stateTimer -= dt;
       bot.drillPoint = null;
       switch (bot.state) {
@@ -1274,7 +1298,7 @@ export class Game {
   private botDocked(bot: Bot, dt: number) {
     const slot = this.slotOf(bot);
     this.steer(bot, slot, dt, true);
-    if (this.time < bot.replanAt) return;
+    if (this.time < bot.replanAt || bot.lowBattery) return;
     bot.replanAt = this.time + 0.6 + Math.random() * 0.4;
     if (this.findWork(bot)) {
       bot.path.unshift({ x: slot.x, y: slot.y + 0.45 });
@@ -1285,7 +1309,7 @@ export class Game {
   /** Airborne with nothing claimed: take the next job, or fly home. */
   private botIdle(bot: Bot) {
     const load = bot.cargo.ore + bot.cargo.scrap;
-    if (load >= CARGO_CAP) return this.goDepot(bot);
+    if (load >= CARGO_CAP || bot.lowBattery) return this.goDepot(bot);
     if (this.time < bot.replanAt) return;
     bot.replanAt = this.time + 0.6 + Math.random() * 0.4;
     if (!this.findWork(bot)) this.goDepot(bot);
@@ -1459,7 +1483,9 @@ export class Game {
     if (target) {
       const dx = target.x - p.x, dy = target.y - p.y;
       const d = Math.hypot(dx, dy) || 1;
-      const speed = arrive ? Math.min(BOT_SPEED, d * 3) : BOT_SPEED;
+      // A flat battery leaves just enough to limp home.
+      const top = bot.battery > 0 ? BOT_SPEED : BOT_SPEED * 0.35;
+      const speed = arrive ? Math.min(top, d * 3) : top;
       desired = { x: (dx / d) * speed, y: (dy / d) * speed };
       if (Math.abs(dx) > 0.05) bot.facing = Math.sign(dx);
     }
