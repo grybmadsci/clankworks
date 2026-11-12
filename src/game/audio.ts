@@ -66,3 +66,20 @@ export function creak(strength = 1) {
   osc.start(now);
   osc.stop(now + len + 0.05);
 }
+
+/** Two-tone klaxon for a new cave-in warning. */
+export function alarm() {
+  if (!ctx || ctx.state !== 'running') return;
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  for (let n = 0; n < 4; n++) osc.frequency.setValueAtTime(n % 2 ? 520 : 690, now + n * 0.18);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.05, now + 0.02);
+  gain.gain.setValueAtTime(0.05, now + 0.68);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 0.8);
+}

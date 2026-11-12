@@ -61,8 +61,17 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
   border: 6px solid transparent; border-bottom: 0; border-top-color: #fff7e6;
 }
 .bubble.collapse {
-  background: #2a0c06; color: #ffb36b; border: 1px solid #ff6a2b; animation: collapse-pulse 0.6s ease-in-out infinite alternate;
+  background: #2a0c06; color: #ffb36b; border: 1px solid #ff6a2b; font-size: 13px; padding: 5px 11px;
+  animation: collapse-pulse 0.6s ease-in-out infinite alternate; pointer-events: auto; cursor: pointer;
 }
+.bubble.collapse.offscreen { background: #4a1208; }
+.bubble.collapse.urgent { color: #fff; background: #8c1a0c; border-color: #ffd0a0; animation-duration: 0.25s; }
+.alerts { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.alerts button {
+  pointer-events: auto; cursor: pointer; font: inherit; font-weight: 700; color: #ffd2a8; background: rgba(60, 12, 6, 0.92);
+  border: 1px solid #ff6a2b; border-radius: 6px; padding: 5px 14px; animation: collapse-pulse 0.6s ease-in-out infinite alternate;
+}
+.alerts button.urgent { color: #fff; background: rgba(140, 26, 12, 0.95); animation-duration: 0.25s; }
 .bubble.collapse::after, .bubble.unstable::after { display: none; }
 .bubble.unstable { background: #2a2206; color: #ffd76b; border: 1px solid #d9a521; font-size: 11px; opacity: 0.9; }
 @keyframes collapse-pulse { from { box-shadow: 0 0 2px #ff6a2b; } to { box-shadow: 0 0 12px #ff6a2b; } }

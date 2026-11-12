@@ -11,7 +11,7 @@ import { GH, GW, findPath, floodNodes, nearFlooded } from '../sim/pathfind';
 import { Terrain, type Yield } from '../sim/terrain';
 import { EmitterDef, WorldGen, WorldLayout } from '../sim/worldgen';
 import { ChunkStreamer, chunkRows, origin } from './chunks';
-import { chirp, creak, rumble } from './audio';
+import { alarm, chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
@@ -25,8 +25,10 @@ const DRILL_RATE = 3.2;
 const DRILL_REACH = 1.2;
 const CARGO_CAP = 6;
 const QUOTA = 30;
-/** Collapses smaller than this crumble at once instead of cracking first. */
-const MIN_WARNED_COLLAPSE = 8;
+/** Tallest gap a single strut can brace, in cells. */
+const MAX_STRUT_CELLS = 16;
+/** Collapses smaller than this just crumble to dust at once; anything that falls as a chunk is warned first. */
+const MIN_WARNED_COLLAPSE = 4;
 
 const COST = {
   strut: { scrap: 2 },
@@ -436,17 +438,36 @@ export class Game {
     }
   }
 
-  placeStrut(x: number, y: number) {
+  /**
+   * The floor-to-ceiling span a strut would fill for a click at (x, y), in the clicked column.
+   * `error` says why it can't be built there (also used by the placement hologram, which draws
+   * the span it found even when it is too tall).
+   */
+  strutSite(x: number, y: number): { i: number; j0: number; j1: number; error?: string } {
     const t = this.terrain;
     const i = toCell(x);
-    let j = toCell(y);
-    if (!t.isOpen(i, j)) return this.warn('Struts must be placed in open space.');
+    const j = toCell(y);
+    if (!t.isOpen(i, j)) return { i, j0: j, j1: j, error: 'Struts must be placed in open space.' };
+    // Search a little past the limit so an over-tall gap reads as too tall, not as bottomless.
+    const search = MAX_STRUT_CELLS * 2;
     let j0 = j, j1 = j;
-    while (j0 > 0 && t.isOpen(i, j0 - 1) && j - j0 < 48) j0--;
-    while (j1 < H - 1 && t.isOpen(i, j1 + 1) && j1 - j < 48) j1++;
-    if (!t.isSolid(i, j0 - 1) || !t.isSolid(i, j1 + 1) || j1 >= H - SKY_ROWS - 1) return this.warn('A strut needs both a floor and a ceiling within 12m.');
-    if (!this.pay(COST.strut)) return this.warn('Insufficient scrap for a strut (2).');
-    for (j = j0; j <= j1; j++) t.strut[cellIndex(i, j)] = 1;
+    while (j0 > 0 && t.isOpen(i, j0 - 1) && j - j0 < search) j0--;
+    while (j1 < H - 1 && t.isOpen(i, j1 + 1) && j1 - j < search) j1++;
+    const site = { i, j0, j1 };
+    if (j1 - j0 + 1 > MAX_STRUT_CELLS) return { ...site, error: `Too tall: a strut spans at most ${MAX_STRUT_CELLS * CELL}m.` };
+    if (!t.isSolid(i, j0 - 1) || !t.isSolid(i, j1 + 1) || j1 >= H - SKY_ROWS - 1) {
+      return { ...site, error: 'A strut needs both a floor and a ceiling to brace between.' };
+    }
+    if (t.strut[cellIndex(i, j)]) return { ...site, error: 'There is already a strut here.' };
+    if (!this.canAfford(COST.strut)) return { ...site, error: 'Insufficient scrap for a strut (2).' };
+    return site;
+  }
+
+  placeStrut(x: number, y: number) {
+    const t = this.terrain;
+    const { i, j0, j1, error } = this.strutSite(x, y);
+    if (error || !this.pay(COST.strut)) return this.warn(error ?? 'Insufficient scrap for a strut (2).');
+    for (let j = j0; j <= j1; j++) t.strut[cellIndex(i, j)] = 1;
     this.struts.push({ id: nextId++, i, j0, j1 });
     // A strut may have saved cracking rock; re-evaluate straight away.
     this.pendingCheckAt = 0;
@@ -653,7 +674,10 @@ export class Game {
       this.centre(p);
       this.pendingCollapses.push(p);
       this.setCracking(fresh, p.start);
+      // Cracking rock is never hidden: lift the fog around it.
+      this.reveal(p.x, p.y, 2.5);
       creak(1);
+      alarm();
       this.warn(`Cave-in warning! ${fresh.length} cells of rock are cracking. Brace them with struts within ${COLLAPSE_DELAY}s.`);
     }
   }

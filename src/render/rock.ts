@@ -165,9 +165,9 @@ fn crackMask(p: vec3f, progress: f32) -> f32 {
   let q = p + vec3f(fbm3(p * 1.5, 2), fbm3(p * 1.5 + 4.0, 2), 0.0) * 0.25;
   let a = worley3(q * 3.0);
   let b = worley3(q * 8.0 + 5.0);
-  let width = mix(0.006, 0.07, progress);
+  let width = mix(0.02, 0.075, progress);
   let major = 1.0 - smoothstep(0.0, width, a.y - a.x);
-  let minor = (1.0 - smoothstep(0.0, width * 0.5, b.y - b.x)) * smoothstep(0.3, 0.8, progress);
+  let minor = (1.0 - smoothstep(0.0, width * 0.5, b.y - b.x)) * smoothstep(0.15, 0.6, progress);
   return max(major, minor * 0.8);
 }
 `, [fbm3, worley3]);

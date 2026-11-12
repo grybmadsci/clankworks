@@ -136,23 +136,26 @@ export function terrainMaterial(gpu: GpuSim) {
   col = select(ordered, mix(col, orderTint, hatch.mul(0.6).add(0.12)), col);
 
   // Rock about to cave in pales with dust, then splits along dark fractures that glow faintly.
+  // Visible from the first second: a clear set of fractures and a dust pall that both grow.
   const pr = crackProgress(mark);
+  const cracking = select(mark.shiftRight(uint(CRACK_SHIFT)).greaterThan(uint(0)), float(1), float(0));
   const crack = quality.low
-    ? select(pr.greaterThan(0), float(1).sub(smoothstep(0, mix(0.02, 0.12, pr), abs(noise(p.xy.mul(3))))), float(0))
-    : crackMask({ p, progress: pr });
-  col = mix(col, col.mul(1.6).add(0.03), pr.mul(0.35));
+    ? select(pr.greaterThan(0), float(1).sub(smoothstep(0, mix(0.04, 0.12, pr), abs(noise(p.xy.mul(3))))), float(0))
+    : crackMask({ p, progress: max(pr, 0.001).mul(cracking) });
+  col = mix(col, col.mul(1.6).add(0.04), cracking.mul(pr.mul(0.25).add(0.15)));
   col = col.mul(crack.mul(-0.85).add(1));
-  const vis = explored(gpu, p);
+  // Cracking rock always shows through the fog.
+  const vis = max(explored(gpu, p), cracking);
   m.colorNode = mix(FOG, col, vis);
   if (!quality.low) m.normalNode = bumpNormal(surf.w.sub(crack.mul(0.012)));
   // Ice and copper flecks catch the light a little.
   m.roughnessNode = select(mid.equal(4), float(0.35), select(mid.equal(3), float(0.6), float(0.92)));
 
   const T = gpu.temp[0].ro().element(k);
-  const pulse = sin(time.mul(pr.mul(12).add(3))).mul(0.45).add(0.55).mul(pr);
+  const pulse = sin(time.mul(pr.mul(12).add(3))).mul(0.45).add(0.55).mul(pr.mul(0.6).add(0.4)).mul(cracking);
   m.emissiveNode = vec3(1.0, 0.3, 0.06).mul(smoothstep(160, 900, T).mul(2.2))
     .add(vec3(1.0, 0.32, 0.05).mul(crack.mul(pulse).mul(0.9)))
-    .add(vec3(0.3, 0.04, 0).mul(pulse.mul(0.25)))
+    .add(vec3(0.35, 0.04, 0).mul(pulse.mul(0.5)))
     .mul(vis).add(fogHaze(p, vis));
   return m;
 }
@@ -231,6 +234,22 @@ export function backWallMaterial(gpu: GpuSim) {
     .mul(vis).add(fogHaze(p, vis));
   if (!quality.low) m.normalNode = bumpNormal(surf.w);
   return m;
+}
+
+/**
+ * See-through placement preview: rising scanlines, bright silhouette edges and a faint flicker,
+ * drawn additively. Set `tint` to recolour it (cyan for a valid site, red for an invalid one).
+ */
+export function hologramMaterial() {
+  const { color, normalView, positionViewDirection } = TSL as any;
+  const tint = uniform(color('#5fe3ff'));
+  const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  const scan = smoothstep(0.55, 0.95, sin(positionWorld.y.mul(60).sub(time.mul(6))).mul(0.5).add(0.5));
+  const rim = float(1).sub(abs(dot(normalView, positionViewDirection))).pow(2);
+  const flicker = sin(time.mul(37)).mul(sin(time.mul(11))).mul(0.08).add(0.92);
+  m.colorNode = tint.mul(1.4);
+  m.opacityNode = scan.mul(0.35).add(rim.mul(0.6)).add(0.12).mul(flicker);
+  return { material: m, tint };
 }
 
 export function particleMaterial(gpu: GpuSim) {

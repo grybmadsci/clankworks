@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { float, mix, pass, screenUV, vec4 } from 'three/tsl';
@@ -9,8 +9,8 @@ import { CELL, H, SKY_ROWS, W } from '../config';
 import { enabled } from '../debug';
 import { unlockAudio } from '../game/audio';
 import type { Game } from '../game/Game';
-import { Entities, SmelterBody, Z_ACTORS } from './Entities';
-import { gameTime, overlayMode } from './materials';
+import { Entities, SmelterBody, StrutBody, Z_ACTORS } from './Entities';
+import { gameTime, hologramMaterial, overlayMode } from './materials';
 import { quality } from './quality';
 import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
 
@@ -49,6 +49,7 @@ export function Scene({ game }: { game: Game }) {
       <Foreground />
       <DigRange game={game} />
       <SmelterHologram game={game} />
+      <StrutHologram game={game} />
       <Cursor game={game} />
       <CameraRig game={game} />
       {enabled('post') && !quality.low && <PostFx />}
@@ -155,7 +156,7 @@ function Cursor({ game }: { game: Game }) {
     if (!c) return;
     ref.current.position.set(c.x, c.y, 0.08);
     // The smelter hologram replaces the ring.
-    ref.current.visible = game.tool !== 'smelter';
+    ref.current.visible = game.tool !== 'smelter' && game.tool !== 'strut';
     const r = game.tool === 'dig' ? 0.7 : game.tool === 'cancel' ? 0.9 : 0.25;
     ref.current.scale.setScalar(r);
     const outOfRange = game.tool === 'dig' && !game.inDigRange(c.x, c.y);
@@ -175,18 +176,7 @@ function Cursor({ game }: { game: Game }) {
  */
 function SmelterHologram({ game }: { game: Game }) {
   const group = useRef<THREE.Group>(null!);
-  const { material, tint } = useMemo(() => {
-    const { color, positionWorld, sin, smoothstep, time, uniform, normalView, positionViewDirection, dot, abs, float } = TSL as any;
-    const tint = uniform(color('#5fe3ff'));
-    const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
-    // Rising scanlines, bright silhouette edges, and the odd flicker.
-    const scan = smoothstep(0.55, 0.95, sin(positionWorld.y.mul(60).sub(time.mul(6))).mul(0.5).add(0.5));
-    const rim = float(1).sub(abs(dot(normalView, positionViewDirection))).pow(2);
-    const flicker = sin(time.mul(37)).mul(sin(time.mul(11))).mul(0.08).add(0.92);
-    m.colorNode = tint.mul(1.4);
-    m.opacityNode = scan.mul(0.35).add(rim.mul(0.6)).add(0.12).mul(flicker);
-    return { material: m, tint };
-  }, []);
+  const { material, tint } = useMemo(hologramMaterial, []);
   useFrame(() => {
     const c = view.cursor;
     const show = game.tool === 'smelter' && !!c;
@@ -202,6 +192,24 @@ function SmelterHologram({ game }: { game: Game }) {
       <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]} material={material}><ringGeometry args={[0.5, 0.56, 32]} /></mesh>
     </group>
   );
+}
+
+/**
+ * With the Strut tool, a hologram of the strut spans the gap under the cursor, floor to ceiling:
+ * cyan when it can be built, red when it can't (too tall, no floor or ceiling, no scrap).
+ */
+function StrutHologram({ game }: { game: Game }) {
+  const { material, tint } = useMemo(hologramMaterial, []);
+  const [site, setSite] = useState<{ i: number; j0: number; j1: number; key: string } | null>(null);
+  useFrame(() => {
+    const c = view.cursor;
+    const s = game.tool === 'strut' && c ? game.strutSite(c.x, c.y) : null;
+    // Nothing to preview when pointing into rock.
+    const next = s && s.j1 > s.j0 ? { i: s.i, j0: s.j0, j1: s.j1, key: `${s.i}:${s.j0}:${s.j1}` } : null;
+    if (s) tint.value.set(s.error ? '#ff4a3a' : '#5fe3ff');
+    if (next?.key !== site?.key) setSite(next);
+  });
+  return site ? <group key={site.key} renderOrder={15}><StrutBody strut={site} material={material} /></group> : null;
 }
 
 /** Dashed ring marking how far from the base the drones will dig; brighter with the Dig tools. */

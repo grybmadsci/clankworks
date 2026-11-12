@@ -74,6 +74,16 @@ export function Hud({ game }: { game: Game }) {
         ))}
       </aside>
 
+      {game.pendingCollapses.length > 0 && (
+        <div className="alerts">
+          {game.pendingCollapses.slice(0, 3).map((p) => (
+            <button key={p.id} onClick={() => view.goto(p.x, p.y)} className={p.due - game.time < 5 ? 'urgent' : ''}>
+              ⚠ CAVE-IN in {Math.max(0, p.due - game.time).toFixed(0)}s — place a strut under the cracking rock
+            </button>
+          ))}
+        </div>
+      )}
+
       <aside className="panel log">
         {game.log.slice(-8).map((l) => <div key={l.id} className={l.kind}>{l.text}</div>)}
       </aside>
@@ -114,7 +124,9 @@ function Bubbles({ game }: { game: Game }) {
         el.style.transform = `translate(-50%, -100%) translate(${(v.x * 0.5 + 0.5) * host.clientWidth}px, ${(-v.y * 0.5 + 0.5) * host.clientHeight}px)`;
         el.style.opacity = String(Math.min(1, b.ttl * 2));
       }
-      // Countdown tags over rock that is cracking ahead of a cave-in.
+      // Countdown tags over rock that is cracking ahead of a cave-in. Off-screen ones stick to the
+      // screen edge with an arrow pointing at the danger; clicking a tag jumps the camera there.
+      const W = host.clientWidth, H = host.clientHeight;
       for (const p of game.pendingCollapses) {
         const id = -p.id;
         live.add(id);
@@ -122,12 +134,27 @@ function Bubbles({ game }: { game: Game }) {
         if (!el) {
           el = document.createElement('div');
           el.className = 'bubble collapse';
+          el.title = 'Jump to the cracking rock';
+          el.onclick = () => view.goto(p.x, p.y);
           host.appendChild(el);
           els.set(id, el);
         }
-        el.textContent = `⚠ Cave-in ${Math.max(0, p.due - game.time).toFixed(1)}s`;
+        const left = Math.max(0, p.due - game.time);
         v.set(p.x, p.y, 0).project(cam);
-        el.style.transform = `translate(-50%, -50%) translate(${(v.x * 0.5 + 0.5) * host.clientWidth}px, ${(-v.y * 0.5 + 0.5) * host.clientHeight}px)`;
+        let sx = (v.x * 0.5 + 0.5) * W, sy = (-v.y * 0.5 + 0.5) * H;
+        const inset = { x: 90, top: 70, bottom: 110 };
+        const off = sx < inset.x || sx > W - inset.x || sy < inset.top || sy > H - inset.bottom;
+        let arrow = '⚠';
+        if (off) {
+          const cx = W / 2, cy = H / 2, dx = sx - cx, dy = sy - cy;
+          const k = Math.min((W / 2 - inset.x) / Math.max(Math.abs(dx), 1e-3), (H / 2 - (dy < 0 ? inset.top : inset.bottom)) / Math.max(Math.abs(dy), 1e-3));
+          sx = cx + dx * k; sy = cy + dy * k;
+          arrow = ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'][(Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) + 8) % 8];
+        }
+        el.textContent = `${arrow} Cave-in ${left.toFixed(1)}s`;
+        el.classList.toggle('offscreen', off);
+        el.classList.toggle('urgent', left < 5);
+        el.style.transform = `translate(-50%, -50%) translate(${sx}px, ${sy}px)`;
       }
       // Early warnings over ceilings close to their safe span.
       for (const u of game.unstable) {

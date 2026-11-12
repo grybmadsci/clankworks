@@ -167,81 +167,117 @@ function DebrisModel({ debris }: { debris: Debris }) {
   return <group ref={ref}><primitive object={mesh} /></group>;
 }
 
-const Z_STRUT = -DEPTH * 0.72;
+export const Z_STRUT = -DEPTH * 0.72;
 
-/** Where a strut's lantern hangs: just under the top plate, in front of the strut. */
-function strutLamp(strut: Strut) {
-  const y1 = (strut.j1 + 1) * CELL, h = y1 - strut.j0 * CELL;
-  return { x: (strut.i + 0.5) * CELL, y: y1 - Math.min(0.32, h * 0.4), z: Z_STRUT + 0.11 };
+/** Small deterministic PRNG, so a strut's lamps land in the same places every time. */
+function seeded(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-/** A small caged lamp hanging from a hook; its flame flickers. */
-function StrutLantern({ strut }: { strut: Strut }) {
-  const flame = useRef<THREE.MeshBasicMaterial>(null!);
-  const phase = useMemo(() => Math.random() * 10, []);
-  const p = strutLamp(strut);
-  useFrame(({ clock }) => {
-    const t = clock.elapsedTime + phase;
-    const f = 0.8 + Math.sin(t * 11) * 0.08 + Math.sin(t * 23) * 0.06 + (Math.random() - 0.5) * 0.06;
-    flame.current.color.setRGB(3 * f, 1.5 * f, 0.4 * f);
-  });
+interface Lamp { x: number; y: number; z: number; side: number }
+const lampCache = new WeakMap<Strut, Lamp[]>();
+
+/**
+ * Lamps spread up a strut, roughly one per 0.7m, alternating between the two posts with a
+ * little random offset so they don't line up.
+ */
+export function strutLamps(strut: Pick<Strut, 'i' | 'j0' | 'j1'>): Lamp[] {
+  const cached = lampCache.get(strut as Strut);
+  if (cached) return cached;
+  const rand = seeded(strut.i * 92821 + strut.j0 * 1237 + strut.j1);
+  const y0 = strut.j0 * CELL, y1 = (strut.j1 + 1) * CELL, h = y1 - y0;
+  const n = Math.max(1, Math.round(h / 0.7));
+  const out: Lamp[] = [];
+  for (let k = 0; k < n; k++) {
+    const side = (k + (rand() < 0.5 ? 0 : 1)) % 2 ? -1 : 1;
+    const y = Math.min(y1 - 0.15, Math.max(y0 + 0.15, y0 + ((k + 0.5) / n) * h + (rand() - 0.5) * 0.22));
+    out.push({ x: (strut.i + 0.5) * CELL + side * (0.12 + rand() * 0.025), y, z: Z_STRUT + 0.06 + rand() * 0.04, side });
+  }
+  lampCache.set(strut as Strut, out);
+  return out;
+}
+
+const STRUT_MATS = {
+  post: new THREE.MeshStandardMaterial({ color: '#5d6670', metalness: 0.7, roughness: 0.45 }),
+  brace: new THREE.MeshStandardMaterial({ color: '#7c858e', metalness: 0.7, roughness: 0.4 }),
+  plate: new THREE.MeshStandardMaterial({ color: '#4a525a', metalness: 0.6 }),
+  iron: new THREE.MeshStandardMaterial({ color: '#2b2725', metalness: 0.7 }),
+  brass: new THREE.MeshStandardMaterial({ color: '#c19a4b', metalness: 0.9, roughness: 0.3 }),
+};
+
+/**
+ * A strut's frame (posts, cross braces, end plates) and its lamps, centred on the strut. Real
+ * struts pass nothing and get steel and glowing lamps; the hologram passes one material.
+ */
+export function StrutBody({ strut, material, flames }: { strut: Pick<Strut, 'i' | 'j0' | 'j1'>; material?: THREE.Material; flames?: (THREE.MeshBasicMaterial | null)[] }) {
+  const m = (own: THREE.Material) => material ?? own;
+  const y0 = strut.j0 * CELL, h = (strut.j1 + 1) * CELL - y0;
+  const cx = (strut.i + 0.5) * CELL, cy = y0 + h / 2;
+  const braces = Math.max(1, Math.floor(h / 0.6));
+  const lamps = strutLamps(strut);
   return (
-    <group position={[p.x, p.y, p.z]}>
-      <mesh position={[0, 0.09, -0.05]}><boxGeometry args={[0.012, 0.012, 0.1]} /><meshStandardMaterial color="#2b2725" metalness={0.7} /></mesh>
-      <mesh position={[0, 0.07, 0]}><coneGeometry args={[0.035, 0.03, 8]} /><meshStandardMaterial color="#c19a4b" metalness={0.9} roughness={0.3} /></mesh>
-      <mesh><cylinderGeometry args={[0.022, 0.022, 0.08, 10]} /><meshBasicMaterial ref={flame} /></mesh>
-      {[0, 1, 2, 3].map((n) => (
-        <mesh key={n} position={[Math.cos(n * Math.PI / 2) * 0.026, 0, Math.sin(n * Math.PI / 2) * 0.026]}>
-          <cylinderGeometry args={[0.003, 0.003, 0.09, 4]} /><meshStandardMaterial color="#2b2725" metalness={0.7} />
-        </mesh>
+    <>
+      <group position={[cx, cy, Z_STRUT]}>
+        {[-0.07, 0.07].map((dx) => <mesh key={dx} position={[dx, 0, 0]} material={m(STRUT_MATS.post)}><boxGeometry args={[0.05, h, 0.1]} /></mesh>)}
+        {Array.from({ length: braces }, (_, n) => (
+          <mesh key={n} position={[0, -h / 2 + (n + 0.5) * (h / braces), 0]} rotation={[0, 0, n % 2 ? 0.9 : -0.9]} material={m(STRUT_MATS.brace)}>
+            <boxGeometry args={[0.03, 0.2, 0.04]} />
+          </mesh>
+        ))}
+        {[1, -1].map((s) => <mesh key={s} position={[0, s * (h / 2 - 0.03), 0]} material={m(STRUT_MATS.plate)}><boxGeometry args={[0.3, 0.06, 0.3]} /></mesh>)}
+      </group>
+      {lamps.map((l, n) => (
+        <group key={n} position={[l.x, l.y, l.z]}>
+          <mesh position={[-l.side * 0.03, 0.035, -0.02]} rotation={[0, 0, Math.PI / 2]} material={m(STRUT_MATS.iron)}><cylinderGeometry args={[0.005, 0.005, 0.06, 4]} /></mesh>
+          <mesh position={[0, 0.035, 0]} material={m(STRUT_MATS.brass)}><coneGeometry args={[0.022, 0.02, 8]} /></mesh>
+          {material
+            ? <mesh material={material}><cylinderGeometry args={[0.014, 0.014, 0.05, 8]} /></mesh>
+            : <mesh><cylinderGeometry args={[0.014, 0.014, 0.05, 8]} /><meshBasicMaterial ref={(f) => { if (flames) flames[n] = f; }} /></mesh>}
+          <mesh position={[0, -0.03, 0]} material={m(STRUT_MATS.brass)}><cylinderGeometry args={[0.018, 0.015, 0.01, 8]} /></mesh>
+        </group>
       ))}
-      <mesh position={[0, -0.05, 0]}><cylinderGeometry args={[0.03, 0.025, 0.015, 10]} /><meshStandardMaterial color="#c19a4b" metalness={0.9} roughness={0.3} /></mesh>
-    </group>
+    </>
   );
 }
 
 /**
- * Point lights for the strut lanterns nearest the middle of the view. Every lantern glows, but
- * only a handful cast light, so building lots of struts doesn't multiply the lighting cost.
+ * Point lights for the strut lamps nearest the middle of the view. Every lamp glows, but only
+ * a handful cast light, so building lots of struts doesn't multiply the lighting cost.
  */
 function StrutLamps({ game }: { game: Game }) {
   const lights = useRef<(THREE.PointLight | null)[]>([]);
   useFrame(({ clock }) => {
     const v = game.view;
-    const near = game.struts.map((s) => ({ p: strutLamp(s), id: s.id }))
-      .sort((a, b) => Math.hypot(a.p.x - v.x, a.p.y - v.y) - Math.hypot(b.p.x - v.x, b.p.y - v.y));
+    const near = game.struts.flatMap((s) => strutLamps(s))
+      .sort((a, b) => Math.hypot(a.x - v.x, a.y - v.y) - Math.hypot(b.x - v.x, b.y - v.y));
     lights.current.forEach((l, n) => {
       if (!l) return;
-      const s = near[n];
-      l.intensity = s ? 1.6 * (0.85 + Math.sin(clock.elapsedTime * 11 + s.id) * 0.08) : 0;
-      if (s) l.position.set(s.p.x, s.p.y, s.p.z + 0.2);
+      const p = near[n];
+      l.intensity = p ? 0.9 * (0.85 + Math.sin(clock.elapsedTime * 11 + n * 2.3) * 0.08) : 0;
+      if (p) l.position.set(p.x, p.y, p.z + 0.2);
     });
   });
-  return <>{Array.from({ length: 8 }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={4} decay={1.4} />)}</>;
+  return <>{Array.from({ length: 10 }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={3} decay={1.4} />)}</>;
 }
 
 function StrutModel({ strut }: { strut: Strut }) {
-  const x = (strut.i + 0.5) * CELL;
-  const y0 = strut.j0 * CELL, y1 = (strut.j1 + 1) * CELL;
-  const h = y1 - y0;
-  const braces = Math.max(1, Math.floor(h / 0.6));
-  return (
-    <>
-    <StrutLantern strut={strut} />
-    <group position={[x, y0 + h / 2, Z_STRUT]}>
-      {[-0.07, 0.07].map((dx) => (
-        <mesh key={dx} position={[dx, 0, 0]}><boxGeometry args={[0.05, h, 0.1]} /><meshStandardMaterial color="#5d6670" metalness={0.7} roughness={0.45} /></mesh>
-      ))}
-      {Array.from({ length: braces }, (_, n) => (
-        <mesh key={n} position={[0, -h / 2 + (n + 0.5) * (h / braces), 0]} rotation={[0, 0, n % 2 ? 0.9 : -0.9]}>
-          <boxGeometry args={[0.03, 0.2, 0.04]} /><meshStandardMaterial color="#7c858e" metalness={0.7} roughness={0.4} />
-        </mesh>
-      ))}
-      <mesh position={[0, h / 2 - 0.03, 0]}><boxGeometry args={[0.3, 0.06, 0.3]} /><meshStandardMaterial color="#4a525a" metalness={0.6} /></mesh>
-      <mesh position={[0, -h / 2 + 0.03, 0]}><boxGeometry args={[0.3, 0.06, 0.3]} /><meshStandardMaterial color="#4a525a" metalness={0.6} /></mesh>
-    </group>
-    </>
-  );
+  const flames = useRef<(THREE.MeshBasicMaterial | null)[]>([]);
+  const phase = useMemo(() => Math.random() * 10, []);
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime + phase;
+    flames.current.forEach((f, n) => {
+      if (!f) return;
+      const k = 0.8 + Math.sin(t * 11 + n * 1.9) * 0.08 + Math.sin(t * 23 + n) * 0.06 + (Math.random() - 0.5) * 0.06;
+      f.color.setRGB(3 * k, 1.5 * k, 0.4 * k);
+    });
+  });
+  return <StrutBody strut={strut} flames={flames.current} />;
 }
 
 const SMELTER_MATS = {

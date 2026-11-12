@@ -12,6 +12,19 @@ const R = 0.4;
 /** The boiler's front surface, facing the camera. */
 const FRONT = Z_HUB + R;
 const Z_ACTORS = -DEPTH * 0.45;
+/** Just in front of the cavern's back wall, where everything is bolted on. */
+const Z_WALL = -DEPTH + 0.03;
+
+/** A horizontal arm from the back wall out to depth z, at (x, y). */
+function WallArm({ x, y, z, r = 0.014 }: { x: number; y: number; z: number; r?: number }) {
+  const len = z - Z_WALL;
+  return (
+    <>
+      <mesh position={[x, y, Z_WALL + len / 2]} rotation={[Math.PI / 2, 0, 0]} material={M.darkIron}><cylinderGeometry args={[r, r, len, 8]} /></mesh>
+      <mesh position={[x, y, Z_WALL]} rotation={[Math.PI / 2, 0, 0]} material={M.iron}><cylinderGeometry args={[r * 3, r * 3, 0.02, 10]} /></mesh>
+    </>
+  );
+}
 
 const mat = (color: string, metalness = 0.6, roughness = 0.45) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
 const M = {
@@ -83,7 +96,7 @@ function Rivets({ x }: { x: number }) {
   );
 }
 
-/** Gas lamp on a post; flickers and lights the cavern warmly. */
+/** Gas lamp on a wall bracket; flickers and lights the cavern warmly. */
 function Lantern({ x, z, h }: { x: number; z: number; h: number }) {
   const light = useRef<THREE.PointLight>(null!);
   const flame = useRef<THREE.MeshBasicMaterial>(null!);
@@ -97,7 +110,8 @@ function Lantern({ x, z, h }: { x: number; z: number; h: number }) {
   });
   return (
     <group position={[x, 0, z]}>
-      <mesh position={[0, h / 2, 0]} material={M.darkIron}><cylinderGeometry args={[0.018, 0.03, h, 8]} /></mesh>
+      <group position={[-x, 0, -z]}><WallArm x={x} y={h + 0.27} z={z} /></group>
+      <mesh position={[0, h + 0.24, 0]} material={M.darkIron}><cylinderGeometry args={[0.006, 0.006, 0.06, 4]} /></mesh>
       <mesh position={[0, h + 0.02, 0]} material={M.brass}><cylinderGeometry args={[0.05, 0.04, 0.03, 12]} /></mesh>
       <mesh position={[0, h + 0.1, 0]}><cylinderGeometry args={[0.045, 0.045, 0.13, 12]} /><meshBasicMaterial ref={flame} /></mesh>
       {[0, 1, 2, 3].map((n) => (
@@ -123,8 +137,15 @@ export function Base({ game }: { game: Game }) {
   const geo = useMemo(() => {
     const festoon = Array.from({ length: 9 }, (_, n) => {
       const f = n / 8;
-      return new THREE.Vector3(-1.42 + f * 1.97, 1.95 - f * 0.25 - Math.sin(f * Math.PI) * 0.25, Z_ACTORS + 0.05);
+      return new THREE.Vector3(-1.42 + f * 1.97, 1.95 - f * 0.25 - Math.sin(f * Math.PI) * 0.25, -0.98 + f * 0.03);
     });
+    // Triangular gusset bracket: drawn as (distance out from the wall, height), extruded sideways.
+    const gussetShape = new THREE.Shape([
+      new THREE.Vector2(0, 0.1), new THREE.Vector2(0.86, 0.1), new THREE.Vector2(0.86, 0.04), new THREE.Vector2(0, -0.42),
+    ].map((v) => v));
+    const gusset = new THREE.ExtrudeGeometry(gussetShape, { depth: 0.05, bevelEnabled: true, bevelThickness: 0.005, bevelSize: 0.005, bevelSegments: 1 });
+    gusset.translate(0, 0, -0.025);
+    gusset.rotateY(-Math.PI / 2);
     const head = new THREE.SphereGeometry(R, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
     head.scale(1, 0.32, 1);
     return {
@@ -132,7 +153,9 @@ export function Base({ game }: { game: Game }) {
       small: gearGeometry(0.11, 8, 0.04),
       tiny: gearGeometry(0.07, 6, 0.035),
       fly: gearGeometry(0.15, 18, 0.035),
-      plinth: new RoundedBoxGeometry(1.75, 0.1, 0.78, 3, 0.03),
+      deck: new RoundedBoxGeometry(1.75, 0.06, 0.82, 3, 0.02),
+      backPlate: new RoundedBoxGeometry(2.1, 1.25, 0.04, 3, 0.02),
+      gusset,
       hopper: new RoundedBoxGeometry(0.3, 0.26, 0.28, 3, 0.04),
       cylinder: new RoundedBoxGeometry(0.3, 0.13, 0.12, 3, 0.04),
       nixie: new RoundedBoxGeometry(0.42, 0.16, 0.06, 3, 0.025),
@@ -216,10 +239,16 @@ export function Base({ game }: { game: Game }) {
 
   return (
     <group position={[d.x, d.y, 0]}>
-      {/* Plinth, cradle saddles and the boiler */}
-      <mesh geometry={geo.plinth} material={M.darkIron} position={[0, 0.05, Z_HUB]} />
+      {/* Riveted back plate bolted to the cavern wall; gussets carry the deck the boiler sits on,
+          so the whole works hangs off the wall rather than standing on the floor. */}
+      <mesh geometry={geo.backPlate} material={M.iron} position={[0, 0.45, Z_WALL]} />
+      {[-0.98, -0.33, 0.33, 0.98].flatMap((x) => [-0.1, 1.0].map((y) => (
+        <mesh key={`${x}:${y}`} position={[x, y, Z_WALL + 0.03]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><cylinderGeometry args={[0.025, 0.025, 0.025, 6]} /></mesh>
+      )))}
+      {[-0.62, 0, 0.62].map((x) => <mesh key={x} geometry={geo.gusset} material={M.darkIron} position={[x, 0.0, Z_WALL]} />)}
+      <mesh geometry={geo.deck} material={M.darkIron} position={[0, 0.1, Z_HUB + 0.02]} />
       {[-0.5, 0.5].map((x) => (
-        <mesh key={x} position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.iron}>
+        <mesh key={x} position={[x, 0.5, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.iron}>
           <cylinderGeometry args={[R + 0.04, R + 0.04, 0.06, 24, 1, true, Math.PI / 2, Math.PI]} />
         </mesh>
       ))}
@@ -296,37 +325,46 @@ export function Base({ game }: { game: Game }) {
             <mesh key={x} position={[x, x < 1.5 ? 0.62 : 0.42, 0]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><cylinderGeometry args={[0.035, 0.035, 0.2, 10]} /></mesh>
           ))}
         </group>
-        {[1.35, 1.95].map((x) => <mesh key={x} position={[x, x < 1.5 ? 0.3 : 0.2, 0]} material={M.darkIron}><cylinderGeometry args={[0.015, 0.015, x < 1.5 ? 0.6 : 0.4, 6]} /></mesh>)}
+        <group position={[0, 0, -(Z_ACTORS + 0.12)]}>
+          {[[1.35, 0.58], [1.95, 0.42], [2.22, 0.08]].map(([x, y]) => <WallArm key={x} x={x} y={y} z={Z_ACTORS + 0.12} />)}
+        </group>
         <group ref={ref.lumps}>
           {Array.from({ length: 4 }, (_, n) => <mesh key={n} material={M.ore}><dodecahedronGeometry args={[0.035]} /></mesh>)}
         </group>
         <mesh geometry={geo.hopper} material={M.copper} position={[2.22, 0.2, 0]} />
         <mesh position={[2.22, 0.34, 0]} material={M.ore}><dodecahedronGeometry args={[0.1]} /></mesh>
       </group>
-      {/* Banded barrels */}
-      {[[1.05, -0.22], [1.24, -0.36]].map(([x, z]) => (
-        <group key={x} position={[x, 0.14, z]}>
+      {/* Banded barrels on a wall shelf */}
+      <mesh position={[1.15, 0.6, Z_WALL + 0.14]} material={M.wood}><boxGeometry args={[0.5, 0.03, 0.26]} /></mesh>
+      {[0.95, 1.35].map((x) => <WallArm key={x} x={x} y={0.57} z={Z_WALL + 0.24} />)}
+      {[[1.05, Z_WALL + 0.13], [1.24, Z_WALL + 0.15]].map(([x, z]) => (
+        <group key={x} position={[x, 0.755, z]}>
           <mesh material={M.wood}><cylinderGeometry args={[0.085, 0.085, 0.28, 16]} /></mesh>
           {[-0.09, 0.09].map((y) => <mesh key={y} position={[0, y, 0]} rotation={[Math.PI / 2, 0, 0]} material={M.darkIron}><torusGeometry args={[0.087, 0.008, 6, 20]} /></mesh>)}
         </group>
       ))}
       {/* Wrought-iron cradle tower */}
       <group position={[0, 0, Z_ACTORS]}>
-        {[-1.88, -0.97].flatMap((x) => [-0.2, 0.2].map((z) => (
-          <mesh key={`${x}${z}`} position={[x, 0.95, z]} material={M.darkIron}><cylinderGeometry args={[0.02, 0.03, 1.9, 8]} /></mesh>
-        )))}
-        {[0.4, 0.82, 1.24, 1.66].map((y, n) => (
-          <mesh key={y} position={[-1.42, y - 0.2, -0.2]} rotation={[0, 0, n % 2 ? 0.42 : -0.42]} material={M.iron}><cylinderGeometry args={[0.01, 0.01, 0.98, 6]} /></mesh>
-        ))}
         {slots.slice(4).map((s, n) => (
           <group key={n} position={[s.x, s.y - 0.1, 0]}>
             <mesh material={M.brass}><cylinderGeometry args={[0.16, 0.16, 0.022, 24]} /></mesh>
-            <mesh position={[s.x < -1.4 ? -0.16 : 0.16, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={M.darkIron}><cylinderGeometry args={[0.012, 0.012, 0.12, 6]} /></mesh>
           </group>
         ))}
-        {[-1.88, -0.97].map((x) => <mesh key={x} geometry={geo.finial} material={M.brass} position={[x, 1.9, 0]} />)}
-        <mesh position={[-1.42, 1.9, 0]} rotation={[0, 0, Math.PI / 2]} material={M.darkIron}><cylinderGeometry args={[0.015, 0.015, 0.95, 6]} /></mesh>
       </group>
+      {/* Wall rails carrying the cradles on cantilevered arms, with diagonal braces */}
+      {[-1.88, -0.97].map((x) => (
+        <group key={x}>
+          <mesh position={[x, 1.02, Z_WALL + 0.03]} material={M.darkIron}><boxGeometry args={[0.06, 1.75, 0.04]} /></mesh>
+          <mesh geometry={geo.finial} material={M.brass} position={[x, 1.9, Z_WALL + 0.03]} />
+        </group>
+      ))}
+      {slots.slice(4).map((s, n) => (
+        <group key={n}>
+          <WallArm x={s.x} y={s.y - 0.12} z={Z_ACTORS - 0.12} r={0.016} />
+          <mesh position={[s.x, s.y - 0.3, (Z_WALL + Z_ACTORS - 0.12) / 2]} rotation={[0.72, 0, 0]} material={M.iron}><cylinderGeometry args={[0.008, 0.008, 0.62, 6]} /></mesh>
+        </group>
+      ))}
+      <mesh position={[-1.42, 1.9, Z_WALL + 0.03]} material={M.darkIron}><boxGeometry args={[0.97, 0.05, 0.04]} /></mesh>
       {/* Pad and cradle status rings, one per landing slot */}
       <group ref={ref.pads}>
         {slots.map((s, n) => (
@@ -342,8 +380,8 @@ export function Base({ game }: { game: Game }) {
           <mesh key={n} position={[p.x, p.y - 0.03, p.z]}><sphereGeometry args={[0.022, 8, 6]} /><meshBasicMaterial /></mesh>
         ))}
       </group>
-      <Lantern x={-2.35} z={Z_ACTORS + 0.25} h={0.9} />
-      <Lantern x={2.62} z={Z_ACTORS + 0.3} h={1.05} />
+      <Lantern x={-2.35} z={Z_ACTORS + 0.1} h={0.9} />
+      <Lantern x={2.62} z={Z_ACTORS + 0.1} h={1.05} />
       <pointLight position={[0, 1.6, 0.8]} intensity={2} distance={6} color="#ffcf99" />
     </group>
   );

@@ -32,8 +32,10 @@ Structural warnings come in two stages:
 - **Near collapse:** a ceiling in the drones' working area that reaches 80% of its safe span
   gets a log warning and an "⚠ Unstable" tag, while there is still time to add a strut.
 - **Collapsing:** rock that loses support pales with dust, cracks along glowing fractures,
-  trembles and creaks, and a countdown tag appears over it. You get 15 seconds to brace it with
-  a strut. If the rock is still unsupported when the countdown ends, it collapses.
+  trembles and creaks, an alarm sounds, and a countdown tag appears over it (pinned to the screen
+  edge with an arrow if it is off-screen) along with an alert under the top bar. Click either to
+  jump there. You get 15 seconds to brace it with a strut. If the rock is still unsupported when
+  the countdown ends, it collapses.
 
 The integrity overlay (`T`) shows the stress map: green rock is sound, and ceilings turn yellow,
 then red, as they approach their limit. Cracking rock flashes.
@@ -41,7 +43,7 @@ then red, as they approach their limit. Cracking rock flashes.
 | Input | Action |
 | --- | --- |
 | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
-| `3` Strut | Floor-to-ceiling steel support with a hanging lantern (2 scrap). Wide ceilings collapse without them; one placed under cracking rock saves it |
+| `3` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
 | `4` Smelter | Ore → plates (8 scrap). A hologram previews where it will stand: cyan if it fits, red if not |
 | `5` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
 | `B` | Build a drone (3 plates + 2 goo) |

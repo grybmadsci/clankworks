@@ -174,6 +174,8 @@ try {
   console.log('after blast', JSON.stringify(warning));
   check(warning.pending > 0 && warning.cracking > 0 && warning.log.some((l) => /cave-in warning/i.test(l)),
     `blast left unsupported rock cracking with a warning (${warning.cracking} cells)`);
+  const alerts = await page.evaluate(() => ({ banner: document.querySelectorAll('.alerts button').length, tags: document.querySelectorAll('.bubble.collapse').length }));
+  check(alerts.banner > 0 && alerts.tags > 0, `cave-in warnings shown as an alert banner and countdown tags (${alerts.banner} / ${alerts.tags})`);
   await shot('3-cracking');
   await fastForward(16);
   const cave = await page.evaluate(() => {
@@ -262,6 +264,17 @@ try {
   console.log('streaming', JSON.stringify(away));
   check(away.loadedFar && away.unloaded && away.placeholder === 1024 && Math.abs(away.restored - away.carved) < 1e-3 && away.carved < 1020,
     `far chunk streamed in, saved on unload and restored with the player's changes (${away.resident} resident)`);
+
+  // Struts are limited in height: the shaft above the base is far too tall to brace.
+  const tall = await page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot;
+    const before = g.struts.length;
+    g.resources.scrap += 2;
+    const site = g.strutSite(d.x, d.y + 6);
+    g.placeStrut(d.x, d.y + 6);
+    return { error: site.error ?? '', span: (site.j1 - site.j0 + 1) * 0.25, placed: g.struts.length - before };
+  });
+  check(/too tall/i.test(tall.error) && tall.placed === 0, `struts refuse gaps over their height limit (${tall.span}m gap: "${tall.error}")`);
 
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {
