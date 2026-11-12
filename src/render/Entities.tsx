@@ -136,11 +136,11 @@ function HeadLamps({ game }: { game: Game }) {
     lights.current.forEach((l, n) => {
       if (!l) return;
       const b = bots[n];
-      l.intensity = b ? 2.2 : 0;
+      l.intensity = b ? 4 : 0;
       if (b) { const p = b.body.translation(); l.position.set(p.x + b.facing * 0.3, p.y + 0.2, 0.4); }
     });
   });
-  return <>{[0, 1, 2, 3, 4, 5].map((n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffe2b0" distance={4.5} decay={1.5} />)}</>;
+  return <>{[0, 1, 2, 3, 4, 5].map((n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffe2b0" distance={6.5} decay={1.4} />)}</>;
 }
 
 function DebrisModel({ debris }: { debris: Debris }) {

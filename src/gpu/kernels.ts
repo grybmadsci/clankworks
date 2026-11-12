@@ -1,16 +1,27 @@
 // WGSL compute kernels, wrapped with three.js wgslFn(). Grid constants are baked into the
 // source so the kernels stay branch-light; storage buffers arrive as pointer parameters.
 import { wgslFn as wgslFnTyped } from 'three/tsl';
-import { CELL, CELLS, DEPTH, H, MAX_PARTICLES, W } from '../config';
+import { CELL, CHUNK, CHUNK_CELLS, CW, DEPTH, H, MAX_ACTIVE, MAX_PARTICLES, W } from '../config';
 
-/** Capacity of the compacted terrain vertex buffer (average 16 vertices per cell). */
-export const MESH_CAPACITY = CELLS * 16;
+/** Terrain vertices per active-chunk mesh slot (12 per cell on average). */
+export const SLOT_CAP = CHUNK_CELLS * 12;
+export const MESH_CAPACITY = SLOT_CAP * MAX_ACTIVE;
 
 // Includes are typed narrowly upstream; wgslFn nodes are valid includes at runtime.
 const wgslFn = wgslFnTyped as (code: string, includes?: unknown[]) => any;
 
 const f = (n: number) => n.toFixed(5);
 const GRID = `let W = ${W}i; let H = ${H}i;`;
+
+/**
+ * Work is dispatched over lists of chunks: thread `tid` handles cell `tid % CHUNK_CELLS` of list
+ * entry `tid / CHUNK_CELLS`. Chunk ids are cj * CW + ci; returns the cell's (i, j).
+ */
+const chunkCell = wgslFn(/* wgsl */ `
+fn chunkCell(chunk: u32, local: u32) -> vec2i {
+  return vec2i(i32((chunk % ${CW}u) * ${CHUNK}u + local % ${CHUNK}u), i32((chunk / ${CW}u) * ${CHUNK}u + local / ${CHUNK}u));
+}
+`);
 
 /** Smooth 3D value noise, shared by the mesher. */
 const noiseFns = wgslFn(/* wgsl */ `
@@ -61,11 +72,13 @@ fn ihash(q: vec2i) -> f32 {
 export const fluidStep = wgslFn(/* wgsl */ `
 fn fluidStep(src: ptr<storage, array<vec4f>, read>, dst: ptr<storage, array<vec4f>, read_write>,
              solid: ptr<storage, array<f32>, read>, temp: ptr<storage, array<f32>, read>,
-             emit: ptr<storage, array<vec4f>, read>, idx: u32, nEmit: u32) -> void {
+             emit: ptr<storage, array<vec4f>, read>, chunks: ptr<storage, array<u32>, read>,
+             tid: u32, nEmit: u32) -> void {
   ${GRID}
-  let i = i32(idx) % W;
-  let j = i32(idx) / W;
-  if (j >= H) { return; }
+  let cell = chunkCell((*chunks)[tid / ${CHUNK_CELLS}u], tid % ${CHUNK_CELLS}u);
+  let i = cell.x;
+  let j = cell.y;
+  let idx = u32(j * W + i);
 
   // 3x3 neighbourhood. 0 BL, 1 B, 2 BR, 3 L, 4 C, 5 R, 6 TL, 7 T, 8 TR.
   var s: array<vec4f, 9>;
@@ -151,18 +164,19 @@ fn fluidStep(src: ptr<storage, array<vec4f>, read>, dst: ptr<storage, array<vec4
   if (j >= H - 1) { outv.z = 1.0; outv.w = 0.0; }
   (*dst)[idx] = outv;
 }
-`);
+`, [chunkCell]);
 
 /** Heat conduction through rock and fluids, with magma as a source and a geothermal baseline. */
 export const thermalStep = wgslFn(/* wgsl */ `
 fn thermalStep(src: ptr<storage, array<f32>, read>, dst: ptr<storage, array<f32>, read_write>,
                fluid: ptr<storage, array<vec4f>, read>, solid: ptr<storage, array<f32>, read>,
                mat: ptr<storage, array<u32>, read>, emit: ptr<storage, array<vec4f>, read>,
-               idx: u32, nEmit: u32) -> void {
+               chunks: ptr<storage, array<u32>, read>, tid: u32, nEmit: u32) -> void {
   ${GRID}
-  let i = i32(idx) % W;
-  let j = i32(idx) / W;
-  if (j >= H) { return; }
+  let cell = chunkCell((*chunks)[tid / ${CHUNK_CELLS}u], tid % ${CHUNK_CELLS}u);
+  let i = cell.x;
+  let j = cell.y;
+  let idx = u32(j * W + i);
   // Conductivity by material: air, dirt, granite, copper, ice, bedrock, rubble, junk.
   var cond = array<f32, 8>(0.04, 0.10, 0.20, 0.24, 0.16, 0.20, 0.08, 0.12);
   var offs = array<vec2i, 4>(vec2i(-1, 0), vec2i(1, 0), vec2i(0, -1), vec2i(0, 1));
@@ -196,14 +210,16 @@ fn thermalStep(src: ptr<storage, array<f32>, read>, dst: ptr<storage, array<f32>
   if (j >= H - 1) { v = 15.0; }
   (*dst)[idx] = v;
 }
-`);
+`, [chunkCell]);
 
 /**
  * 2.5D terrain mesher. Each marching-squares cell emits a front cutaway cap (fan triangulated)
  * plus its contour segments extruded back along -Z in three noise-perturbed bands so walls look
  * craggy rather than flatly extruded. Vertices are (xyz, material id; +16 marks wall faces).
- * Cells build up to 48 vertices locally, then reserve space in a shared output buffer with an
- * atomic counter (stream compaction); that counter doubles as the indirect draw's vertex count.
+ * Each active chunk owns a slot of SLOT_CAP vertices and four indirect draw args. Cells build up
+ * to 48 vertices locally, then reserve space in their chunk's slot with an atomic counter (stream
+ * compaction); that counter doubles as the slot's indirect draw vertex count. Only chunks listed
+ * in `dirty` are rebuilt.
  */
 const meshHelpers = wgslFn(/* wgsl */ `
 fn wallOffset(p: vec2f, z: f32, ring: i32) -> vec2f {
@@ -250,12 +266,17 @@ fn emitPoly(verts: ptr<function, array<vec4f, 48>>, cnt: ptr<function, u32>, pol
 export const meshCell = wgslFn(/* wgsl */ `
 fn meshCell(solid: ptr<storage, array<f32>, read>, mat: ptr<storage, array<u32>, read>,
             outPos: ptr<storage, array<vec4f>, read_write>, drawArgs: ptr<storage, array<atomic<u32>>, read_write>,
-            idx: u32) -> void {
+            slotChunk: ptr<storage, array<u32>, read>, dirty: ptr<storage, array<u32>, read>, tid: u32) -> void {
   ${GRID}
   let C = ${f(CELL)};
   let ISO = 0.5;
-  let i = i32(idx) % W;
-  let j = i32(idx) / W;
+  let slot = (*dirty)[tid / ${CHUNK_CELLS}u];
+  let chunk = (*slotChunk)[slot];
+  if (chunk == 0xffffffffu) { return; }
+  let cell = chunkCell(chunk, tid % ${CHUNK_CELLS}u);
+  let i = cell.x;
+  let j = cell.y;
+  let idx = u32(j * W + i);
   var verts: array<vec4f, 48>;
   var cnt = 0u;
   if (i < W - 1 && j < H - 1) {
@@ -310,29 +331,31 @@ fn meshCell(solid: ptr<storage, array<f32>, read>, mat: ptr<storage, array<u32>,
     }
   }
   if (cnt == 0u) { return; }
-  let base = atomicAdd(&(*drawArgs)[0], cnt);
-  if (base + cnt > ${MESH_CAPACITY}u) { return; }
+  let base = atomicAdd(&(*drawArgs)[slot * 4u], cnt);
+  if (base + cnt > ${SLOT_CAP}u) { return; }
   for (var v = 0u; v < cnt; v++) {
-    (*outPos)[base + v] = verts[v];
+    (*outPos)[slot * ${SLOT_CAP}u + base + v] = verts[v];
   }
 }
-`, [meshHelpers]);
+`, [meshHelpers, chunkCell]);
 
-/** Indirect draw args are (vertexCount, instanceCount, firstVertex, firstInstance). */
+/** Per-slot indirect draw args are (vertexCount, instanceCount, firstVertex, firstInstance). */
 export const meshBegin = wgslFn(/* wgsl */ `
-fn meshBegin(drawArgs: ptr<storage, array<atomic<u32>>, read_write>) -> void {
-  atomicStore(&(*drawArgs)[0], 0u);
-  atomicStore(&(*drawArgs)[1], 1u);
-  atomicStore(&(*drawArgs)[2], 0u);
-  atomicStore(&(*drawArgs)[3], 0u);
+fn meshBegin(drawArgs: ptr<storage, array<atomic<u32>>, read_write>, dirty: ptr<storage, array<u32>, read>, tid: u32) -> void {
+  let slot = (*dirty)[tid];
+  atomicStore(&(*drawArgs)[slot * 4u], 0u);
+  atomicStore(&(*drawArgs)[slot * 4u + 1u], 1u);
+  atomicStore(&(*drawArgs)[slot * 4u + 2u], slot * ${SLOT_CAP}u);
+  atomicStore(&(*drawArgs)[slot * 4u + 3u], 0u);
 }
 `);
 
-/** Clamp the vertex count in case the mesh overflowed the buffer. */
+/** Clamp a slot's vertex count in case its chunk overflowed the slot. */
 export const meshEnd = wgslFn(/* wgsl */ `
-fn meshEnd(drawArgs: ptr<storage, array<atomic<u32>>, read_write>) -> void {
-  let n = atomicLoad(&(*drawArgs)[0]);
-  atomicStore(&(*drawArgs)[0], min(n, ${MESH_CAPACITY}u));
+fn meshEnd(drawArgs: ptr<storage, array<atomic<u32>>, read_write>, dirty: ptr<storage, array<u32>, read>, tid: u32) -> void {
+  let slot = (*dirty)[tid];
+  let n = atomicLoad(&(*drawArgs)[slot * 4u]);
+  atomicStore(&(*drawArgs)[slot * 4u], min(n, ${SLOT_CAP}u));
 }
 `);
 

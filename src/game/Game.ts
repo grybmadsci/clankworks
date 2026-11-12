@@ -1,12 +1,16 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import type { WebGPURenderer } from 'three/webgpu';
-import { CELL, CHUNK, COLLAPSE_DELAY, CRACK_SHIFT, DIG_BIT, Emit, REACH_BIT, H, ISO, Mat, MATERIALS, SKY_ROWS, W, cellCenter, cellIndex, toCell } from '../config';
+import {
+  CELL, CELLS, CHUNK, CH, COLLAPSE_DELAY, CRACK_SHIFT, CW, DIG_BIT, EXPLORED_BIT, Emit, H, ISO, MATERIALS, MAX_ACTIVE, MAX_EMITTERS,
+  Mat, REACH_BIT, SKY_ROWS, STRESS_MASK, STRESS_MAX, STRESS_SHIFT, STRESS_WARN, W, cellCenter, cellIndex, chunkId, toCell,
+} from '../config';
 import { GpuSim, ParticleKind } from '../gpu/GpuSim';
 import { chunkPolylines } from '../sim/contours';
-import { findCollapses } from '../sim/integrity';
+import { ceilings, findCollapses } from '../sim/integrity';
 import { GH, GW, findPath, floodNodes, nearFlooded } from '../sim/pathfind';
-import type { Terrain, Yield } from '../sim/terrain';
-import { EmitterDef, WorldLayout, generateWorld } from '../sim/worldgen';
+import { Terrain, type Yield } from '../sim/terrain';
+import { EmitterDef, WorldGen, WorldLayout } from '../sim/worldgen';
+import { ChunkStreamer, chunkRows, origin } from './chunks';
 import { chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
@@ -83,6 +87,8 @@ export interface Bubble { id: number; text: string; bot?: Bot; x: number; y: num
 export interface LogEntry { id: number; time: number; text: string; kind: 'emote' | 'info' | 'warn' }
 /** Unsupported rock that is cracking and will fall at `due` unless it gets braced first. */
 export interface PendingCollapse { id: number; cells: number[]; start: number; due: number; x: number; y: number }
+/** A ceiling in the drones' working area that is close to its safe span. */
+export interface Unstable { key: string; x: number; y: number; ratio: number }
 
 export interface Env { water: number; magma: number; o2: number; toxic: number; temp: number }
 
@@ -107,11 +113,19 @@ export class Game {
   bubbles: Bubble[] = [];
   log: LogEntry[] = [];
   pendingCollapses: PendingCollapse[] = [];
+  unstable: Unstable[] = [];
   /** Incremented whenever entity lists change, so React can re-render the lists. */
   entityVersion = 0;
   shake = 0;
   tool: Tool = 'dig';
-  overlay: 0 | 1 | 2 = 0;
+  /** 0 normal, 1 heat, 2 oxygen, 3 structural integrity. */
+  overlay: 0 | 1 | 2 | 3 = 0;
+  /** What the camera shows (world units), set by the renderer; drives chunk streaming. */
+  view = { x: 0, y: 0, halfW: 12, halfH: 8 };
+  readonly chunks: ChunkStreamer;
+  /** Initial / last-loaded fluid (water, magma, oxygen, toxic) and temperature per cell. */
+  readonly fluidInit = new Float32Array(CELLS * 4);
+  readonly tempInit = new Float32Array(CELLS);
 
   private readonly terrainBody: RAPIER.RigidBody;
   private readonly chunkColliders = new Map<number, RAPIER.Collider[]>();
@@ -134,21 +148,39 @@ export class Game {
   /** Path nodes the drones can fly to from the base (see updateReachability). */
   private readonly access = new Uint8Array(GW * GH);
   private reachAt = 0;
+  private chunkAt = 0;
+  private revealAt = 0;
+  private stressMapAt = 0;
+  private stressVersion = -1;
+  private readonly warnedUnstable = new Map<string, number>();
 
   static async create(seed?: number) {
     await RAPIER.init();
-    return new Game(generateWorld(seed));
+    return new Game(new WorldGen(seed));
   }
 
-  private constructor(layout: WorldLayout) {
-    this.layout = layout;
-    this.terrain = layout.terrain;
+  private constructor(gen: WorldGen) {
+    this.layout = gen.layout;
+    this.terrain = new Terrain();
     this.physics = new RAPIER.World({ x: 0, y: -9.81 });
     this.terrainBody = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    for (let cj = 0; cj * CHUNK < H; cj++) for (let ci = 0; ci * CHUNK < W; ci++) this.terrain.dirtyChunks.add(cj * 1000 + ci);
+    this.chunks = new ChunkStreamer(this.terrain, gen, this.fluidInit, this.tempInit, {
+      loaded: (id) => this.chunkLoaded(id),
+      fields: (id) => ({
+        fluid: chunkRows(this.gpu?.fluidSnapshot ?? this.fluidInit, id, 4),
+        temp: chunkRows(this.gpu?.tempSnapshot ?? this.tempInit, id, 1),
+      }),
+      unloaded: (id) => this.chunkUnloaded(id),
+    });
+    const layout = this.layout;
+    this.view = { x: layout.depot.x, y: layout.depot.y + 1, halfW: 12, halfH: 8 };
+    for (const id of this.wantedChunks()) this.chunks.loadNow(id);
+    gen.locate(this.terrain);
     this.rebuildColliders();
     this.terrain.structuralDirty = null;
     this.deepestY = layout.depot.y;
+    this.reveal(layout.depot.x, layout.depot.y + 1, 9);
+    this.reveal(layout.terrarium.x, layout.terrarium.y + 1, 4);
 
     for (let n = 0; n < 3; n++) this.spawnBot(false);
     for (let n = 0; n < 4; n++) {
@@ -159,7 +191,7 @@ export class Game {
       });
     }
     // The base cavern struts from worldgen become real struts.
-    for (const i of [56, 72]) {
+    for (const i of layout.strutCols) {
       let j0 = -1, j1 = -1;
       for (let j = 0; j < H; j++) if (this.terrain.strut[cellIndex(i, j)]) { if (j0 < 0) j0 = j; j1 = j; }
       if (j0 >= 0) this.struts.push({ id: nextId++, i, j0, j1 });
@@ -169,8 +201,143 @@ export class Game {
   }
 
   attachGpu(renderer: WebGPURenderer) {
-    this.gpu = new GpuSim(renderer, this.terrain, this.layout.fluid, this.layout.temperature);
+    this.gpu = new GpuSim(renderer, this.terrain, this.fluidInit, this.tempInit);
+    for (const id of this.chunks.resident) this.gpu.activate(id);
     this.gpu.setEmitters(this.emitters());
+  }
+
+  // ---------------------------------------------------------------- chunk streaming
+
+  /**
+   * Chunks the game needs resident, most important first: the base and everything within dig
+   * range, the drones and where they are headed, falling debris and cracking rock, then what
+   * the camera sees (plus a margin), nearest the view centre first.
+   */
+  private wantedChunks() {
+    const out: number[] = [];
+    const seen = new Set<number>();
+    const add = (x: number, y: number, rx: number, ry = rx) => {
+      const ci0 = Math.max(0, Math.floor((x - rx) / (CHUNK * CELL))), ci1 = Math.min(CW - 1, Math.floor((x + rx) / (CHUNK * CELL)));
+      const cj0 = Math.max(0, Math.floor((y - ry) / (CHUNK * CELL))), cj1 = Math.min(CH - 1, Math.floor((y + ry) / (CHUNK * CELL)));
+      for (let cj = cj0; cj <= cj1; cj++) for (let ci = ci0; ci <= ci1; ci++) {
+        const id = chunkId(ci, cj);
+        if (!seen.has(id)) { seen.add(id); out.push(id); }
+      }
+    };
+    const c = this.digCenter;
+    add(c.x, c.y, DIG_RADIUS + 2);
+    for (const b of this.bots) {
+      if (b.dead) continue;
+      const p = b.body.translation();
+      add(p.x, p.y, 3);
+      if (b.target >= 0) add(cellCenter(b.target % W), cellCenter((b.target / W) | 0), 2);
+    }
+    for (const d of this.debris) { const p = d.body.translation(); add(p.x, p.y, 4); }
+    for (const p of this.pendingCollapses) add(p.x, p.y, 4);
+    for (const b of this.blasts) add(b.x, b.y, 3);
+    const v = this.view, margin = CHUNK * CELL;
+    const viewIds: number[] = [];
+    const before = out.length;
+    add(v.x, v.y, v.halfW + margin, v.halfH + margin);
+    viewIds.push(...out.splice(before));
+    const cx = (id: number) => ((id % CW) + 0.5) * CHUNK * CELL - v.x, cy = (id: number) => (Math.floor(id / CW) + 0.5) * CHUNK * CELL - v.y;
+    viewIds.sort((a, b) => Math.hypot(cx(a), cy(a)) - Math.hypot(cx(b), cy(b)));
+    return [...out, ...viewIds].slice(0, MAX_ACTIVE);
+  }
+
+  private chunkLoaded(id: number) {
+    const t = this.terrain;
+    const { i0, j0 } = origin(id);
+    // Not a structural change: natural caves stay up until something disturbs them.
+    t.markDirty(i0, j0, i0 + CHUNK - 1, j0 + CHUNK - 1, false);
+    for (let j = j0; j < j0 + CHUNK; j++) for (let i = i0; i < i0 + CHUNK; i++) {
+      const k = cellIndex(i, j);
+      if (t.digMark[k] & DIG_BIT) this.marked.add(k);
+    }
+    if (this.gpu && !this.gpu.activate(id)) console.warn('No free GPU slot for chunk', id);
+    this.gpu?.loadFields(i0, j0, CHUNK, chunkRows(this.fluidInit, id, 4), chunkRows(this.tempInit, id, 1));
+    this.stressVersion = -1;
+  }
+
+  private chunkUnloaded(id: number) {
+    const { i0, j0 } = origin(id);
+    for (const c of this.chunkColliders.get(id) ?? []) this.physics.removeCollider(c, false);
+    this.chunkColliders.delete(id);
+    this.terrain.dirtyChunks.delete(id);
+    this.gpu?.deactivate(id);
+    // Placeholders replaced the chunk's rows; neighbours' meshes read across the border.
+    this.terrain.solidRects.push({ i0, j0, i1: i0 + CHUNK - 1, j1: j0 + CHUNK - 1 });
+    this.terrain.touchMarks(i0, j0, i0 + CHUNK - 1, j0 + CHUNK - 1);
+    for (const [di, dj] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      const ci = id % CW + di, cj = Math.floor(id / CW) + dj;
+      if (ci >= 0 && cj >= 0 && ci < CW && cj < CH && this.chunks.isLoaded(chunkId(ci, cj))) this.terrain.meshDirty.add(chunkId(ci, cj));
+    }
+  }
+
+  // ---------------------------------------------------------------- fog of war
+
+  /** Mark cells within `radius` (world units) as explored. */
+  reveal(x: number, y: number, radius: number) {
+    const t = this.terrain, marks = t.digMark;
+    const r = radius / CELL, ci = x / CELL, cj = y / CELL;
+    let changed = false;
+    for (let j = Math.max(0, Math.floor(cj - r)); j <= Math.min(H - 1, cj + r); j++) {
+      for (let i = Math.max(0, Math.floor(ci - r)); i <= Math.min(W - 1, ci + r); i++) {
+        const k = cellIndex(i, j);
+        if (marks[k] & EXPLORED_BIT || Math.hypot(i + 0.5 - ci, j + 0.5 - cj) > r || !t.isLoadedCell(i, j)) continue;
+        marks[k] |= EXPLORED_BIT;
+        changed = true;
+      }
+    }
+    if (changed) t.touchMarks(Math.floor(ci - r), Math.floor(cj - r), Math.ceil(ci + r), Math.ceil(cj + r));
+  }
+
+  // ---------------------------------------------------------------- structural stress
+
+  /**
+   * Stress map for the integrity overlay and early warnings. Each ceiling's span as a fraction of
+   * what its weakest material holds, highest mid-span, is written into the ceiling and the rock
+   * above it. Ceilings in the drones' working area that pass STRESS_WARN get a warning.
+   */
+  private updateStressMap() {
+    if (this.time < this.stressMapAt || (this.stressVersion === this.terrain.version + this.struts.length)) return;
+    this.stressMapAt = this.time + 1;
+    this.stressVersion = this.terrain.version + this.struts.length;
+    const t = this.terrain, marks = t.digMark;
+    let i0 = W, j0 = H, i1 = 0, j1 = 0;
+    for (const id of this.chunks.resident) {
+      const o = origin(id);
+      i0 = Math.min(i0, o.i0); j0 = Math.min(j0, o.j0); i1 = Math.max(i1, o.i0 + CHUNK - 1); j1 = Math.max(j1, o.j0 + CHUNK - 1);
+    }
+    if (i1 < i0) return;
+    for (let j = j0; j <= j1; j++) for (let k = j * W + i0; k <= j * W + i1; k++) marks[k] &= ~STRESS_MASK;
+    const unstable: Unstable[] = [];
+    const c = this.digCenter;
+    for (const ceil of ceilings(t, { i0, j0, i1, j1 })) {
+      const ratio = ceil.span / ceil.maxSpan;
+      if (ratio < 0.25) continue;
+      const first = ceil.cols[0], mid = (first + ceil.cols[ceil.cols.length - 1]) / 2, half = Math.max(1, ceil.span / 2);
+      for (const i of ceil.cols) {
+        const centred = 1 - Math.abs(i - mid) / half;
+        let s = Math.min(1, ratio * (0.6 + 0.4 * centred));
+        for (let j = ceil.rowOf.get(i)!, n = 0; n < 5 && j < H && t.density[cellIndex(i, j)] > ISO; j++, n++, s *= 0.85) {
+          const k = cellIndex(i, j);
+          const q = Math.round(s * STRESS_MAX);
+          if (q > ((marks[k] & STRESS_MASK) >> STRESS_SHIFT)) marks[k] = (marks[k] & ~STRESS_MASK) | (q << STRESS_SHIFT);
+        }
+      }
+      const x = cellCenter(Math.round(mid)), y = cellCenter(ceil.rowOf.get(ceil.cols[Math.floor(ceil.cols.length / 2)])!);
+      if (ratio >= STRESS_WARN && ratio <= 1 && dist({ x, y }, c) <= DIG_RADIUS + 3) {
+        unstable.push({ key: `${Math.round(x / 2)}:${Math.round(y / 2)}`, x, y, ratio });
+      }
+    }
+    t.touchMarks(i0, j0, i1, j1);
+    for (const u of unstable) {
+      if ((this.warnedUnstable.get(u.key) ?? -Infinity) > this.time - 60) continue;
+      this.warnedUnstable.set(u.key, this.time);
+      this.warn(`Structural warning: a ceiling is at ${Math.round(u.ratio * 100)}% of its safe span. Add a strut before it gives.`);
+    }
+    this.unstable = unstable;
   }
 
   // ---------------------------------------------------------------- environment queries
@@ -178,8 +345,8 @@ export class Game {
   env(x: number, y: number): Env {
     const i = Math.min(W - 1, Math.max(0, toCell(x))), j = Math.min(H - 1, Math.max(0, toCell(y)));
     const k = cellIndex(i, j);
-    const f = this.gpu?.fluidSnapshot ?? this.layout.fluid;
-    const t = this.gpu?.tempSnapshot ?? this.layout.temperature;
+    const f = this.gpu?.fluidSnapshot ?? this.fluidInit;
+    const t = this.gpu?.tempSnapshot ?? this.tempInit;
     return { water: f[k * 4], magma: f[k * 4 + 1], o2: f[k * 4 + 2], toxic: f[k * 4 + 3], temp: t[k] };
   }
 
@@ -262,7 +429,7 @@ export class Game {
       if (on) this.marked.add(k); else this.marked.delete(k);
       changed = true;
     }
-    if (changed) { this.terrain.gpuDirty = true; this.reachAt = 0; }
+    if (changed) { this.terrain.touchMarks(Math.floor(ci - r), Math.floor(cj - r), Math.ceil(ci + r), Math.ceil(cj + r)); this.reachAt = 0; }
     if (outOfRange && !changed && this.time >= this.rangeWarnAt) {
       this.rangeWarnAt = this.time + 3;
       this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`);
@@ -381,6 +548,17 @@ export class Game {
     this.updateEvents();
     this.updatePendingCollapses(dt);
     this.updateReachability();
+    if (this.time >= this.chunkAt) {
+      this.chunkAt = this.time + 0.25;
+      this.chunks.update(this.wantedChunks(), this.time);
+    }
+    if (this.time >= this.revealAt) {
+      this.revealAt = this.time + 0.2;
+      for (const b of this.bots) if (!b.dead) { const p = b.body.translation(); this.reveal(p.x, p.y, 3.5); }
+      const d = this.layout.depot;
+      this.reveal(d.x, d.y + 1, 9);
+    }
+    this.updateStressMap();
 
     if (this.terrain.structuralDirty && this.time >= this.structuralAt) {
       this.structuralAt = this.time + 0.15;
@@ -399,12 +577,17 @@ export class Game {
     if (this.gpu) {
       if (this.time >= this.emitterAt) { this.emitterAt = this.time + 0.25; this.gpu.setEmitters(this.emitters()); }
       this.gpu.update(dt);
-      if (this.time >= this.readbackAt) { this.readbackAt = this.time + 0.3; void this.gpu.readback(); }
+      if (this.time >= this.readbackAt) { this.readbackAt = this.time + 0.5; void this.gpu.readback(); }
     }
   }
 
+  /** GPU emitters: world features in loaded chunks (nearest the view first), plus live sources. */
   private emitters(): EmitterDef[] {
-    const list = [...this.layout.emitters];
+    const v = this.view;
+    const list = this.layout.emitters
+      .filter((e) => this.terrain.isLoadedCell(Math.floor(e.x), Math.floor(e.y)))
+      .sort((a, b) => Math.hypot(a.x * CELL - v.x, a.y * CELL - v.y) - Math.hypot(b.x * CELL - v.x, b.y * CELL - v.y))
+      .slice(0, MAX_EMITTERS - 1 - this.smelters.length);
     const t = this.layout.terrarium;
     const alive = this.critters.filter((c) => !c.dead).length;
     list.push({ x: t.x / CELL, y: (t.y + 0.6) / CELL, radius: 7, type: Emit.Oxygen, rate: -0.0012 * alive });
@@ -419,7 +602,8 @@ export class Game {
   private rebuildColliders() {
     for (const key of this.terrain.dirtyChunks) {
       for (const c of this.chunkColliders.get(key) ?? []) this.physics.removeCollider(c, false);
-      const cj = Math.floor(key / 1000), ci = key % 1000;
+      if (!this.terrain.loaded[key]) { this.chunkColliders.delete(key); continue; }
+      const ci = key % CW, cj = Math.floor(key / CW);
       const colliders = chunkPolylines(this.terrain, ci, cj).map((line) =>
         this.physics.createCollider(
           RAPIER.ColliderDesc.polyline(new Float32Array(line)).setFriction(0.6).setCollisionGroups(groups(G_TERRAIN, G_BOT | G_DEBRIS)),
@@ -471,7 +655,7 @@ export class Game {
     const marks = this.terrain.digMark;
     const stamp = start === null ? 0 : (Math.round(start * 10) + 1) << CRACK_SHIFT;
     for (const k of cells) marks[k] = (marks[k] & ((1 << CRACK_SHIFT) - 1)) | stamp;
-    this.terrain.gpuDirty = true;
+    this.terrain.touchCells(cells);
   }
 
   private centre(p: PendingCollapse) {
@@ -817,12 +1001,12 @@ export class Game {
         if (n >= 0 && n < marks.length && !reached.has(n) && live(n)) { reached.add(n); queue.push(n); }
       }
     }
-    let changed = false;
+    const changed: number[] = [];
     for (const k of this.marked) {
       const want = reached.has(k) ? REACH_BIT : 0;
-      if ((marks[k] & REACH_BIT) !== want) { marks[k] = (marks[k] & ~REACH_BIT) | want; changed = true; }
+      if ((marks[k] & REACH_BIT) !== want) { marks[k] = (marks[k] & ~REACH_BIT) | want; changed.push(k); }
     }
-    if (changed) t.gpuDirty = true;
+    t.touchCells(changed);
   }
 
   // ---------------------------------------------------------------- drones
@@ -906,7 +1090,7 @@ export class Game {
     for (const k of this.exposedTargets(p, bot).slice(0, 4)) {
       const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
       if (dist(p, { x: tx, y: ty }) <= DRILL_REACH) { this.startDig(bot, k); return true; }
-      const path = findPath(this.terrain, p.x, p.y, tx, ty, DRILL_REACH - 0.1, 12000);
+      const path = findPath(this.terrain, p.x, p.y, tx, ty, DRILL_REACH - 0.1, 40000);
       if (path) {
         this.claim(bot, k);
         // The route ends near the cell, not at it; keep closing in until the laser reaches.
@@ -923,6 +1107,7 @@ export class Game {
     const t = this.terrain;
     const out: { k: number; d: number }[] = [];
     for (const k of this.marked) {
+      if (!t.isLoadedCell(k % W, (k / W) | 0)) continue;
       if (!(t.digMark[k] & DIG_BIT) || t.density[k] <= ISO) { this.marked.delete(k); continue; }
       const owner = this.claims.get(k);
       if (owner !== undefined && owner !== bot.id) continue;
@@ -956,7 +1141,7 @@ export class Game {
     const p = bot.body.translation();
     const slot = this.slotOf(bot);
     this.releaseClaim(bot);
-    const path = findPath(this.terrain, p.x, p.y, slot.x, slot.y, 0.6, 12000);
+    const path = findPath(this.terrain, p.x, p.y, slot.x, slot.y, 0.6, 40000);
     if (path) { bot.path = [...path, slot]; bot.state = 'toDepot'; } else { bot.state = 'idle'; bot.replanAt = this.time + 2; }
   }
 
@@ -975,7 +1160,7 @@ export class Game {
       const goal = bot.state === 'toDig'
         ? { x: cellCenter(bot.target % W), y: cellCenter((bot.target / W) | 0), r: DRILL_REACH - 0.1 }
         : { ...slot, r: 0.6 };
-      const path = findPath(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 12000);
+      const path = findPath(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 40000);
       if (path) bot.path = [...path, bot.state === 'toDepot' ? slot : goal];
     }
     while (bot.path.length && dist(p, bot.path[0]) < 0.3) bot.path.shift();

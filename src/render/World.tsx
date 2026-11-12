@@ -8,14 +8,15 @@ import { backWallMaterial, fluidMaterial, overlayMaterial, particleMaterial, ter
 const WORLD_W = W * CELL, WORLD_H = H * CELL;
 
 /**
- * Terrain mesh produced by the GPU mesher. Vertex positions come from a storage buffer and the
- * vertex count from GPU-written indirect draw args, so the CPU never sees the mesh.
+ * Terrain mesh produced by the GPU mesher. Vertex positions come from a storage buffer and each
+ * active chunk's vertex count from GPU-written indirect draw args, so the CPU never sees the mesh.
  */
 export function TerrainMesh({ game }: { game: Game }) {
   const mesh = useMemo(() => {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
-    geo.setIndirect(game.gpu!.meshDrawArgs);
+    // One indirect draw per active-chunk slot.
+    geo.setIndirect(game.gpu!.meshDrawArgs, game.gpu!.slotOffsets);
     const m = new THREE.Mesh(geo, terrainMaterial(game.gpu!));
     m.frustumCulled = false;
     return m;
@@ -56,12 +57,12 @@ export function Particles({ game }: { game: Game }) {
 }
 
 /** Back wall of the cavity, plus a sky backdrop above the surface. */
-export function BackWall() {
+export function BackWall({ game }: { game: Game }) {
   const mesh = useMemo(() => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W + 40, WORLD_H + 30), backWallMaterial());
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W + 40, WORLD_H + 30), backWallMaterial(game.gpu!));
     m.position.set(WORLD_W / 2, WORLD_H / 2 + 10, -DEPTH - 0.01);
     return m;
-  }, []);
+  }, [game]);
   return <primitive object={mesh} />;
 }
 
@@ -74,7 +75,7 @@ export function Foreground() {
     // Edge pillars that frame the diorama.
     for (const x of [-1.2, WORLD_W + 1.2]) out.push({ x, y: WORLD_H / 2 - 4, z: 1.2, w: 2.6, h: WORLD_H, r: 0 });
     // Slim stalactite silhouettes hugging the world edges, close to the camera.
-    for (let n = 0; n < 26; n++) {
+    for (let n = 0; n < 160; n++) {
       const side = n % 2 ? -0.3 - rnd() * 0.8 : WORLD_W + 0.3 + rnd() * 0.8;
       out.push({ x: side, y: rnd() * (WORLD_H - 6), z: 1.6 + rnd() * 1.2, w: 0.15 + rnd() * 0.3, h: 0.8 + rnd() * 2.2, r: (rnd() - 0.5) * 0.5 });
     }
@@ -88,8 +89,8 @@ export function Foreground() {
     <group>
       {rocks.map((r, n) => (
         <mesh key={n} position={[r.x, r.y, r.z]} rotation={[0, 0, r.r]}>
-          <boxGeometry args={[r.w, r.h, n < 28 ? 0.6 : 1.5]} />
-          <meshStandardMaterial color={n < 28 ? '#141110' : '#2a2421'} roughness={1} />
+          <boxGeometry args={[r.w, r.h, n < 162 ? 0.6 : 1.5]} />
+          <meshStandardMaterial color={n < 162 ? '#141110' : '#2a2421'} roughness={1} />
         </mesh>
       ))}
     </group>

@@ -1,29 +1,29 @@
 import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three/webgpu';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { DEPTH } from '../config';
 import { HUB, dockSlot } from '../game/base';
 import type { Game } from '../game/Game';
 import { ParticleKind } from '../gpu/GpuSim';
 
 const Z_HUB = -DEPTH * 0.62;
-const HUB_D = 0.7;
-const FRONT = Z_HUB + HUB_D / 2;
+const R = 0.4;
+/** The boiler's front surface, facing the camera. */
+const FRONT = Z_HUB + R;
 const Z_ACTORS = -DEPTH * 0.45;
 
-const mat = (color: string, metalness = 0.4, roughness = 0.6) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
+const mat = (color: string, metalness = 0.6, roughness = 0.45) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
 const M = {
-  wall: mat('#6e604a', 0.35, 0.7),
-  trim: mat('#3b352d', 0.5, 0.6),
-  steel: mat('#6f7780', 0.75, 0.4),
-  darkSteel: mat('#3d4248', 0.7, 0.45),
-  brass: mat('#b8862f', 0.8, 0.35),
-  copper: mat('#a5552a', 0.8, 0.4),
-  rust: mat('#c98a2b', 0.3, 0.7),
-  hazard: mat('#d6a21e', 0.2, 0.6),
-  black: mat('#1c1b1a', 0.2, 0.8),
-  rubber: mat('#242322', 0, 0.95),
+  iron: mat('#3b3530', 0.7, 0.55),
+  darkIron: mat('#25221f', 0.75, 0.5),
+  brass: mat('#c19a4b', 0.9, 0.3),
+  copper: mat('#b5643a', 0.9, 0.35),
+  verdigris: mat('#5f8f7c', 0.4, 0.6),
+  wood: mat('#5a3b22', 0, 0.85),
   ore: mat('#7a4a2a', 0.2, 0.9),
+  enamel: mat('#e8dcc0', 0.1, 0.4),
+  black: mat('#141210', 0.3, 0.7),
 };
 
 /** A cog wheel: teeth around a rim, a hub hole, and lightening holes between the spokes. */
@@ -43,7 +43,7 @@ function gearGeometry(radius: number, teeth: number, depth: number) {
   const hole = new THREE.Path();
   hole.absarc(0, 0, radius * 0.16, 0, Math.PI * 2, true);
   shape.holes.push(hole);
-  if (radius > 0.12) {
+  if (radius > 0.1) {
     for (let n = 0; n < 5; n++) {
       const a = (n / 5) * Math.PI * 2;
       const h = new THREE.Path();
@@ -51,178 +51,300 @@ function gearGeometry(radius: number, teeth: number, depth: number) {
       shape.holes.push(h);
     }
   }
-  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 6 });
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.005, bevelSegments: 1, curveSegments: 6 });
   geo.translate(0, 0, -depth / 2);
   return geo;
 }
 
-function Box({ p, s, m, r }: { p: [number, number, number]; s: [number, number, number]; m: THREE.Material; r?: [number, number, number] }) {
-  return <mesh position={p} rotation={r} material={m}><boxGeometry args={s} /></mesh>;
+/** A smooth pipe through the given points. */
+function pipeGeometry(points: [number, number, number][], radius = 0.025) {
+  const curve = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(...p)), false, 'catmullrom', 0.2);
+  return new THREE.TubeGeometry(curve, points.length * 12, radius, 10, false);
+}
+
+/** Lathe-turned profile (radius, height pairs), for domes, stacks and finials. */
+function lathe(profile: [number, number][], segments = 24) {
+  return new THREE.LatheGeometry(profile.map(([r, h]) => new THREE.Vector2(r, h)), segments);
+}
+
+/** A ring of rivet heads around the boiler's front half at x. */
+function Rivets({ x }: { x: number }) {
+  return (
+    <>
+      {Array.from({ length: 9 }, (_, n) => {
+        const a = -Math.PI / 2 + (n / 8) * Math.PI;
+        return (
+          <mesh key={n} position={[x, 0.48 + Math.sin(a) * (R + 0.02), Z_HUB + Math.cos(a) * (R + 0.02)]} material={M.brass}>
+            <sphereGeometry args={[0.012, 6, 4]} />
+          </mesh>
+        );
+      })}
+    </>
+  );
+}
+
+/** Gas lamp on a post; flickers and lights the cavern warmly. */
+function Lantern({ x, z, h }: { x: number; z: number; h: number }) {
+  const light = useRef<THREE.PointLight>(null!);
+  const flame = useRef<THREE.MeshBasicMaterial>(null!);
+  const phase = useMemo(() => Math.random() * 10, []);
+  const cap = useMemo(() => lathe([[0.001, 0.09], [0.05, 0.05], [0.075, 0.0]], 12), []);
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime + phase;
+    const f = 0.85 + Math.sin(t * 13) * 0.05 + Math.sin(t * 29) * 0.04 + (Math.random() - 0.5) * 0.05;
+    light.current.intensity = 3.2 * f;
+    flame.current.color.setRGB(3.2 * f, 1.6 * f, 0.45 * f);
+  });
+  return (
+    <group position={[x, 0, z]}>
+      <mesh position={[0, h / 2, 0]} material={M.darkIron}><cylinderGeometry args={[0.018, 0.03, h, 8]} /></mesh>
+      <mesh position={[0, h + 0.02, 0]} material={M.brass}><cylinderGeometry args={[0.05, 0.04, 0.03, 12]} /></mesh>
+      <mesh position={[0, h + 0.1, 0]}><cylinderGeometry args={[0.045, 0.045, 0.13, 12]} /><meshBasicMaterial ref={flame} /></mesh>
+      {[0, 1, 2, 3].map((n) => (
+        <mesh key={n} position={[Math.cos(n * Math.PI / 2) * 0.05, h + 0.1, Math.sin(n * Math.PI / 2) * 0.05]} material={M.brass}>
+          <cylinderGeometry args={[0.006, 0.006, 0.14, 4]} />
+        </mesh>
+      ))}
+      <mesh position={[0, h + 0.17, 0]} geometry={cap} material={M.brass} />
+      <pointLight ref={light} position={[0, h + 0.1, 0.25]} color="#ffb46b" distance={7} decay={1.3} />
+    </group>
+  );
 }
 
 /**
- * The starting base: a hub whose roof is the drone landing deck, a rack tower of charging
- * cradles, and a lot of machinery that keeps itself busy: meshing cogs, a crank-driven piston,
- * a radar dish, a steaming chimney, an ore conveyor, chasing deck lights and a status screen.
+ * The starting base, a steam-age boiler house. Its riveted boiler doubles as the landing deck
+ * (brass pads on top), with a wrought-iron cradle tower beside it for the rest of the fleet.
+ * Idle animations: meshing gears, a crank-driven steam engine, a jittering pressure gauge,
+ * flickering nixie tubes and gas lamps, a chasing festoon of bulbs, chimney smoke, a whistle
+ * that vents now and then, and an ore conveyor.
  */
 export function Base({ game }: { game: Game }) {
   const d = game.layout.depot;
-  const gears = useMemo(() => ({
-    big: gearGeometry(0.2, 14, 0.05),
-    small: gearGeometry(0.11, 8, 0.05),
-    tiny: gearGeometry(0.07, 6, 0.04),
-    fly: gearGeometry(0.12, 16, 0.04),
-    valve: gearGeometry(0.06, 6, 0.02),
-  }), []);
-  const refs = {
-    big: useRef<THREE.Mesh>(null!), small: useRef<THREE.Mesh>(null!), tiny: useRef<THREE.Mesh>(null!),
-    fly: useRef<THREE.Mesh>(null!), rod: useRef<THREE.Mesh>(null!), piston: useRef<THREE.Mesh>(null!),
-    radar: useRef<THREE.Group>(null!), beacon: useRef<THREE.MeshBasicMaterial>(null!), valve: useRef<THREE.Mesh>(null!),
-    rollers: useRef<THREE.Group>(null!), lumps: useRef<THREE.Group>(null!), bars: useRef<THREE.Group>(null!),
-    chase: useRef<THREE.Group>(null!), pads: useRef<THREE.Group>(null!),
-  };
-  const steamAt = useRef(0);
+  const geo = useMemo(() => {
+    const festoon = Array.from({ length: 9 }, (_, n) => {
+      const f = n / 8;
+      return new THREE.Vector3(-1.42 + f * 1.97, 1.95 - f * 0.25 - Math.sin(f * Math.PI) * 0.25, Z_ACTORS + 0.05);
+    });
+    const head = new THREE.SphereGeometry(R, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+    head.scale(1, 0.32, 1);
+    return {
+      big: gearGeometry(0.19, 14, 0.04),
+      small: gearGeometry(0.11, 8, 0.04),
+      tiny: gearGeometry(0.07, 6, 0.035),
+      fly: gearGeometry(0.15, 18, 0.035),
+      plinth: new RoundedBoxGeometry(1.75, 0.1, 0.78, 3, 0.03),
+      hopper: new RoundedBoxGeometry(0.3, 0.26, 0.28, 3, 0.04),
+      cylinder: new RoundedBoxGeometry(0.3, 0.13, 0.12, 3, 0.04),
+      nixie: new RoundedBoxGeometry(0.42, 0.16, 0.06, 3, 0.025),
+      dome: lathe([[0.001, 0.2], [0.05, 0.19], [0.1, 0.15], [0.12, 0.08], [0.12, 0.0], [0.14, -0.02]]),
+      stack: lathe([[0.07, 0], [0.075, 0.5], [0.11, 0.6], [0.13, 0.66], [0.1, 0.68]], 16),
+      head,
+      finial: lathe([[0.001, 0.16], [0.03, 0.1], [0.045, 0.05], [0.02, 0.0]], 10),
+      pipeA: pipeGeometry([[-0.12, 1.02, Z_HUB - 0.2], [-0.4, 1.25, Z_HUB - 0.2], [-0.95, 1.2, Z_HUB - 0.05], [-1.05, 0.7, Z_HUB + 0.15], [-0.95, 0.32, FRONT + 0.06]]),
+      pipeB: pipeGeometry([[0.55, 0.95, Z_HUB - 0.18], [0.95, 1.05, Z_HUB - 0.3], [1.35, 0.9, Z_HUB - 0.4], [2.6, 0.95, Z_HUB - 0.45]], 0.03),
+      pipeC: pipeGeometry([[0.03, 0.3, FRONT + 0.06], [0.15, 0.2, FRONT + 0.03], [0.3, 0.14, FRONT - 0.05], [0.55, 0.12, FRONT - 0.15]], 0.018),
+      festoon,
+      wire: new THREE.TubeGeometry(new THREE.CatmullRomCurve3(festoon), 32, 0.004, 4, false),
+      padRing: new THREE.TorusGeometry(0.15, 0.012, 6, 24),
+    };
+  }, []);
   const slots = useMemo(() => Array.from({ length: 12 }, (_, n) => {
     const s = dockSlot(d, n);
     return { x: s.x - d.x, y: s.y - d.y };
   }), [d]);
+  const ref = {
+    big: useRef<THREE.Mesh>(null!), small: useRef<THREE.Mesh>(null!), tiny: useRef<THREE.Mesh>(null!),
+    fly: useRef<THREE.Mesh>(null!), rod: useRef<THREE.Mesh>(null!), crosshead: useRef<THREE.Mesh>(null!),
+    needle: useRef<THREE.Group>(null!), nixies: useRef<THREE.Group>(null!), bulbs: useRef<THREE.Group>(null!),
+    pads: useRef<THREE.Group>(null!), rollers: useRef<THREE.Group>(null!), lumps: useRef<THREE.Group>(null!),
+    firebox: useRef<THREE.MeshBasicMaterial>(null!),
+  };
+  const timers = useRef({ smoke: 0, whistle: 4 });
 
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime;
-    // Meshing gears turn in tooth ratio, in alternating directions.
     const w = t * 0.9;
-    refs.big.current.rotation.z = w;
-    refs.small.current.rotation.z = -w * (14 / 8) + 0.2;
-    refs.tiny.current.rotation.z = w * (14 / 6);
-    // Crank: the flywheel's pin drives a connecting rod that pumps the piston.
-    const crank = t * 2.4, cr = 0.07;
-    refs.fly.current.rotation.z = crank;
-    const pin = { x: -0.6 + Math.cos(crank) * cr, y: 0.62 + Math.sin(crank) * cr };
-    const headY = 0.34 + Math.sin(crank) * cr;
-    refs.piston.current.position.y = headY;
-    const dx = pin.x - -0.6, dy = pin.y - headY;
-    refs.rod.current.position.set(-0.6 + dx / 2, headY + dy / 2, FRONT + 0.05);
-    refs.rod.current.rotation.z = Math.atan2(dy, dx) - Math.PI / 2;
-    refs.rod.current.scale.y = Math.hypot(dx, dy) / 0.28;
-    refs.radar.current.rotation.y = t * 0.8;
-    refs.beacon.current.color.setRGB(Math.sin(t * 4) > 0.6 ? 4 : 0.3, Math.sin(t * 4) > 0.6 ? 1.6 : 0.1, 0);
-    refs.valve.current.rotation.z = Math.sin(t * 0.4) * 2;
-    for (const r of refs.rollers.current.children) r.rotation.z = -t * 6;
-    refs.lumps.current.children.forEach((l, n) => {
-      const f = (t * 0.25 + n / 4) % 1;
-      l.position.set(1.48 - f * 0.6, 0.47 + f * 0.18, 0);
+    ref.big.current.rotation.z = w;
+    ref.small.current.rotation.z = -w * (14 / 8) + 0.2;
+    ref.tiny.current.rotation.z = -w * (14 / 6);
+    // Crank: the flywheel's pin drives a connecting rod to a crosshead sliding toward the cylinder.
+    const crank = t * 2.6, cr = 0.06, L = 0.26, cx = -0.62, cy = 0.3;
+    ref.fly.current.rotation.z = crank;
+    const pin = { x: cx + Math.cos(crank) * cr, y: cy + Math.sin(crank) * cr };
+    const headX = pin.x + Math.sqrt(L * L - (pin.y - cy) ** 2);
+    ref.crosshead.current.position.x = headX;
+    ref.rod.current.position.set((pin.x + headX) / 2, (pin.y + cy) / 2, FRONT + 0.07);
+    ref.rod.current.rotation.z = Math.atan2(cy - pin.y, headX - pin.x) - Math.PI / 2;
+    // Boiler pressure: a slow swell with nervous jitter.
+    ref.needle.current.rotation.z = 0.6 - (Math.sin(t * 0.3) * 0.5 + 0.5) * 1.6 + (Math.random() - 0.5) * 0.06;
+    ref.nixies.current.children.forEach((c, n) => {
+      const on = 0.6 + 0.4 * Math.abs(Math.sin(t * (0.7 + n * 0.37) + n * 1.7));
+      ((c as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setRGB(3 * on, 0.9 * on, 0.15 * on);
+    });
+    ref.bulbs.current.children.forEach((c, n) => {
+      const on = Math.floor(t * 4) % 9 === n ? 1 : 0.35;
+      ((c as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setRGB(3 * on, 1.8 * on, 0.6 * on);
+    });
+    ref.firebox.current.color.setRGB(2.6 + Math.sin(t * 7) * 0.3 + Math.random() * 0.2, 0.9 + Math.sin(t * 5) * 0.1, 0.15);
+    for (const r of ref.rollers.current.children) r.rotation.y = -t * 5;
+    ref.lumps.current.children.forEach((l, n) => {
+      const f = (t * 0.22 + n / 4) % 1;
+      l.position.set(2.05 - f * 0.75, 0.46 + f * 0.2, 0);
+      l.rotation.set(n, f * 4, n * 2);
       l.visible = f < 0.95;
     });
-    refs.bars.current.children.forEach((b, n) => { b.scale.y = 0.35 + 0.65 * Math.abs(Math.sin(t * (1.3 + n * 0.7) + n)); });
-    refs.chase.current.children.forEach((c, n) => {
-      const on = Math.floor(t * 8) % 8 === n;
-      ((c as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setRGB(on ? 3 : 0.4, on ? 2 : 0.25, 0);
-    });
-    // Pad and cradle lights: green while a drone is docked there, slow amber blink while it's out.
+    // Pad and cradle rings: green while a drone is docked there, slow amber blink while it's out.
     const docked = new Set(game.bots.filter((b) => !b.dead && b.state === 'docked').map((b) => b.slot));
     const out = new Set(game.bots.filter((b) => !b.dead && b.state !== 'docked').map((b) => b.slot));
-    refs.pads.current.children.forEach((c, n) => {
+    ref.pads.current.children.forEach((c, n) => {
       const m = (c as THREE.Mesh).material as THREE.MeshBasicMaterial;
       if (docked.has(n)) m.color.setRGB(0.3, 2.2, 0.6);
       else if (out.has(n)) m.color.setRGB(Math.sin(t * 3 + n) > 0 ? 2.4 : 0.3, Math.sin(t * 3 + n) > 0 ? 1.2 : 0.15, 0);
-      else m.color.setRGB(0.15, 0.08, 0.06);
+      else m.color.setRGB(0.12, 0.07, 0.05);
     });
-    steamAt.current -= dt;
-    if (steamAt.current <= 0 && game.gpu) {
-      steamAt.current = 0.9 + Math.random() * 0.8;
-      game.gpu.burst(d.x + 0.62, d.y + 1.6, 5, ParticleKind.Steam, 0.5, 0.04);
+    const tm = timers.current;
+    tm.smoke -= dt; tm.whistle -= dt;
+    if (game.gpu && tm.smoke <= 0) {
+      tm.smoke = 0.7 + Math.random() * 0.6;
+      game.gpu.burst(d.x + 0.55, d.y + 1.6, 5, ParticleKind.Steam, 0.5, 0.05);
+    }
+    if (game.gpu && tm.whistle <= 0) {
+      tm.whistle = 6 + Math.random() * 6;
+      game.gpu.burst(d.x - 0.12, d.y + 1.24, 30, ParticleKind.Steam, 1.2, 0.03);
     }
   });
 
   return (
     <group position={[d.x, d.y, 0]}>
-      {/* Hub building */}
-      <group position={[0, 0, Z_HUB]}>
-        <Box p={[0, HUB.h / 2, 0]} s={[HUB.w, HUB.h, HUB_D]} m={M.wall} />
-        <Box p={[0, 0.03, 0]} s={[HUB.w + 0.06, 0.06, HUB_D + 0.06]} m={M.trim} />
-        {[-1, 1].map((sx) => <Box key={sx} p={[sx * (HUB.w / 2), HUB.h / 2, HUB_D / 2]} s={[0.06, HUB.h, 0.06]} m={M.trim} />)}
-        {[-0.85, -0.3, 0.2].map((x) => <Box key={x} p={[x * 0.5 + 0.1, HUB.h - 0.1, HUB_D / 2 + 0.005]} s={[0.04, 0.12, 0.01]} m={M.trim} />)}
-        {/* Landing deck with hazard edge and pads */}
-        <Box p={[0, HUB.h + 0.02, 0]} s={[HUB.w + 0.12, 0.04, HUB_D + 0.12]} m={M.darkSteel} />
-        {Array.from({ length: 9 }, (_, n) => (
-          <Box key={n} p={[-0.8 + n * 0.2, HUB.h + 0.02, HUB_D / 2 + 0.065]} s={[0.1, 0.04, 0.01]} m={n % 2 ? M.black : M.hazard} />
-        ))}
-      </group>
-      {/* Door and status screen */}
-      <Box p={[-0.12, 0.25, FRONT + 0.005]} s={[0.3, 0.46, 0.02]} m={M.darkSteel} />
-      {Array.from({ length: 4 }, (_, n) => <Box key={n} p={[-0.12, 0.06 + n * 0.11, FRONT + 0.018]} s={[0.26, 0.02, 0.01]} m={n % 2 ? M.black : M.hazard} />)}
-      <Box p={[-0.12, 0.68, FRONT + 0.005]} s={[0.42, 0.24, 0.02]} m={M.black} />
-      <mesh position={[-0.12, 0.68, FRONT + 0.017]}><planeGeometry args={[0.36, 0.18]} /><meshBasicMaterial color={[0.05, 0.4, 0.12]} /></mesh>
-      <group ref={refs.bars} position={[-0.26, 0.6, FRONT + 0.02]}>
-        {Array.from({ length: 6 }, (_, n) => (
-          <mesh key={n} position={[n * 0.055, 0.07, 0]}><planeGeometry args={[0.035, 0.14]} /><meshBasicMaterial color={[0.3, 2.4, 0.7]} /></mesh>
-        ))}
-      </group>
-      {/* Gear train */}
-      <mesh ref={refs.big} geometry={gears.big} material={M.brass} position={[0.42, 0.42, FRONT + 0.03]} />
-      <mesh ref={refs.small} geometry={gears.small} material={M.copper} position={[0.68, 0.6, FRONT + 0.03]} />
-      <mesh ref={refs.tiny} geometry={gears.tiny} material={M.steel} position={[0.69, 0.17, FRONT + 0.03]} />
-      {[[0.42, 0.42], [0.68, 0.6], [0.69, 0.17]].map(([x, y]) => (
-        <mesh key={x + y} position={[x, y, FRONT + 0.06]} rotation={[Math.PI / 2, 0, 0]} material={M.darkSteel}><cylinderGeometry args={[0.025, 0.025, 0.04, 10]} /></mesh>
+      {/* Plinth, cradle saddles and the boiler */}
+      <mesh geometry={geo.plinth} material={M.darkIron} position={[0, 0.05, Z_HUB]} />
+      {[-0.5, 0.5].map((x) => (
+        <mesh key={x} position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.iron}>
+          <cylinderGeometry args={[R + 0.04, R + 0.04, 0.06, 24, 1, true, Math.PI / 2, Math.PI]} />
+        </mesh>
       ))}
-      {/* Flywheel, connecting rod and piston */}
-      <mesh ref={refs.fly} geometry={gears.fly} material={M.steel} position={[-0.6, 0.62, FRONT + 0.03]} />
-      <mesh ref={refs.rod} material={M.darkSteel}><boxGeometry args={[0.025, 0.28, 0.02]} /></mesh>
-      <Box p={[-0.6, 0.17, FRONT + 0.04]} s={[0.12, 0.26, 0.08]} m={M.darkSteel} />
-      <mesh ref={refs.piston} position={[-0.6, 0.34, FRONT + 0.05]} material={M.steel}><cylinderGeometry args={[0.035, 0.035, 0.1, 12]} /></mesh>
-      {/* Chimney */}
-      <mesh position={[0.62, HUB.h + 0.33, Z_HUB - 0.15]} material={M.trim}><cylinderGeometry args={[0.06, 0.08, 0.66, 12]} /></mesh>
-      <mesh position={[0.62, HUB.h + 0.68, Z_HUB - 0.15]} material={M.rust}><cylinderGeometry args={[0.09, 0.07, 0.06, 12]} /></mesh>
-      {/* Radar mast, rotating dish and beacon */}
-      <mesh position={[-0.74, HUB.h + 0.35, Z_HUB - 0.2]} material={M.steel}><cylinderGeometry args={[0.018, 0.025, 0.7, 8]} /></mesh>
-      <group ref={refs.radar} position={[-0.74, HUB.h + 0.62, Z_HUB - 0.2]}>
-        <mesh position={[0.06, 0, 0]} rotation={[0, 0, Math.PI / 2 - 0.4]} material={M.steel}><sphereGeometry args={[0.13, 16, 8, 0, Math.PI * 2, 0, 0.9]} /></mesh>
-        <mesh position={[0.1, 0.03, 0]} rotation={[0, 0, -1.2]} material={M.darkSteel}><cylinderGeometry args={[0.006, 0.006, 0.14]} /></mesh>
+      <mesh position={[0, 0.48, Z_HUB]} rotation={[0, 0, Math.PI / 2]} material={M.iron}><cylinderGeometry args={[R, R, 1.5, 32]} /></mesh>
+      {[-1, 1].map((s) => <mesh key={s} geometry={geo.head} material={M.copper} position={[s * 0.75, 0.48, Z_HUB]} rotation={[0, 0, -s * Math.PI / 2]} />)}
+      {[-0.62, -0.2, 0.22, 0.62].map((x) => (
+        <group key={x}>
+          <mesh position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.brass}><torusGeometry args={[R + 0.008, 0.016, 8, 40]} /></mesh>
+          <Rivets x={x} />
+        </group>
+      ))}
+      {/* Portholes with firelight behind them, and the firebox hatch */}
+      {[-0.42, 0.02].map((x) => (
+        <group key={x} position={[x, 0.53, FRONT - 0.005]}>
+          <mesh material={M.brass}><torusGeometry args={[0.075, 0.018, 8, 24]} /></mesh>
+          <mesh><circleGeometry args={[0.072, 20]} /><meshBasicMaterial color={[2.2, 1.0, 0.3]} /></mesh>
+        </group>
+      ))}
+      <group position={[-0.2, 0.23, Z_HUB + 0.31]} rotation={[-0.68 + Math.PI / 2, 0, 0]}>
+        <mesh material={M.darkIron}><cylinderGeometry args={[0.1, 0.1, 0.03, 20]} /></mesh>
+        <mesh position={[0, 0.016, 0]} rotation={[-Math.PI / 2, 0, 0]}><circleGeometry args={[0.075, 16]} /><meshBasicMaterial ref={ref.firebox} /></mesh>
+        {[-0.05, 0, 0.05].map((x) => <mesh key={x} position={[x, 0.02, 0]} material={M.darkIron}><boxGeometry args={[0.012, 0.008, 0.15]} /></mesh>)}
       </group>
-      <mesh position={[-0.74, HUB.h + 0.73, Z_HUB - 0.2]}><sphereGeometry args={[0.03, 10, 8]} /><meshBasicMaterial ref={refs.beacon} /></mesh>
-      {/* Pipe into the rock with a fidgeting valve wheel */}
-      <mesh position={[-1.7, 0.78, Z_HUB - 0.25]} rotation={[0, 0, Math.PI / 2]} material={M.copper}><cylinderGeometry args={[0.035, 0.035, 1.8, 10]} /></mesh>
-      <mesh ref={refs.valve} geometry={gears.valve} material={M.hazard} position={[-1.05, 0.78, Z_HUB - 0.2]} />
-      {/* Ore conveyor feeding the hub from a hopper */}
-      <group position={[0, 0, Z_ACTORS + 0.1]}>
-        <Box p={[1.18, 0.52, 0]} s={[0.66, 0.035, 0.18]} m={M.rubber} r={[0, 0, -0.29]} />
-        <group ref={refs.rollers}>
-          {[0.88, 1.48].map((x) => (
-            <mesh key={x} position={[x, x < 1 ? 0.6 : 0.43, 0]} rotation={[Math.PI / 2, 0, 0]} material={M.steel}><cylinderGeometry args={[0.035, 0.035, 0.2, 8]} /></mesh>
+      {/* Pressure gauge */}
+      <group position={[0.36, 0.68, Z_HUB + 0.34]} rotation={[-0.5, 0, 0]}>
+        <mesh rotation={[Math.PI / 2, 0, 0]} material={M.brass}><cylinderGeometry args={[0.085, 0.085, 0.03, 24]} /></mesh>
+        <mesh position={[0, 0, 0.016]} material={M.enamel}><circleGeometry args={[0.07, 24]} /></mesh>
+        <group ref={ref.needle} position={[0, 0, 0.02]}>
+          <mesh position={[0, 0.03, 0]}><boxGeometry args={[0.008, 0.06, 0.004]} /><meshBasicMaterial color="#b3261e" /></mesh>
+        </group>
+      </group>
+      {/* Nixie-tube readout in a wooden case */}
+      <mesh geometry={geo.nixie} material={M.wood} position={[-0.2, 0.86, Z_HUB + 0.3]} rotation={[-0.25, 0, 0]} />
+      <group ref={ref.nixies} position={[-0.36, 0.87, Z_HUB + 0.335]} rotation={[-0.25, 0, 0]}>
+        {Array.from({ length: 5 }, (_, n) => (
+          <mesh key={n} position={[n * 0.08, 0, 0]}><cylinderGeometry args={[0.018, 0.018, 0.09, 10]} /><meshBasicMaterial /></mesh>
+        ))}
+      </group>
+      {/* Landing pads on the boiler */}
+      {slots.slice(0, 4).map((s, n) => (
+        <group key={n} position={[s.x, HUB.h - 0.005, Z_ACTORS]}>
+          <mesh material={M.brass}><cylinderGeometry args={[0.17, 0.17, 0.025, 28]} /></mesh>
+          <mesh position={[0, -0.06, 0]} material={M.darkIron}><cylinderGeometry args={[0.03, 0.04, 0.1, 10]} /></mesh>
+        </group>
+      ))}
+      {/* Steam dome, whistle and smokestack */}
+      <mesh geometry={geo.dome} material={M.brass} position={[-0.12, 0.84, Z_HUB - 0.2]} />
+      <mesh position={[-0.12, 1.12, Z_HUB - 0.2]} material={M.brass}><cylinderGeometry args={[0.02, 0.025, 0.12, 10]} /></mesh>
+      <mesh geometry={geo.stack} material={M.darkIron} position={[0.55, 0.86, Z_HUB - 0.18]} />
+      {[0.95, 1.2].map((y) => <mesh key={y} position={[0.55, y, Z_HUB - 0.18]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><torusGeometry args={[0.078, 0.01, 6, 20]} /></mesh>)}
+      {/* Steam pipes */}
+      <mesh geometry={geo.pipeA} material={M.copper} />
+      <mesh geometry={geo.pipeB} material={M.verdigris} />
+      <mesh geometry={geo.pipeC} material={M.copper} />
+      {/* Steam engine: flywheel, crank rod, crosshead and cylinder */}
+      <mesh ref={ref.fly} geometry={geo.fly} material={M.darkIron} position={[-0.62, 0.3, FRONT + 0.06]} />
+      <mesh position={[-0.62, 0.3, FRONT + 0.09]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><cylinderGeometry args={[0.025, 0.025, 0.03, 12]} /></mesh>
+      <mesh ref={ref.rod} material={M.iron}><boxGeometry args={[0.018, 0.26, 0.015]} /></mesh>
+      <mesh ref={ref.crosshead} position={[-0.36, 0.3, FRONT + 0.07]} rotation={[0, 0, Math.PI / 2]} material={M.brass}><cylinderGeometry args={[0.025, 0.025, 0.06, 10]} /></mesh>
+      <mesh geometry={geo.cylinder} material={M.copper} position={[-0.12, 0.3, FRONT + 0.06]} />
+      {[-0.22, -0.02].map((x) => <mesh key={x} position={[x, 0.3, FRONT + 0.06]} rotation={[0, Math.PI / 2, 0]} material={M.brass}><torusGeometry args={[0.066, 0.01, 6, 16]} /></mesh>)}
+      {/* Gear train */}
+      <mesh ref={ref.big} geometry={geo.big} material={M.brass} position={[0.48, 0.3, FRONT + 0.02]} />
+      <mesh ref={ref.small} geometry={geo.small} material={M.copper} position={[0.74, 0.46, FRONT - 0.02]} />
+      <mesh ref={ref.tiny} geometry={geo.tiny} material={M.brass} position={[0.69, 0.1, FRONT - 0.04]} />
+      {[[0.48, 0.3, 0.02], [0.74, 0.46, -0.02], [0.69, 0.1, -0.04]].map(([x, y, z]) => (
+        <mesh key={x + y} position={[x, y, FRONT + z + 0.03]} rotation={[Math.PI / 2, 0, 0]} material={M.darkIron}><cylinderGeometry args={[0.022, 0.022, 0.04, 10]} /></mesh>
+      ))}
+      {/* Ore conveyor from a hopper into the boiler house */}
+      <group position={[0, 0, Z_ACTORS + 0.12]}>
+        <mesh position={[1.67, 0.52, 0]} rotation={[0, 0, -0.26]}><boxGeometry args={[0.8, 0.03, 0.16]} /><meshStandardMaterial color="#2a2522" roughness={0.95} /></mesh>
+        <group ref={ref.rollers}>
+          {[1.3, 2.05].map((x) => (
+            <mesh key={x} position={[x, x < 1.5 ? 0.62 : 0.42, 0]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><cylinderGeometry args={[0.035, 0.035, 0.2, 10]} /></mesh>
           ))}
         </group>
-        {[0.95, 1.4].map((x) => <Box key={x} p={[x, x < 1 ? 0.28 : 0.2, 0]} s={[0.03, x < 1 ? 0.56 : 0.4, 0.03]} m={M.darkSteel} />)}
-        <group ref={refs.lumps}>
-          {Array.from({ length: 4 }, (_, n) => <Box key={n} p={[0, 0, 0]} s={[0.06, 0.05, 0.06]} m={M.ore} />)}
+        {[1.35, 1.95].map((x) => <mesh key={x} position={[x, x < 1.5 ? 0.3 : 0.2, 0]} material={M.darkIron}><cylinderGeometry args={[0.015, 0.015, x < 1.5 ? 0.6 : 0.4, 6]} /></mesh>)}
+        <group ref={ref.lumps}>
+          {Array.from({ length: 4 }, (_, n) => <mesh key={n} material={M.ore}><dodecahedronGeometry args={[0.035]} /></mesh>)}
         </group>
-        <Box p={[1.62, 0.22, 0]} s={[0.3, 0.3, 0.28]} m={M.rust} />
-        <Box p={[1.62, 0.36, 0]} s={[0.24, 0.04, 0.22]} m={M.ore} />
+        <mesh geometry={geo.hopper} material={M.copper} position={[2.22, 0.2, 0]} />
+        <mesh position={[2.22, 0.34, 0]} material={M.ore}><dodecahedronGeometry args={[0.1]} /></mesh>
       </group>
-      {/* Barrels */}
-      {[[1.05, -0.2], [1.22, -0.32]].map(([x, z]) => (
-        <mesh key={x} position={[x, 0.13, z]} material={x < 1.1 ? M.rust : M.darkSteel}><cylinderGeometry args={[0.08, 0.08, 0.26, 12]} /></mesh>
+      {/* Banded barrels */}
+      {[[1.05, -0.22], [1.24, -0.36]].map(([x, z]) => (
+        <group key={x} position={[x, 0.14, z]}>
+          <mesh material={M.wood}><cylinderGeometry args={[0.085, 0.085, 0.28, 16]} /></mesh>
+          {[-0.09, 0.09].map((y) => <mesh key={y} position={[0, y, 0]} rotation={[Math.PI / 2, 0, 0]} material={M.darkIron}><torusGeometry args={[0.087, 0.008, 6, 20]} /></mesh>)}
+        </group>
       ))}
-      {/* Rack tower of charging cradles */}
+      {/* Wrought-iron cradle tower */}
       <group position={[0, 0, Z_ACTORS]}>
-        {[-1.88, -0.97].flatMap((x) => [-0.22, 0.22].map((z) => <Box key={`${x}${z}`} p={[x, 0.9, z]} s={[0.04, 1.8, 0.04]} m={M.steel} />))}
-        {slots.slice(4).map((s, n) => <Box key={n} p={[s.x, s.y - 0.1, 0]} s={[0.34, 0.025, 0.4]} m={M.darkSteel} />)}
-        {[0.32, 0.74, 1.16, 1.58].map((y) => <Box key={y} p={[-1.42, y - 0.11, -0.2]} s={[0.91, 0.03, 0.03]} m={M.steel} />)}
+        {[-1.88, -0.97].flatMap((x) => [-0.2, 0.2].map((z) => (
+          <mesh key={`${x}${z}`} position={[x, 0.95, z]} material={M.darkIron}><cylinderGeometry args={[0.02, 0.03, 1.9, 8]} /></mesh>
+        )))}
+        {[0.4, 0.82, 1.24, 1.66].map((y, n) => (
+          <mesh key={y} position={[-1.42, y - 0.2, -0.2]} rotation={[0, 0, n % 2 ? 0.42 : -0.42]} material={M.iron}><cylinderGeometry args={[0.01, 0.01, 0.98, 6]} /></mesh>
+        ))}
+        {slots.slice(4).map((s, n) => (
+          <group key={n} position={[s.x, s.y - 0.1, 0]}>
+            <mesh material={M.brass}><cylinderGeometry args={[0.16, 0.16, 0.022, 24]} /></mesh>
+            <mesh position={[s.x < -1.4 ? -0.16 : 0.16, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={M.darkIron}><cylinderGeometry args={[0.012, 0.012, 0.12, 6]} /></mesh>
+          </group>
+        ))}
+        {[-1.88, -0.97].map((x) => <mesh key={x} geometry={geo.finial} material={M.brass} position={[x, 1.9, 0]} />)}
+        <mesh position={[-1.42, 1.9, 0]} rotation={[0, 0, Math.PI / 2]} material={M.darkIron}><cylinderGeometry args={[0.015, 0.015, 0.95, 6]} /></mesh>
       </group>
-      {/* Pad / cradle status lights, one per landing slot */}
-      <group ref={refs.pads}>
+      {/* Pad and cradle status rings, one per landing slot */}
+      <group ref={ref.pads}>
         {slots.map((s, n) => (
-          <mesh key={n} position={[s.x, s.y - 0.08, n < 4 ? Z_ACTORS + 0.16 : Z_ACTORS + 0.21]}>
-            <sphereGeometry args={[0.018, 8, 6]} /><meshBasicMaterial color="black" />
+          <mesh key={n} geometry={geo.padRing} position={[s.x, n < 4 ? HUB.h + 0.012 : s.y - 0.087, Z_ACTORS]} rotation={[Math.PI / 2, 0, 0]}>
+            <meshBasicMaterial color="black" />
           </mesh>
         ))}
       </group>
-      {/* Chasing lights along the deck's front edge */}
-      <group ref={refs.chase}>
-        {Array.from({ length: 8 }, (_, n) => (
-          <mesh key={n} position={[-0.75 + n * (1.5 / 7), HUB.h - 0.03, FRONT + 0.01]}><sphereGeometry args={[0.016, 8, 6]} /><meshBasicMaterial /></mesh>
+      {/* Festoon of bulbs strung from the tower to the stack */}
+      <mesh geometry={geo.wire} material={M.black} />
+      <group ref={ref.bulbs}>
+        {geo.festoon.map((p, n) => (
+          <mesh key={n} position={[p.x, p.y - 0.03, p.z]}><sphereGeometry args={[0.022, 8, 6]} /><meshBasicMaterial /></mesh>
         ))}
       </group>
-      <pointLight position={[0, 1.6, 0.8]} intensity={3} distance={6} color="#ffd9a0" />
+      <Lantern x={-2.35} z={Z_ACTORS + 0.25} h={0.9} />
+      <Lantern x={2.62} z={Z_ACTORS + 0.3} h={1.05} />
+      <pointLight position={[0, 1.6, 0.8]} intensity={2} distance={6} color="#ffcf99" />
     </group>
   );
 }

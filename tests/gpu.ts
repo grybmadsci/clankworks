@@ -1,8 +1,7 @@
-// Kernel harness: builds the real world and dispatches each compute kernel in isolation,
+// Kernel harness: builds the real starting world and dispatches the compute kernels in stages,
 // reporting whether the GPU device survives and whether outputs look sane.
 import { WebGPURenderer } from 'three/webgpu';
-import { GpuSim } from '../src/gpu/GpuSim';
-import { generateWorld } from '../src/sim/worldgen';
+import { Game } from '../src/game/Game';
 
 const out = document.createElement('pre');
 document.body.append(out);
@@ -15,13 +14,12 @@ const only = new URLSearchParams(location.search).get('only');
   const device = (renderer.backend as any).device as GPUDevice;
   let lost = false;
   device.lost.then((i) => { lost = true; log('DEVICE LOST: ' + i.message); });
-  const world = generateWorld();
-  const gpu = new GpuSim(renderer, world.terrain, world.fluid, world.temperature);
+  const game = await Game.create();
+  game.attachGpu(renderer);
+  const gpu = game.gpu!;
   const kernels: [string, () => void][] = [
-    ['fluid', () => renderer.compute(gpu.stepNodes[0])],
-    ['thermal', () => renderer.compute(gpu.stepNodes[1])],
-    ['mesh', () => gpu.meshNodes.forEach((n) => renderer.compute(n))],
-    ['spawn', () => { gpu.burst(10, 40, 100, 1); (gpu as any).update(0); }],
+    ['mesh+sim', () => gpu.update(1 / 60)],
+    ['spawn', () => { gpu.burst(game.layout.depot.x, game.layout.depot.y + 1, 100, 1); gpu.update(0); }],
     ['particles', () => renderer.compute(gpu.particleNode)],
   ];
   for (const [name, run] of kernels) {
@@ -46,7 +44,9 @@ const only = new URLSearchParams(location.search).get('only');
   }
   if (!lost) {
     const args = new Uint32Array(await renderer.getArrayBufferAsync(gpu.meshDrawArgs));
-    log(`mesh draw args: ${Array.from(args).join(',')} (${args[0] / 3} triangles)`);
+    let verts = 0, slots = 0;
+    for (let s = 0; s < args.length; s += 4) if (args[s]) { verts += args[s]; slots++; }
+    log(`mesh: ${verts / 3} triangles across ${slots} chunk slots`);
   }
   (window as any).__done = true;
 })().catch((e) => { log('ERROR ' + e.message); (window as any).__done = true; });

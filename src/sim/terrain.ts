@@ -1,26 +1,53 @@
-import { CELL, CELLS, CHUNK, H, ISO, MATERIALS, Mat, W, cellIndex } from '../config';
+import { CELL, CELLS, CHUNK, CH, CW, H, ISO, MATERIALS, Mat, W, cellIndex, chunkId } from '../config';
 
 export interface Rect { i0: number; j0: number; i1: number; j1: number }
 
 export type Yield = Record<number, number>;
 
 /**
- * Authoritative 2D voxel grid. Density and material arrays are shared directly with the GPU
- * storage buffers (the GPU copy is refreshed whenever `gpuDirty` is set).
+ * Authoritative 2D voxel grid for the whole world. Density, material and flag arrays are shared
+ * directly with the GPU storage buffers; changed rectangles are queued so only those rows are
+ * uploaded. Chunks that are not loaded hold inert bedrock placeholders (see ChunkManager).
  */
 export class Terrain {
-  readonly density = new Float32Array(CELLS);
-  readonly material = new Uint32Array(CELLS);
+  readonly density = new Float32Array(CELLS).fill(1);
+  readonly material = new Uint32Array(CELLS).fill(Mat.Bedrock);
   /** Steel strut occupancy. Struts count as solid for structural checks but not for fluids. */
   readonly strut = new Uint8Array(CELLS);
-  /** Player dig designations. */
+  /** Per-cell flags: dig orders, reachability, fog of war, stress, cracking (see config). */
   readonly digMark = new Uint32Array(CELLS);
+  /** 1 for chunks whose real data is resident, by chunkId. */
+  readonly loaded = new Uint8Array(CW * CH);
 
+  /** Chunks whose colliders need rebuilding. */
   readonly dirtyChunks = new Set<number>();
+  /** Chunks whose GPU mesh needs rebuilding. */
+  readonly meshDirty = new Set<number>();
+  /** Rectangles whose density/material changed, and whose flags changed, awaiting GPU upload. */
+  readonly solidRects: Rect[] = [];
+  readonly markRects: Rect[] = [];
   /** Union of regions carved since the last structural check. */
   structuralDirty: Rect | null = null;
-  gpuDirty = true;
   version = 0;
+
+  isLoadedCell(i: number, j: number) {
+    return this.inBounds(i, j) && this.loaded[chunkId(Math.floor(i / CHUNK), Math.floor(j / CHUNK))] === 1;
+  }
+
+  /** Queue a flag-only change (dig orders, fog, stress, cracks) for upload. */
+  touchMarks(i0: number, j0: number, i1: number, j1: number) {
+    this.markRects.push({ i0: Math.max(0, i0), j0: Math.max(0, j0), i1: Math.min(W - 1, i1), j1: Math.min(H - 1, j1) });
+  }
+
+  /** touchMarks over the bounding box of a set of cells. */
+  touchCells(cells: Iterable<number>) {
+    let i0 = W, j0 = H, i1 = -1, j1 = -1;
+    for (const k of cells) {
+      const i = k % W, j = (k / W) | 0;
+      if (i < i0) i0 = i; if (i > i1) i1 = i; if (j < j0) j0 = j; if (j > j1) j1 = j;
+    }
+    if (i1 >= 0) this.touchMarks(i0, j0, i1, j1);
+  }
 
   inBounds(i: number, j: number) {
     return i >= 0 && j >= 0 && i < W && j < H;
@@ -63,7 +90,11 @@ export class Terrain {
     i1 = Math.min(W - 1, i1); j1 = Math.min(H - 1, j1);
     for (let cj = Math.floor((j0 - 1) / CHUNK); cj <= Math.floor((j1 + 1) / CHUNK); cj++) {
       for (let ci = Math.floor((i0 - 1) / CHUNK); ci <= Math.floor((i1 + 1) / CHUNK); ci++) {
-        if (ci >= 0 && cj >= 0 && ci * CHUNK < W && cj * CHUNK < H) this.dirtyChunks.add(cj * 1000 + ci);
+        if (ci < 0 || cj < 0 || ci >= CW || cj >= CH) continue;
+        const id = chunkId(ci, cj);
+        if (!this.loaded[id]) continue;
+        this.dirtyChunks.add(id);
+        this.meshDirty.add(id);
       }
     }
     if (structural) {
@@ -72,7 +103,8 @@ export class Terrain {
         ? { i0: Math.min(r.i0, i0), j0: Math.min(r.j0, j0), i1: Math.max(r.i1, i1), j1: Math.max(r.j1, j1) }
         : { i0, j0, i1, j1 };
     }
-    this.gpuDirty = true;
+    this.solidRects.push({ i0, j0, i1, j1 });
+    this.markRects.push({ i0, j0, i1, j1 });
     this.version++;
   }
 

@@ -1,157 +1,210 @@
-import { CELL, CELLS, Emit, H, Mat, SKY_ROWS, W, cellIndex } from '../config';
+import { CELL, CHUNK, EXPLORED_BIT, Emit, H, Mat, SKY_ROWS, W, cellIndex } from '../config';
 import { makeNoise2, mulberry32 } from './rng';
 import { Terrain } from './terrain';
 
 /** Emitter position and radius are in cell units; rate is per GPU step (or target °C for heat). */
 export interface EmitterDef { x: number; y: number; radius: number; type: Emit; rate: number }
 
+/** Fluid channel indices: water, magma, oxygen, toxic gas. */
+const WATER = 0, MAGMA = 1, OXYGEN = 2, TOXIC = 3;
+
+/**
+ * World features are planned once from the seed, then applied to each chunk as it is generated,
+ * in plan order, so a chunk comes out the same no matter when or in what order it is built.
+ */
+type Feature =
+  | { kind: 'ellipse'; ci: number; cj: number; rx: number; ry: number; shell?: Mat; fill?: number }
+  /** Flatten a floor: solid rock below `floorJ`, open air for a few rows above it. */
+  | { kind: 'floor'; i0: number; i1: number; j0: number; floorJ: number; openI0: number; openI1: number }
+  | { kind: 'ore'; i0: number; i1: number; j0: number; j1: number; threshold: number };
+
 export interface WorldLayout {
-  terrain: Terrain;
-  /** Initial GPU fluid state: (water, magma, oxygen, toxic) per cell. */
-  fluid: Float32Array;
-  /** Initial temperature (°C) per cell. */
-  temperature: Float32Array;
-  emitters: EmitterDef[];
+  seed: number;
+  surfaceRow: number;
+  startJ: number;
+  /** Row of the start cavern's flat floor (first open row). */
+  floorJ: number;
   depot: { x: number; y: number };
   carl: { x: number; y: number };
   terrarium: { x: number; y: number; w: number; h: number };
-  surfaceRow: number;
-}
-
-/** World-space position of a cell center. */
-const wx = (i: number) => (i + 0.5) * CELL;
-
-export function generateWorld(seed = 1337): WorldLayout {
-  const t = new Terrain();
-  const rand = mulberry32(seed);
-  const nA = makeNoise2(seed + 1), nB = makeNoise2(seed + 2), nC = makeNoise2(seed + 3), nD = makeNoise2(seed + 4);
-  const surfaceRow = H - SKY_ROWS - 2;
-  const surfaceAt = (i: number) => surfaceRow + Math.round((nA(i * 0.05, 3.7) - 0.5) * 5);
-
-  // --- base strata -------------------------------------------------------------------------
-  for (let j = 0; j < H; j++) {
-    for (let i = 0; i < W; i++) {
-      const k = cellIndex(i, j);
-      const surf = surfaceAt(i);
-      if (j > surf) { t.density[k] = 0; t.material[k] = Mat.Air; continue; }
-      const depth = surf - j;
-      t.density[k] = 1;
-      const strata = nB(i * 0.04, j * 0.09);
-      let m: Mat;
-      if (depth < 18) m = Mat.Dirt;
-      else if (depth < 60) m = strata > 0.55 ? Mat.Granite : Mat.Dirt;
-      else m = strata < 0.3 ? Mat.Dirt : Mat.Granite;
-      const ore = nC(i * 0.09, j * 0.09);
-      if (depth > 12 && ore > 0.74 - Math.min(depth, 150) * 0.0006) m = Mat.Copper;
-      const ice = nD(i * 0.07, j * 0.07);
-      if (depth > 50 && depth < 110 && ice > 0.78) m = Mat.Ice;
-      if (depth > 4 && depth < 70 && nD(i * 0.21 + 40, j * 0.21) > 0.83) m = Mat.Junk;
-      if (j < 3 || i < 2 || i >= W - 2) m = Mat.Bedrock;
-      t.material[k] = m;
-    }
-  }
-
-  // --- caves & set pieces ------------------------------------------------------------------
-  const fluid = new Float32Array(CELLS * 4);
-  const carveEllipse = (ci: number, cj: number, rx: number, ry: number, shell?: Mat, fill?: (k: number) => void) => {
-    for (let j = Math.floor(cj - ry - 4); j <= cj + ry + 4; j++) {
-      for (let i = Math.floor(ci - rx - 4); i <= ci + rx + 4; i++) {
-        if (!t.inBounds(i, j)) continue;
-        const k = cellIndex(i, j);
-        if (t.material[k] === Mat.Bedrock) continue;
-        const wobble = (nA(i * 0.2, j * 0.2) - 0.5) * 0.25;
-        const e = Math.hypot((i - ci) / rx, (j - cj) / ry) + wobble;
-        const target = Math.min(1, Math.max(0, 0.5 + (e - 1) * Math.min(rx, ry) * 0.6));
-        if (target < t.density[k]) t.density[k] = target;
-        if (t.density[k] <= 0.5) { fill?.(k); if (t.density[k] === 0) t.material[k] = Mat.Air; }
-        else if (shell !== undefined && e < 1 + 4 / Math.min(rx, ry)) t.material[k] = shell;
-      }
-    }
-  };
-  const tunnel = (i0: number, j0: number, i1: number, j1: number, r: number, fill?: (k: number) => void) => {
-    const steps = Math.ceil(Math.hypot(i1 - i0, j1 - j0));
-    for (let s = 0; s <= steps; s++) {
-      const f = s / steps;
-      carveEllipse(i0 + (i1 - i0) * f, j0 + (j1 - j0) * f, r, r, undefined, fill);
-    }
-  };
-  const setFluid = (channel: number, v: number) => (k: number) => { fluid[k * 4 + channel] = v; };
-
-  // Starting cavern, surface shaft, and Carl's alcove.
-  const startJ = surfaceRow - 26;
-  carveEllipse(64, startJ, 15, 6, Mat.Granite);
-  tunnel(64, startJ + 4, 64, surfaceRow + 3, 2.6);
-  carveEllipse(47, startJ - 2, 4, 3);
-  // Rich copper vein to the right of base.
-  for (let j = startJ - 10; j < startJ + 8; j++) {
-    for (let i = 82; i < 96; i++) {
-      const k = cellIndex(i, j);
-      if (t.density[k] > 0.5 && nC(i * 0.3, j * 0.3) > 0.45) t.material[k] = Mat.Copper;
-    }
-  }
-
-  // Terrarium chamber, joined to Carl's alcove by a narrow tunnel.
-  const terrJ = startJ + 1;
-  carveEllipse(22, terrJ, 11, 5, Mat.Granite, setFluid(2, 1));
-  tunnel(34, terrJ - 2, 44, startJ - 2, 1.6, setFluid(2, 1));
-
-  // Toxic gas pocket under the terrarium.
-  carveEllipse(26, terrJ - 24, 8, 4, Mat.Granite, setFluid(3, 1));
-  // Aquifer to the right, with an ice rim.
-  carveEllipse(100, startJ - 40, 11, 6, Mat.Ice, setFluid(0, 1));
-  // Magma chambers at depth.
-  carveEllipse(62, 28, 22, 8, Mat.Granite, setFluid(1, 1));
-  carveEllipse(104, 70, 7, 5, Mat.Granite, setFluid(1, 1));
-  // A few empty natural voids.
-  for (let n = 0; n < 7; n++) {
-    const ci = 14 + rand() * (W - 28), cj = 45 + rand() * (startJ - 70);
-    carveEllipse(ci, cj, 3 + rand() * 4, 2 + rand() * 2.5, Mat.Granite);
-  }
-
-  // Sky has oxygen; connected surface caves start breathable.
-  for (let j = 0; j < H; j++) {
-    for (let i = 0; i < W; i++) {
-      const k = cellIndex(i, j);
-      if (t.density[k] <= 0.5 && j >= startJ - 8 && fluid[k * 4 + 3] === 0 && i > 36) fluid[k * 4 + 2] = 1;
-    }
-  }
-
-  // --- temperature: geothermal gradient plus hot magma ----------------------------------
-  const temperature = new Float32Array(CELLS);
-  for (let j = 0; j < H; j++) {
-    for (let i = 0; i < W; i++) {
-      const k = cellIndex(i, j);
-      temperature[k] = geotherm(j);
-      if (fluid[k * 4 + 1] > 0) temperature[k] = 1100;
-    }
-  }
-
-  // Pre-built struts holding up the start cavern.
-  for (const si of [56, 72]) {
-    for (let j = startJ - 8; j < startJ + 8; j++) if (t.isOpen(si, j)) t.strut[cellIndex(si, j)] = 1;
-  }
-
-  const floorBelow = (i: number, j: number) => { while (j > 0 && t.isOpen(i, j - 1)) j--; return j; };
-  const depotJ = floorBelow(64, startJ);
-  const carlJ = floorBelow(47, startJ - 2);
-  return {
-    terrain: t,
-    fluid,
-    temperature,
-    emitters: [
-      { x: 22, y: terrJ, radius: 5, type: Emit.Oxygen, rate: 0.02 },
-      { x: 26, y: terrJ - 24, radius: 3, type: Emit.Toxic, rate: 0.01 },
-      { x: 100, y: startJ - 40, radius: 3, type: Emit.Water, rate: 0.01 },
-      { x: 62, y: 24, radius: 4, type: Emit.Magma, rate: 0.006 },
-    ],
-    depot: { x: wx(64), y: depotJ * CELL },
-    carl: { x: wx(47), y: carlJ * CELL },
-    terrarium: { x: wx(22), y: floorBelow(22, terrJ) * CELL, w: 3.2, h: 2.2 },
-    surfaceRow,
-  };
+  strutCols: number[];
+  emitters: EmitterDef[];
 }
 
 /** Background rock temperature by row: cool near the surface, hot near the bedrock. */
 export function geotherm(j: number) {
   return 14 + (1 - j / H) * 70;
+}
+
+const wx = (i: number) => (i + 0.5) * CELL;
+
+export class WorldGen {
+  readonly layout: WorldLayout;
+  private readonly features: (Feature & { box: [number, number, number, number] })[] = [];
+  private readonly nA: (x: number, y: number) => number;
+  private readonly nB: (x: number, y: number) => number;
+  private readonly nC: (x: number, y: number) => number;
+  private readonly nD: (x: number, y: number) => number;
+
+  constructor(seed = 1337) {
+    const rand = mulberry32(seed);
+    this.nA = makeNoise2(seed + 1); this.nB = makeNoise2(seed + 2); this.nC = makeNoise2(seed + 3); this.nD = makeNoise2(seed + 4);
+    const surfaceRow = H - SKY_ROWS - 2;
+    const i0 = W / 2;
+    const startJ = surfaceRow - 26;
+    const floorJ = startJ - 4;
+    const terrJ = startJ + 1;
+    const emitters: EmitterDef[] = [];
+    const ellipse = (ci: number, cj: number, rx: number, ry: number, shell?: Mat, fill?: number) =>
+      this.add({ kind: 'ellipse', ci, cj, rx, ry, shell, fill });
+    const tunnel = (ia: number, ja: number, ib: number, jb: number, r: number, fill?: number) => {
+      const steps = Math.ceil(Math.hypot(ib - ia, jb - ja));
+      for (let s = 0; s <= steps; s++) ellipse(ia + (ib - ia) * (s / steps), ja + (jb - ja) * (s / steps), r, r, undefined, fill);
+    };
+
+    // Starting cavern with a flat floor, its shaft to the surface, and Carl's alcove.
+    ellipse(i0, startJ, 15, 7, Mat.Granite);
+    this.add({ kind: 'floor', i0: i0 - 12, i1: i0 + 12, j0: startJ - 9, floorJ, openI0: i0 - 11, openI1: i0 + 11 });
+    tunnel(i0, startJ + 4, i0, surfaceRow + 3, 2.6);
+    ellipse(i0 - 17, startJ - 2, 4, 3);
+    this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45 });
+    // Terrarium chamber, joined to Carl's alcove by a narrow tunnel.
+    ellipse(i0 - 42, terrJ, 11, 5, Mat.Granite, OXYGEN);
+    tunnel(i0 - 30, terrJ - 2, i0 - 20, startJ - 2, 1.6, OXYGEN);
+    emitters.push({ x: i0 - 42, y: terrJ, radius: 5, type: Emit.Oxygen, rate: 0.02 });
+    // Toxic pocket under the terrarium and an aquifer with an ice rim to the right.
+    ellipse(i0 - 38, terrJ - 24, 8, 4, Mat.Granite, TOXIC);
+    emitters.push({ x: i0 - 38, y: terrJ - 24, radius: 3, type: Emit.Toxic, rate: 0.01 });
+    ellipse(i0 + 36, startJ - 40, 11, 6, Mat.Ice, WATER);
+    emitters.push({ x: i0 + 36, y: startJ - 40, radius: 3, type: Emit.Water, rate: 0.01 });
+
+    // The wider world: voids, ore veins, aquifers, gas pockets, and magma at depth.
+    const nearStart = (ci: number, cj: number, r: number) => Math.hypot(ci - i0, cj - startJ) < r;
+    const spot = (jLo: number, jHi: number, keepOut: number) => {
+      for (;;) {
+        const ci = 16 + rand() * (W - 32), cj = jLo + rand() * (jHi - jLo);
+        if (!nearStart(ci, cj, keepOut)) return [ci, cj];
+      }
+    };
+    for (let n = 0; n < 16; n++) {
+      const [ci, cj] = spot(40, startJ - 60, 70);
+      this.add({ kind: 'ore', i0: Math.round(ci - 8), i1: Math.round(ci + 8), j0: Math.round(cj - 10), j1: Math.round(cj + 10), threshold: 0.45 });
+    }
+    for (let n = 0; n < 110; n++) {
+      const [ci, cj] = spot(30, startJ - 20, 48);
+      ellipse(ci, cj, 3 + rand() * 6, 2 + rand() * 3.5, Mat.Granite);
+    }
+    for (let n = 0; n < 7; n++) {
+      const [ci, cj] = spot(200, startJ - 80, 60);
+      ellipse(ci, cj, 7 + rand() * 6, 4 + rand() * 3, Mat.Ice, WATER);
+      emitters.push({ x: ci, y: cj, radius: 3, type: Emit.Water, rate: 0.01 });
+    }
+    for (let n = 0; n < 8; n++) {
+      const [ci, cj] = spot(120, startJ - 70, 60);
+      ellipse(ci, cj, 5 + rand() * 5, 3 + rand() * 2, Mat.Granite, TOXIC);
+      emitters.push({ x: ci, y: cj, radius: 3, type: Emit.Toxic, rate: 0.01 });
+    }
+    for (let n = 0; n < 12; n++) {
+      const [ci, cj] = spot(18, 240, 0);
+      ellipse(ci, cj, 8 + rand() * 14, 5 + rand() * 4, Mat.Granite, MAGMA);
+      emitters.push({ x: ci, y: cj - 3, radius: 4, type: Emit.Magma, rate: 0.006 });
+    }
+
+    this.layout = {
+      seed, surfaceRow, startJ, floorJ,
+      depot: { x: wx(i0), y: floorJ * CELL },
+      // Refined once the start chunks exist (see locate()).
+      carl: { x: wx(i0 - 17), y: (startJ - 5) * CELL },
+      terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 3.2, h: 2.2 },
+      strutCols: [i0 - 8, i0 + 8],
+      emitters,
+    };
+  }
+
+  private add(f: Feature) {
+    const pad = 5;
+    const box: [number, number, number, number] = f.kind === 'ellipse'
+      ? [f.ci - f.rx - pad, f.cj - f.ry - pad, f.ci + f.rx + pad, f.cj + f.ry + pad]
+      : f.kind === 'floor' ? [f.i0, f.j0, f.i1, f.floorJ + 3] : [f.i0, f.j0, f.i1, f.j1];
+    this.features.push({ ...f, box });
+  }
+
+  /** Fill one chunk of the terrain, fluid and temperature arrays. */
+  generate(ci: number, cj: number, t: Terrain, fluid: Float32Array, temp: Float32Array) {
+    const I0 = ci * CHUNK, J0 = cj * CHUNK, I1 = I0 + CHUNK - 1, J1 = J0 + CHUNK - 1;
+    const { nA, nB, nC, nD } = this;
+    const { surfaceRow, startJ, floorJ } = this.layout;
+    for (let j = J0; j <= J1; j++) {
+      for (let i = I0; i <= I1; i++) {
+        const k = cellIndex(i, j);
+        fluid.fill(0, k * 4, k * 4 + 4);
+        t.strut[k] = 0;
+        const surf = surfaceRow + Math.round((nA(i * 0.05, 3.7) - 0.5) * 5);
+        if (j > surf) { t.density[k] = 0; t.material[k] = Mat.Air; t.digMark[k] = EXPLORED_BIT; continue; }
+        t.digMark[k] = 0;
+        const depth = surf - j;
+        t.density[k] = 1;
+        const strata = nB(i * 0.04, j * 0.09);
+        let m: Mat;
+        if (depth < 18) m = Mat.Dirt;
+        else if (depth < 60) m = strata > 0.55 ? Mat.Granite : Mat.Dirt;
+        else m = strata < 0.3 ? Mat.Dirt : Mat.Granite;
+        const ore = nC(i * 0.09, j * 0.09);
+        if (depth > 12 && ore > 0.74 - Math.min(depth, 150) * 0.0006) m = Mat.Copper;
+        const ice = nD(i * 0.07, j * 0.07);
+        if (depth > 50 && depth < 400 && ice > 0.78) m = Mat.Ice;
+        if (depth > 4 && depth < 300 && nD(i * 0.21 + 40, j * 0.21) > 0.83) m = Mat.Junk;
+        if (j < 3 || i < 2 || i >= W - 2) m = Mat.Bedrock;
+        t.material[k] = m;
+      }
+    }
+
+    for (const f of this.features) {
+      const [bi0, bj0, bi1, bj1] = f.box;
+      if (bi1 < I0 || bi0 > I1 || bj1 < J0 || bj0 > J1) continue;
+      const fi0 = Math.max(I0, Math.floor(bi0)), fi1 = Math.min(I1, Math.ceil(bi1));
+      const fj0 = Math.max(J0, Math.floor(bj0)), fj1 = Math.min(J1, Math.ceil(bj1));
+      for (let j = fj0; j <= fj1; j++) for (let i = fi0; i <= fi1; i++) {
+        const k = cellIndex(i, j);
+        if (t.material[k] === Mat.Bedrock) continue;
+        if (f.kind === 'ellipse') {
+          const wobble = (nA(i * 0.2, j * 0.2) - 0.5) * 0.25;
+          const e = Math.hypot((i - f.ci) / f.rx, (j - f.cj) / f.ry) + wobble;
+          const target = Math.min(1, Math.max(0, 0.5 + (e - 1) * Math.min(f.rx, f.ry) * 0.6));
+          if (target < t.density[k]) t.density[k] = target;
+          if (t.density[k] <= 0.5) {
+            if (f.fill !== undefined) fluid[k * 4 + f.fill] = 1;
+            if (t.density[k] === 0) t.material[k] = Mat.Air;
+          } else if (f.shell !== undefined && e < 1 + 4 / Math.min(f.rx, f.ry)) {
+            t.material[k] = f.shell;
+          }
+        } else if (f.kind === 'floor') {
+          if (j < f.floorJ) { t.density[k] = 1; t.material[k] = Mat.Granite; fluid.fill(0, k * 4, k * 4 + 4); }
+          else if (i >= f.openI0 && i <= f.openI1) { t.density[k] = 0; t.material[k] = Mat.Air; }
+        } else if (t.density[k] > 0.5 && nC(i * 0.3, j * 0.3) > f.threshold) {
+          t.material[k] = Mat.Copper;
+        }
+      }
+    }
+
+    for (let j = J0; j <= J1; j++) {
+      for (let i = I0; i <= I1; i++) {
+        const k = cellIndex(i, j);
+        const open = t.density[k] <= 0.5;
+        // Caves near the surface start breathable unless they hold toxic gas.
+        if (open && j >= startJ - 8 && fluid[k * 4 + TOXIC] === 0) fluid[k * 4 + OXYGEN] = 1;
+        temp[k] = fluid[k * 4 + MAGMA] > 0 ? 1100 : geotherm(j);
+        if (open && this.layout.strutCols.includes(i) && j >= floorJ && j < startJ + 8) t.strut[k] = 1;
+      }
+    }
+  }
+
+  /** Settle positions that depend on the generated terrain, once the start chunks exist. */
+  locate(t: Terrain) {
+    const floorBelow = (i: number, j: number) => { while (j > 0 && t.isOpen(i, j - 1)) j--; return j; };
+    const { startJ } = this.layout;
+    const i0 = W / 2;
+    this.layout.carl = { x: wx(i0 - 17), y: floorBelow(i0 - 17, startJ - 2) * CELL };
+    this.layout.terrarium.y = floorBelow(i0 - 42, startJ + 1) * CELL;
+  }
 }

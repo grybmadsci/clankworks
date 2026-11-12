@@ -5,33 +5,45 @@ import { Rect, Terrain } from './terrain';
 const MAX_ISLAND = 2400;
 const SLAB_THICKNESS = 3;
 
+/** The anchoring flood only covers this many cells around the region being checked. */
+const WINDOW = 48;
+
 const visited = new Int32Array(CELLS);
 let stamp = 0;
 const queue = new Int32Array(CELLS);
 
 /**
- * Find load-bearing cells that are no longer connected to bedrock, plus ceiling slabs whose
+ * Find load-bearing cells that are no longer connected to support, plus ceiling slabs whose
  * unsupported span exceeds what their material can hold. Each returned array is one island.
+ *
+ * The flood that decides what is anchored starts from bedrock and from solid rock on the edge of
+ * a window around the region. Rock reaching that far is treated as attached to the rest of the
+ * world, which keeps the check local in a big world. Islands larger than MAX_ISLAND are ignored
+ * anyway, so this only misses long, thin, fully detached slivers.
  */
 export function findCollapses(t: Terrain, region: Rect): number[][] {
   stamp++;
   const anchored = stamp;
-  // Flood from every bedrock cell. Bedrock wraps the bottom and both sides, so this is cheap.
+  const wi0 = Math.max(0, region.i0 - WINDOW), wi1 = Math.min(W - 1, region.i1 + WINDOW);
+  const wj0 = Math.max(0, region.j0 - WINDOW), wj1 = Math.min(H - 1, region.j1 + WINDOW);
+  const bears = (k: number) => t.density[k] > 0.5 || t.strut[k] === 1;
   let head = 0, tail = 0;
-  for (let k = 0; k < CELLS; k++) {
-    if (t.material[k] === Mat.Bedrock) { visited[k] = anchored; queue[tail++] = k; }
+  for (let j = wj0; j <= wj1; j++) for (let i = wi0; i <= wi1; i++) {
+    const k = cellIndex(i, j);
+    const edge = i === wi0 || i === wi1 || j === wj0 || j === wj1;
+    if (t.material[k] === Mat.Bedrock || (edge && bears(k))) { visited[k] = anchored; queue[tail++] = k; }
   }
   while (head < tail) {
     const k = queue[head++];
     const i = k % W, j = (k / W) | 0;
-    if (i > 0) visit(k - 1);
-    if (i < W - 1) visit(k + 1);
-    if (j > 0) visit(k - W);
-    if (j < H - 1) visit(k + W);
+    if (i > wi0) visit(k - 1);
+    if (i < wi1) visit(k + 1);
+    if (j > wj0) visit(k - W);
+    if (j < wj1) visit(k + W);
   }
   function visit(n: number) {
     if (visited[n] === anchored) return;
-    if (t.density[n] > 0.5 || t.strut[n]) { visited[n] = anchored; queue[tail++] = n; }
+    if (bears(n)) { visited[n] = anchored; queue[tail++] = n; }
   }
 
   const islands: number[][] = [];
@@ -47,7 +59,7 @@ export function findCollapses(t: Terrain, region: Rect): number[][] {
   }
 
   // Overhangs: ceilings whose unsupported width exceeds what their weakest material can hold.
-  islands.push(...overhangs(t, region));
+  for (const c of ceilings(t, region)) if (c.span > c.maxSpan) islands.push(slab(t, c.cols, c.rowOf, c.maxSpan));
   return islands.filter((s) => s.length > 0);
 }
 
@@ -72,12 +84,16 @@ function floodIsland(t: Terrain, start: number): number[] {
   return out;
 }
 
+/** One stretch of ceiling: its columns, the ceiling row in each, and how far it may span. */
+export interface Ceiling { cols: number[]; rowOf: Map<number, number>; span: number; maxSpan: number }
+
 /**
  * Ceiling cells (load-bearing with open air below) link to neighbouring columns whose ceiling is
  * within two rows, so a flat or gently curved roof is measured across its full width while steep
  * arch sides break the span. Struts hold up the cell above them, so they split spans naturally.
+ * Returns every ceiling that reaches into the region.
  */
-function overhangs(t: Terrain, region: Rect): number[][] {
+export function ceilings(t: Terrain, region: Rect): Ceiling[] {
   const reach = 30;
   const i0 = Math.max(0, region.i0 - reach), i1 = Math.min(W - 1, region.i1 + reach);
   const j0 = Math.max(1, region.j0 - 4), j1 = Math.min(H - 1, region.j1 + 8);
@@ -86,7 +102,7 @@ function overhangs(t: Terrain, region: Rect): number[][] {
     return t.density[k] > 0.5 && t.material[k] !== Mat.Bedrock && !t.isLoadBearing(i, j - 1);
   };
   const seen = new Set<number>();
-  const out: number[][] = [];
+  const out: Ceiling[] = [];
   for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
     if (!isCeiling(i, j) || seen.has(cellIndex(i, j))) continue;
     // Flood across columns, tracking one ceiling row per column.
@@ -110,14 +126,15 @@ function overhangs(t: Terrain, region: Rect): number[][] {
       }
     }
     const cols = [...rowOf.keys()].sort((a, b) => a - b);
-    const span = cols[cols.length - 1] - cols[0] + 1;
     const touchesRegion = cols[0] <= region.i1 + 2 && cols[cols.length - 1] >= region.i0 - 2;
-    if (span > weakest && touchesRegion) out.push(slab(t, cols, rowOf, weakest));
+    if (touchesRegion) out.push({ cols, rowOf, span: cols[cols.length - 1] - cols[0] + 1, maxSpan: weakest });
   }
   return out;
 }
 
 /** The middle of an over-long ceiling drops as a slab a few cells thick. */
+export const SLAB_DEPTH = SLAB_THICKNESS;
+
 function slab(t: Terrain, cols: number[], rowOf: Map<number, number>, maxSpan: number): number[] {
   const margin = Math.max(1, Math.floor(maxSpan / 3));
   const out: number[] = [];

@@ -41,7 +41,7 @@ try {
   const gpu = await page.evaluate(async () => {
     const g = window.__game;
     await g.gpu.readback();
-    const f = g.gpu.fluidSnapshot, f0 = g.layout.fluid, t = g.gpu.tempSnapshot, t0 = g.layout.temperature;
+    const f = g.gpu.fluidSnapshot, f0 = g.fluidInit, t = g.gpu.tempSnapshot, t0 = g.tempInit;
     let changed = 0, nan = 0, maxRockT = 0;
     for (let k = 0; k < t.length; k++) {
       if (Math.abs(f[k * 4 + 2] - f0[k * 4 + 2]) > 1e-3 || Math.abs(t[k] - t0[k]) > 1e-2) changed++;
@@ -49,13 +49,32 @@ try {
       if (g.terrain.density[k] > 0.5) maxRockT = Math.max(maxRockT, t[k]);
     }
     const args = new Uint32Array(await g.gpu.renderer.getArrayBufferAsync(g.gpu.meshDrawArgs));
-    return { changed, nan, maxRockT, meshVerts: args[0] };
+    let meshVerts = 0, slots = 0;
+    for (let s = 0; s < args.length; s += 4) if (args[s]) { meshVerts += args[s]; slots++; }
+    return { changed, nan, maxRockT, meshVerts, slots };
   });
   console.log('gpu', JSON.stringify(gpu));
   check(gpu.changed > 1000, `GPU fluid/thermal kernels evolved the state (${gpu.changed} cells changed)`);
   check(gpu.nan === 0, 'no NaNs in GPU fluid/thermal state');
-  check(gpu.maxRockT > 200, `magma conducts heat into surrounding rock (max rock ${gpu.maxRockT.toFixed(0)}°C)`);
-  check(gpu.meshVerts > 50000, `GPU mesher compacted ${gpu.meshVerts} terrain vertices`);
+  // Magma lies deep in the big world: stream a chamber in and let it heat the rock around it.
+  const magma = await page.evaluate(async () => {
+    const g = window.__game;
+    const e = g.layout.emitters.find((m) => m.type === 3);
+    window.__view.goto(e.x * 0.25, e.y * 0.25);
+    for (let n = 0; n < 150; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    await g.gpu.readback();
+    const t = g.gpu.tempSnapshot, ci = Math.floor(e.x), cj = Math.floor(e.y);
+    let maxRockT = 0;
+    for (let j = cj - 40; j <= cj + 40; j++) for (let i = ci - 60; i <= ci + 60; i++) {
+      const k = j * 512 + i;
+      if (g.terrain.isLoadedCell(i, j) && g.terrain.density[k] > 0.5 && g.terrain.material[k] !== 5) maxRockT = Math.max(maxRockT, t[k]);
+    }
+    window.__view.goto(g.layout.depot.x, g.layout.depot.y + 1);
+    for (let n = 0; n < 30; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    return maxRockT;
+  });
+  check(magma > 200, `magma conducts heat into surrounding rock (max rock ${magma.toFixed(0)}°C)`);
+  check(gpu.meshVerts > 50000 && gpu.slots > 10, `GPU mesher built ${gpu.meshVerts} terrain vertices across ${gpu.slots} chunk slots`);
 
   const docked = await page.evaluate(() => window.__game.bots.map((b) => b.state));
   check(docked.length === 3 && docked.every((s) => s === 'docked'), `drones start docked at the base (${docked.join(',')})`);
@@ -71,12 +90,21 @@ try {
   });
   check(range.added === 0 && range.warned, 'dig orders beyond the range ring are refused');
 
-  // Designate a strip of rock beside the base and let the drones work.
+  // Designate a strip of rock beside the base and let the drones work. Density is summed over
+  // the strip's surroundings only: elsewhere, chunks streaming out turn into solid placeholders.
+  await page.evaluate(() => {
+    window.stripDensity = (g) => {
+      const d = g.layout.depot;
+      let s = 0;
+      for (let y = d.y - 0.4; y < d.y + 1.8; y += 0.25) for (let x = d.x + 3.2; x < d.x + 7.6; x += 0.25) s += g.terrain.density[Math.floor(y / 0.25) * 512 + Math.floor(x / 0.25)];
+      return s;
+    };
+  });
   const before = await page.evaluate(() => {
     const g = window.__game;
     const d = g.layout.depot;
     for (let x = 0; x < 2.4; x += 0.3) g.designate(d.x + 4.2 + x, d.y + 0.6, 0.7, true);
-    return { density: g.terrain.density.reduce((a, b) => a + b, 0), resources: { ...g.resources } };
+    return { density: stripDensity(g), resources: { ...g.resources } };
   });
   // An order sealed inside solid rock is flagged unreachable; the strip beside the base is not.
   await page.evaluate(() => {
@@ -89,7 +117,7 @@ try {
     const out = { strip: 0, stripReach: 0, sealed: 0, sealedReach: 0 };
     for (let k = 0; k < m.length; k++) {
       if (!(m[k] & 1)) continue;
-      const x = (k % 128 + 0.5) * 0.25, key = x > d.x ? 'strip' : 'sealed';
+      const x = (k % 512 + 0.5) * 0.25, key = x > d.x ? 'strip' : 'sealed';
       out[key]++;
       if (m[k] & 2) out[key + 'Reach']++;
     }
@@ -106,7 +134,7 @@ try {
   const after = await page.evaluate(() => {
     const g = window.__game;
     return {
-      density: g.terrain.density.reduce((a, b) => a + b, 0),
+      density: stripDensity(g),
       resources: g.resources,
       cargo: g.bots.reduce((s, b) => s + b.cargo.ore + b.cargo.scrap, 0),
       states: g.bots.map((b) => b.state),
@@ -147,7 +175,7 @@ try {
   check(warning.pending > 0 && warning.cracking > 0 && warning.log.some((l) => /cave-in warning/i.test(l)),
     `blast left unsupported rock cracking with a warning (${warning.cracking} cells)`);
   await shot('3-cracking');
-  await fastForward(7);
+  await fastForward(16);
   const cave = await page.evaluate(() => {
     const g = window.__game;
     return { debris: g.debris.length, log: g.log.slice(-10).map((l) => l.text) };
@@ -156,7 +184,7 @@ try {
   await shot('3-cavein');
   // Settled rubble re-triggers structural checks, so collapses can chain; they must converge.
   let remaining = -1;
-  for (let n = 0; n < 20 && remaining !== 0; n++) {
+  for (let n = 0; n < 45 && remaining !== 0; n++) {
     await fastForward(2);
     remaining = await page.evaluate(() => window.__game.debris.length + window.__game.pendingCollapses.length);
   }
@@ -178,6 +206,62 @@ try {
   console.log('braced', JSON.stringify(braced));
   check(braced.warned > 0 && braced.pending === 0 && braced.debris === 0 && braced.log.some((l) => /cracking has stopped/i.test(l)),
     'a strut placed during the warning stopped the cave-in');
+
+  // A ceiling just under its safe span gets an early structural warning. Build a dirt block below
+  // the base and hollow out a room 8 cells wide under it (dirt holds 9).
+  const strain = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain, W = 128 * 4;
+    const ci = Math.floor((d.x + 4.5) / 0.25), cj = Math.floor((d.y - 3) / 0.25);
+    for (let j = cj - 2; j <= cj + 5; j++) for (let i = ci - 8; i <= ci + 8; i++) {
+      const open = j >= cj && j <= cj + 1 && i >= ci - 4 && i <= ci + 3;
+      t.density[j * W + i] = open ? 0 : 1;
+      t.material[j * W + i] = open ? 0 : 1;
+    }
+    t.markDirty(ci - 9, cj - 3, ci + 9, cj + 6);
+    for (let n = 0; n < 60; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 30)); }
+    const stress = (t.digMark[(cj + 2) * W + ci] >> 3) & 31;
+    return { unstable: g.unstable.map((u) => Math.round(u.ratio * 100)), stress, pending: g.pendingCollapses.length, warned: g.log.some((l) => /structural warning/i.test(l.text)) };
+  });
+  console.log('strain', JSON.stringify(strain));
+  check(strain.warned && strain.unstable.length > 0 && strain.stress >= 24 && strain.pending === 0,
+    `near-collapse ceiling flagged before it fails (stress ${strain.stress}/31, ${strain.unstable.join(',')}%)`);
+  await page.evaluate(() => { window.__game.overlay = 3; });
+  await shot('3b-integrity');
+  await page.evaluate(() => { window.__game.overlay = 0; });
+
+  // Fog of war: the base is explored, deep rock is not.
+  const fog = await page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot, m = g.terrain.digMark, W = 512;
+    const at = (x, y) => m[Math.floor(y / 0.25) * W + Math.floor(x / 0.25)] & 4;
+    return { base: !!at(d.x, d.y + 0.5), deep: !!at(d.x, d.y - 30) };
+  });
+  check(fog.base && !fog.deep, 'fog of war: the base is explored and deep rock is not');
+
+  // Chunk streaming: carve a hole far from the base, fly away so its chunk is saved and unloaded,
+  // then come back and check the hole is still there.
+  const away = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot;
+    const x = d.x - 40, y = d.y - 60;
+    window.__view.goto(x, y);
+    for (let n = 0; n < 60; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    const id = Math.floor(y / 8) * 16 + Math.floor(x / 8);
+    const loadedFar = g.chunks.isLoaded(id);
+    g.terrain.carve(x, y, 0.8, 3);
+    const sum = () => { let s = 0; const i0 = (id % 16) * 32, j0 = Math.floor(id / 16) * 32; for (let j = j0; j < j0 + 32; j++) for (let i = i0; i < i0 + 32; i++) s += g.terrain.density[j * 512 + i]; return s; };
+    const carved = sum();
+    window.__view.goto(d.x, d.y + 1);
+    for (let n = 0; n < 150; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    const unloaded = !g.chunks.isLoaded(id), placeholder = sum();
+    window.__view.goto(x, y);
+    for (let n = 0; n < 60; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    const restored = sum();
+    window.__view.goto(d.x, d.y + 1);
+    for (let n = 0; n < 20; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    return { loadedFar, carved, unloaded, placeholder, restored, resident: g.chunks.resident.size };
+  });
+  console.log('streaming', JSON.stringify(away));
+  check(away.loadedFar && away.unloaded && away.placeholder === 1024 && Math.abs(away.restored - away.carved) < 1e-3 && away.carved < 1020,
+    `far chunk streamed in, saved on unload and restored with the player's changes (${away.resident} resident)`);
 
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {

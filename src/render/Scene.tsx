@@ -17,7 +17,12 @@ import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
 const WORLD_W = W * CELL, WORLD_H = H * CELL;
 
 /** Shared with the DOM HUD, which projects speech bubbles itself. */
-export const view = { camera: null as THREE.PerspectiveCamera | null, cursor: null as { x: number; y: number } | null };
+export const view = {
+  camera: null as THREE.PerspectiveCamera | null,
+  cursor: null as { x: number; y: number } | null,
+  /** Centre the camera on a world position (set up by the camera rig). */
+  goto: (_x: number, _y: number) => {},
+};
 (window as unknown as { __view: typeof view }).__view = view;
 
 export function Scene({ game }: { game: Game }) {
@@ -30,12 +35,13 @@ export function Scene({ game }: { game: Game }) {
   }, -1);
   return (
     <>
-      <color attach="background" args={['#0c0b0d']} />
-      <fog attach="fog" args={['#0c0b0d', 24, 60]} />
-      <hemisphereLight args={['#b9c4d6', '#3a2a20', 1.1]} />
-      <directionalLight position={[8, 20, 14]} intensity={1.6} color="#ffe9cf" />
-      <directionalLight position={[-10, 4, 6]} intensity={0.35} color="#8fb4ff" />
-      <BackWall />
+      <color attach="background" args={['#050506']} />
+      <fog attach="fog" args={['#050506', 22, 55]} />
+      {/* Underground: barely any ambient light, so lamps, glowing machinery and magma do the work. */}
+      <hemisphereLight args={['#8a96aa', '#2a1e16', 0.32]} />
+      <directionalLight position={[8, 20, 14]} intensity={0.3} color="#ffe9cf" />
+      <directionalLight position={[-10, 4, 6]} intensity={0.08} color="#8fb4ff" />
+      <BackWall game={game} />
       {enabled('mesh') && <TerrainMesh game={game} />}
       {enabled('fluid') && <Fluids game={game} />}
       {enabled('particles') && <Particles game={game} />}
@@ -61,6 +67,7 @@ function CameraRig({ game }: { game: Game }) {
     view.camera = camera as THREE.PerspectiveCamera;
     const el = gl.domElement;
     const s = state.current;
+    view.goto = (x, y) => { s.x = x; s.y = y; };
     const raycaster = new THREE.Raycaster();
     const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const toWorld = (e: PointerEvent) => {
@@ -129,6 +136,10 @@ function CameraRig({ game }: { game: Game }) {
     // Slightly above and looking down into the diorama, cabinet style.
     camera.position.set(s.x + sx, s.y + s.dist * 0.16 + sy, s.dist);
     camera.lookAt(s.x + sx * 0.5, s.y + sy * 0.5, -0.6);
+    // Tell the game what is on screen, so it can stream the chunks in.
+    const cam = camera as THREE.PerspectiveCamera;
+    const halfH = (s.dist + 0.6) * Math.tan((cam.fov * Math.PI) / 360);
+    game.view = { x: s.x, y: s.y, halfW: halfH * cam.aspect, halfH };
   });
   return null;
 }

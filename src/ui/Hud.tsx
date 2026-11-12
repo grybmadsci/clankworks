@@ -12,7 +12,7 @@ const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
   { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates. Runs hot (8 scrap)' },
   { id: 'blast', key: '5', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
 ];
-const OVERLAYS = ['Normal view', 'Heat overlay', 'Oxygen overlay'];
+const OVERLAYS = ['Normal view', 'Heat overlay', 'Oxygen overlay', 'Integrity overlay'];
 
 /** DOM overlay: resources, tools, critter status, the status log, and emote speech bubbles. */
 export function Hud({ game }: { game: Game }) {
@@ -24,7 +24,7 @@ export function Hud({ game }: { game: Game }) {
       const tool = TOOLS.find((t) => t.key === e.key);
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
-      if (e.key === 't') game.overlay = ((game.overlay + 1) % 3) as 0 | 1 | 2;
+      if (e.key === 't') game.overlay = ((game.overlay + 1) % 4) as 0 | 1 | 2 | 3;
       force((n) => n + 1);
     };
     window.addEventListener('keydown', key);
@@ -58,7 +58,7 @@ export function Hud({ game }: { game: Game }) {
         <button className="build" title="3 plates + 2 critter goo" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
           <kbd>B</kbd>Build drone
         </button>
-        <button onClick={() => { game.overlay = ((game.overlay + 1) % 3) as 0 | 1 | 2; force((n) => n + 1); }}>
+        <button onClick={() => { game.overlay = ((game.overlay + 1) % 4) as 0 | 1 | 2 | 3; force((n) => n + 1); }}>
           <kbd>T</kbd>{OVERLAYS[game.overlay]}
         </button>
       </nav>
@@ -92,14 +92,14 @@ function Res({ label, value, color }: { label: string; value: string; color: str
 function Bubbles({ game }: { game: Game }) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const els = new Map<number, HTMLDivElement>();
+    const els = new Map<number | string, HTMLDivElement>();
     const v = new THREE.Vector3();
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const cam = view.camera, host = root.current;
       if (!cam || !host) return;
-      const live = new Set<number>();
+      const live = new Set<number | string>();
       for (const b of game.bubbles) {
         live.add(b.id);
         let el = els.get(b.id);
@@ -127,6 +127,21 @@ function Bubbles({ game }: { game: Game }) {
         }
         el.textContent = `⚠ Cave-in ${Math.max(0, p.due - game.time).toFixed(1)}s`;
         v.set(p.x, p.y, 0).project(cam);
+        el.style.transform = `translate(-50%, -50%) translate(${(v.x * 0.5 + 0.5) * host.clientWidth}px, ${(-v.y * 0.5 + 0.5) * host.clientHeight}px)`;
+      }
+      // Early warnings over ceilings close to their safe span.
+      for (const u of game.unstable) {
+        const id = 'u' + u.key;
+        live.add(id);
+        let el = els.get(id);
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'bubble unstable';
+          host.appendChild(el);
+          els.set(id, el);
+        }
+        el.textContent = `⚠ Unstable ${Math.round(u.ratio * 100)}%`;
+        v.set(u.x, u.y, 0).project(cam);
         el.style.transform = `translate(-50%, -50%) translate(${(v.x * 0.5 + 0.5) * host.clientWidth}px, ${(-v.y * 0.5 + 0.5) * host.clientHeight}px)`;
       }
       for (const [id, el] of els) if (!live.has(id)) { el.remove(); els.delete(id); }

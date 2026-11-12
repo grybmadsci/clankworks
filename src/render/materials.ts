@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
-import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, H, REACH_BIT, SKY_ROWS, W } from '../config';
+import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, EXPLORED_BIT, H, REACH_BIT, SKY_ROWS, STRESS_MAX, STRESS_SHIFT, W } from '../config';
 import { enabled } from '../debug';
 import { GpuSim } from '../gpu/GpuSim';
 import { noise2 } from '../gpu/kernels';
@@ -65,6 +65,29 @@ function bumpNormal(height: Node) {
   return normalize(n.mul(abs(det)).sub(grad));
 }
 
+/**
+ * Fog of war: 1 where explored, 0 in unexplored rock. Explored flags are blended bilinearly
+ * between cell centres and the lookup point drifts with slow noise, so the edge reads as
+ * wisps of haze rather than cell squares.
+ */
+function explored(gpu: GpuSim, p: Node) {
+  const marks = gpu.digMark.ro();
+  const drift = vec2(noise(p.xy.mul(0.9).add(time.mul(0.05))), noise(p.xy.mul(0.9).add(vec2(7.1, time.mul(0.04))))).mul(0.6);
+  const q = p.xy.add(drift);
+  const fx = q.x.div(CELL).sub(0.5), fy = q.y.div(CELL).sub(0.5);
+  const i = clamp(floor(fx), 0, W - 2), j = clamp(floor(fy), 0, H - 2);
+  const tx = clamp(fx.sub(i), 0, 1), ty = clamp(fy.sub(j), 0, 1);
+  const at = (di: number, dj: number) =>
+    select(marks.element(uint(j.add(dj).mul(W).add(i.add(di)))).bitAnd(uint(EXPLORED_BIT)).greaterThan(uint(0)), float(1), float(0));
+  return smoothstep(0.05, 0.95, mix(mix(at(0, 0), at(1, 0), tx), mix(at(0, 1), at(1, 1), tx), ty));
+}
+
+/** Near-black for unexplored rock, with a faint cold haze glowing along the fog's edge. */
+const FOG = vec3(0.004, 0.005, 0.007);
+function fogHaze(p: Node, vis: Node) {
+  return vec3(0.008, 0.01, 0.013).mul(vis.mul(vis.oneMinus()).mul(4)).mul(noise(p.xy.mul(1.4).add(time.mul(0.1))).mul(0.5).add(0.6));
+}
+
 /** 0 → 1 over the warning period of a cell that is cracking ahead of a cave-in; 0 when sound. */
 function crackProgress(mark: Node) {
   const start = mark.shiftRight(uint(CRACK_SHIFT));
@@ -119,7 +142,8 @@ export function terrainMaterial(gpu: GpuSim) {
     : crackMask({ p, progress: pr });
   col = mix(col, col.mul(1.6).add(0.03), pr.mul(0.35));
   col = col.mul(crack.mul(-0.85).add(1));
-  m.colorNode = col;
+  const vis = explored(gpu, p);
+  m.colorNode = mix(FOG, col, vis);
   if (!quality.low) m.normalNode = bumpNormal(surf.w.sub(crack.mul(0.012)));
   // Ice and copper flecks catch the light a little.
   m.roughnessNode = select(mid.equal(4), float(0.35), select(mid.equal(3), float(0.6), float(0.92)));
@@ -128,7 +152,8 @@ export function terrainMaterial(gpu: GpuSim) {
   const pulse = sin(time.mul(pr.mul(12).add(3))).mul(0.45).add(0.55).mul(pr);
   m.emissiveNode = vec3(1.0, 0.3, 0.06).mul(smoothstep(160, 900, T).mul(2.2))
     .add(vec3(1.0, 0.32, 0.05).mul(crack.mul(pulse).mul(0.9)))
-    .add(vec3(0.3, 0.04, 0).mul(pulse.mul(0.25)));
+    .add(vec3(0.3, 0.04, 0).mul(pulse.mul(0.25)))
+    .mul(vis).add(fogHaze(p, vis));
   return m;
 }
 
@@ -160,11 +185,11 @@ export function fluidMaterial(gpu: GpuSim, layer: number) {
   const toxic = vec3(0.45, 0.85, 0.2);
   const alpha = clamp(aw.add(am).add(at), 0, 1);
   m.colorNode = water.mul(aw).add(magma.mul(am)).add(toxic.mul(at)).div(max(alpha, 0.001));
-  m.opacityNode = alpha;
+  m.opacityNode = alpha.mul(explored(gpu, p));
   return m;
 }
 
-/** Diagnostic overlay drawn in front of the cutaway: 1 = temperature, 2 = oxygen. */
+/** Diagnostic overlay drawn in front of the cutaway: 1 = temperature, 2 = oxygen, 3 = structural integrity. */
 export function overlayMaterial(gpu: GpuSim) {
   const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, depthTest: false });
   const p = positionWorld;
@@ -178,19 +203,32 @@ export function overlayMaterial(gpu: GpuSim) {
   heat = mix(heat, vec3(1.0, 0.1, 0.05), smoothstep(60, 140, T));
   const o2 = mix(vec3(0.9, 0.1, 0.1), vec3(0.2, 0.7, 1.0), clamp(f.z, 0, 1));
   const tox = f.w.greaterThan(0.1);
-  m.colorNode = select(overlayMode.equal(1), heat, select(tox, vec3(0.5, 0.9, 0.1), o2));
-  m.opacityNode = select(overlayMode.equal(0), float(0), select(overlayMode.equal(2).and(solid), float(0.08), float(0.55)));
+  // Integrity: sound rock green, stressed ceilings through yellow to red, cracking rock flashing.
+  const mark = gpu.digMark.ro().element(k);
+  const stress = float(mark.shiftRight(uint(STRESS_SHIFT)).bitAnd(uint(STRESS_MAX))).div(STRESS_MAX);
+  const cracking = mark.shiftRight(uint(CRACK_SHIFT)).greaterThan(uint(0));
+  let integrity: Node = mix(vec3(0.15, 0.75, 0.3), vec3(1.0, 0.85, 0.1), smoothstep(0.3, 0.65, stress));
+  integrity = mix(integrity, vec3(1.0, 0.12, 0.05), smoothstep(0.7, 0.95, stress));
+  const flash = sin(time.mul(10)).mul(0.5).add(0.5);
+  integrity = select(cracking, mix(vec3(1.0, 0.1, 0.4), vec3(1.0, 1.0, 1.0), flash.mul(0.5)), integrity);
+  const integrityAlpha = select(solid, select(cracking, float(0.8), stress.mul(0.5).add(0.2)), float(0));
+  m.colorNode = select(overlayMode.equal(1), heat, select(overlayMode.equal(3), integrity, select(tox, vec3(0.5, 0.9, 0.1), o2)));
+  const alpha = select(overlayMode.equal(0), float(0), select(overlayMode.equal(3), integrityAlpha,
+    select(overlayMode.equal(2).and(solid), float(0.08), float(0.55))));
+  m.opacityNode = alpha.mul(explored(gpu, p));
   return m;
 }
 
-export function backWallMaterial() {
+export function backWallMaterial(gpu: GpuSim) {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 1 });
   const p = positionWorld;
   const surf = rock(p, uint(1));
   const wall = surf.xyz.mul(0.7).mul(mix(0.4, 1, smoothstep(0, surfaceY, p.y)));
   const skyMix = smoothstep(surfaceY + 0.2, surfaceY + 0.8, p.y.add(noise(vec2(p.x.mul(0.5), 0)).mul(0.4)));
-  m.colorNode = mix(wall, vec3(0), skyMix);
-  m.emissiveNode = mix(vec3(0), mix(vec3(0.75, 0.55, 0.4), vec3(0.3, 0.45, 0.75), smoothstep(surfaceY, surfaceY + 3, p.y)), skyMix);
+  const vis = explored(gpu, p);
+  m.colorNode = mix(FOG, mix(wall, vec3(0), skyMix), vis);
+  m.emissiveNode = mix(vec3(0), mix(vec3(0.75, 0.55, 0.4), vec3(0.3, 0.45, 0.75), smoothstep(surfaceY, surfaceY + 3, p.y)), skyMix)
+    .mul(vis).add(fogHaze(p, vis));
   if (!quality.low) m.normalNode = bumpNormal(surf.w);
   return m;
 }

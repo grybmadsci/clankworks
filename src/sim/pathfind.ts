@@ -1,10 +1,14 @@
 import { CELL, H, ISO, W, cellIndex } from '../config';
 import { Terrain } from './terrain';
 
-/** Path nodes are 2x2 cell blocks: big enough for a drone to squeeze through. */
+/**
+ * Path nodes are 2x2 cell blocks (big enough for a drone to squeeze through) placed on a 1-cell
+ * stride, so blocks overlap and any tunnel two cells wide is navigable wherever it runs, not only
+ * where it lines up with a coarse grid. Node (gx, gy) covers cells gx..gx+1, gy..gy+1.
+ */
 const N = 2;
-export const GW = Math.ceil(W / N), GH = Math.ceil(H / N);
-const NODE = CELL * N;
+export const GW = W - 1, GH = H - 1;
+const NODE = CELL;
 
 const gScore = new Float32Array(GW * GH);
 const cameFrom = new Int32Array(GW * GH);
@@ -14,7 +18,7 @@ let generation = 0;
 export function nodeOpen(t: Terrain, gx: number, gy: number) {
   if (gx < 0 || gy < 0 || gx >= GW || gy >= GH) return false;
   for (let dj = 0; dj < N; dj++) for (let di = 0; di < N; di++) {
-    const i = gx * N + di, j = gy * N + dj;
+    const i = gx + di, j = gy + dj;
     if (i >= W || j >= H) continue;
     const k = cellIndex(i, j);
     if (t.density[k] > ISO) return false;
@@ -22,8 +26,8 @@ export function nodeOpen(t: Terrain, gx: number, gy: number) {
   return true;
 }
 
-export const toNode = (v: number) => Math.floor(v / NODE);
-export const nodeCenter = (g: number) => (g + 0.5) * NODE;
+export const toNode = (v: number) => Math.floor(v / CELL - 0.5);
+export const nodeCenter = (g: number) => (g + 1) * CELL;
 
 /** Binary heap of node ids keyed by f-score. */
 class Heap {
@@ -61,14 +65,10 @@ class Heap {
   get size() { return this.ids.length; }
 }
 
-/**
- * A* from a world position to any open node within `reach` of the goal point.
- * Returns world-space waypoints (excluding the start), or null if unreachable.
- */
 /** The node under a world position, or the nearest open one if that is blocked; -1 if enclosed. */
 function startNode(t: Terrain, sx: number, sy: number) {
   const sxN = toNode(sx), syN = toNode(sy);
-  for (let r = 0; r <= 2; r++)
+  for (let r = 0; r <= 3; r++)
     for (let dy = -r; dy <= r; dy++)
       for (let dx = -r; dx <= r; dx++)
         if (nodeOpen(t, sxN + dx, syN + dy)) return sxN + dx + (syN + dy) * GW;
@@ -111,7 +111,11 @@ export function nearFlooded(flood: Uint8Array, x: number, y: number, reach: numb
   return false;
 }
 
-export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand = 6000) {
+/**
+ * A* from a world position to any open node within `reach` of the goal point.
+ * Returns world-space waypoints (excluding the start), or null if unreachable.
+ */
+export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand = 24000) {
   generation++;
   const start = startNode(t, sx, sy);
   if (start < 0) return null;
