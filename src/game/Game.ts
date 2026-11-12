@@ -1,10 +1,10 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import type { WebGPURenderer } from 'three/webgpu';
-import { CELL, CHUNK, COLLAPSE_DELAY, CRACK_SHIFT, DIG_BIT, Emit, H, ISO, Mat, MATERIALS, SKY_ROWS, W, cellCenter, cellIndex, toCell } from '../config';
+import { CELL, CHUNK, COLLAPSE_DELAY, CRACK_SHIFT, DIG_BIT, Emit, REACH_BIT, H, ISO, Mat, MATERIALS, SKY_ROWS, W, cellCenter, cellIndex, toCell } from '../config';
 import { GpuSim, ParticleKind } from '../gpu/GpuSim';
 import { chunkPolylines } from '../sim/contours';
 import { findCollapses } from '../sim/integrity';
-import { findPath } from '../sim/pathfind';
+import { GH, GW, findPath, floodNodes, nearFlooded } from '../sim/pathfind';
 import type { Terrain, Yield } from '../sim/terrain';
 import { EmitterDef, WorldLayout, generateWorld } from '../sim/worldgen';
 import { chirp, creak, rumble } from './audio';
@@ -131,6 +131,9 @@ export class Game {
   private quotaAnnounced = false;
   private pendingCheckAt = 0;
   private rangeWarnAt = 0;
+  /** Path nodes the drones can fly to from the base (see updateReachability). */
+  private readonly access = new Uint8Array(GW * GH);
+  private reachAt = 0;
 
   static async create(seed?: number) {
     await RAPIER.init();
@@ -255,11 +258,11 @@ export class Game {
       if (on && (this.terrain.density[k] <= ISO || this.terrain.material[k] === Mat.Bedrock || marks[k] & DIG_BIT)) continue;
       if (on && !this.inDigRange(cellCenter(i), cellCenter(j))) { outOfRange = true; continue; }
       if (!on && !(marks[k] & DIG_BIT)) continue;
-      marks[k] = on ? marks[k] | DIG_BIT : marks[k] & ~DIG_BIT;
+      marks[k] = on ? marks[k] | DIG_BIT : marks[k] & ~(DIG_BIT | REACH_BIT);
       if (on) this.marked.add(k); else this.marked.delete(k);
       changed = true;
     }
-    if (changed) this.terrain.gpuDirty = true;
+    if (changed) { this.terrain.gpuDirty = true; this.reachAt = 0; }
     if (outOfRange && !changed && this.time >= this.rangeWarnAt) {
       this.rangeWarnAt = this.time + 3;
       this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`);
@@ -377,6 +380,7 @@ export class Game {
     this.updateCritters(dt);
     this.updateEvents();
     this.updatePendingCollapses(dt);
+    this.updateReachability();
 
     if (this.terrain.structuralDirty && this.time >= this.structuralAt) {
       this.structuralAt = this.time + 0.15;
@@ -466,7 +470,7 @@ export class Game {
   private setCracking(cells: number[], start: number | null) {
     const marks = this.terrain.digMark;
     const stamp = start === null ? 0 : (Math.round(start * 10) + 1) << CRACK_SHIFT;
-    for (const k of cells) marks[k] = (marks[k] & DIG_BIT) | stamp;
+    for (const k of cells) marks[k] = (marks[k] & ((1 << CRACK_SHIFT) - 1)) | stamp;
     this.terrain.gpuDirty = true;
   }
 
@@ -781,6 +785,46 @@ export class Game {
     }
   }
 
+  // ---------------------------------------------------------------- dig access
+
+  private exposed(i: number, j: number) {
+    const t = this.terrain;
+    return t.isOpen(i - 1, j) || t.isOpen(i + 1, j) || t.isOpen(i, j - 1) || t.isOpen(i, j + 1);
+  }
+
+  /**
+   * Flags which dig orders the drones can work on. A designated cell is directly reachable when
+   * it borders open space and some path node connected to the base is within laser range of it.
+   * Designated rock joined to a reachable cell through other designated rock counts too, since
+   * the drones will tunnel their way to it.
+   */
+  private updateReachability() {
+    if (this.time < this.reachAt) return;
+    this.reachAt = this.time + 0.5;
+    const t = this.terrain, marks = t.digMark, d = this.layout.depot;
+    floodNodes(t, d.x, d.y + 0.6, this.access);
+    const live = (k: number) => (marks[k] & DIG_BIT) !== 0 && t.density[k] > ISO;
+    const reached = new Set<number>();
+    const queue: number[] = [];
+    for (const k of this.marked) {
+      if (!live(k)) continue;
+      const i = k % W, j = (k / W) | 0;
+      if (this.exposed(i, j) && nearFlooded(this.access, cellCenter(i), cellCenter(j), DRILL_REACH - 0.1)) { reached.add(k); queue.push(k); }
+    }
+    for (let q = 0; q < queue.length; q++) {
+      const k = queue[q], i = k % W;
+      for (const n of [i > 0 ? k - 1 : -1, i < W - 1 ? k + 1 : -1, k - W, k + W]) {
+        if (n >= 0 && n < marks.length && !reached.has(n) && live(n)) { reached.add(n); queue.push(n); }
+      }
+    }
+    let changed = false;
+    for (const k of this.marked) {
+      const want = reached.has(k) ? REACH_BIT : 0;
+      if ((marks[k] & REACH_BIT) !== want) { marks[k] = (marks[k] & ~REACH_BIT) | want; changed = true; }
+    }
+    if (changed) t.gpuDirty = true;
+  }
+
   // ---------------------------------------------------------------- drones
 
   private updateBots(dt: number) {
@@ -862,10 +906,11 @@ export class Game {
     for (const k of this.exposedTargets(p, bot).slice(0, 4)) {
       const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
       if (dist(p, { x: tx, y: ty }) <= DRILL_REACH) { this.startDig(bot, k); return true; }
-      const path = findPath(this.terrain, p.x, p.y, tx, ty, DRILL_REACH - 0.1);
+      const path = findPath(this.terrain, p.x, p.y, tx, ty, DRILL_REACH - 0.1, 12000);
       if (path) {
         this.claim(bot, k);
-        bot.path = path;
+        // The route ends near the cell, not at it; keep closing in until the laser reaches.
+        bot.path = [...path, { x: tx, y: ty }];
         bot.state = 'toDig';
         return true;
       }
@@ -881,9 +926,9 @@ export class Game {
       if (!(t.digMark[k] & DIG_BIT) || t.density[k] <= ISO) { this.marked.delete(k); continue; }
       const owner = this.claims.get(k);
       if (owner !== undefined && owner !== bot.id) continue;
-      if ((bot.blacklist.get(k) ?? 0) > this.time) continue;
+      if (!(t.digMark[k] & REACH_BIT) || (bot.blacklist.get(k) ?? 0) > this.time) continue;
       const i = k % W, j = (k / W) | 0;
-      if (!(t.isOpen(i - 1, j) || t.isOpen(i + 1, j) || t.isOpen(i, j - 1) || t.isOpen(i, j + 1))) continue;
+      if (!this.exposed(i, j)) continue;
       out.push({ k, d: Math.hypot(cellCenter(i) - p.x, cellCenter(j) - p.y) });
     }
     return out.sort((a, b) => a.d - b.d).map((o) => o.k);
@@ -931,7 +976,7 @@ export class Game {
         ? { x: cellCenter(bot.target % W), y: cellCenter((bot.target / W) | 0), r: DRILL_REACH - 0.1 }
         : { ...slot, r: 0.6 };
       const path = findPath(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 12000);
-      if (path) bot.path = bot.state === 'toDepot' ? [...path, slot] : path;
+      if (path) bot.path = [...path, bot.state === 'toDepot' ? slot : goal];
     }
     while (bot.path.length && dist(p, bot.path[0]) < 0.3) bot.path.shift();
     if (!bot.path.length) {

@@ -16,7 +16,10 @@ npm run build
 
 Mining drones wait on landing pads at the base: four on the hub roof and eight cradles on the
 rack tower. When you designate rock, they launch, cut it with their lasers, and fly home to
-unload and dock. Dig orders only work inside the dashed ring 11m around the base. A smelter
+unload and dock. Dig orders only work inside the dashed ring 11m around the base. Orders show
+as fine hatching. Amber means the drones can reach it: it borders space they can fly to from
+the base, or it joins such rock through other orders, so they will tunnel in. Red means nothing
+can get at it yet, such as a pocket sealed in solid rock. A smelter
 turns ore into plates. New drones cost plates plus goo from the terrarium critters. The
 quarterly quota is 30 plates.
 

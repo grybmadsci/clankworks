@@ -18,3 +18,15 @@ export async function newPage(browser) {
   const [width, height] = (process.env.VIEWPORT ?? '1280x800').split('x').map(Number);
   return browser.newPage({ viewport: { width, height } });
 }
+
+/** page.goto that rides out the moment before WSL starts forwarding a freshly opened port. */
+export async function gotoApp(page, url) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await page.goto(url);
+    } catch (e) {
+      if (attempt >= 20 || !/ERR_CONNECTION_REFUSED/.test(e.message)) throw e;
+      await page.waitForTimeout(500);
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
-import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, H, SKY_ROWS, W } from '../config';
+import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, H, REACH_BIT, SKY_ROWS, W } from '../config';
 import { enabled } from '../debug';
 import { GpuSim } from '../gpu/GpuSim';
 import { noise2 } from '../gpu/kernels';
@@ -10,7 +10,7 @@ import { boundaryWarp, crackMask, rockSurface } from './rock';
 type Node = any;
 // TSL's TypeScript typings don't model swizzles on storage elements; keep the node graph untyped.
 const {
-  abs, clamp, cross, dFdx, dFdy, dot, float, floor, instanceIndex, int, max, mix, normalize,
+  abs, clamp, cross, dFdx, dFdy, dot, float, floor, fwidth, instanceIndex, int, max, mix, normalize,
   positionLocal, positionView, positionWorld, select, sign, sin, smoothstep, time, uint, uniform, uniformArray,
   varying, vec2, vec3, vertexIndex,
 } = TSL as any;
@@ -103,13 +103,19 @@ export function terrainMaterial(gpu: GpuSim) {
   // Deeper is darker.
   col = col.mul(mix(0.55, 1, smoothstep(0, surfaceY, p.y)));
 
-  const stripes = smoothstep(0.45, 0.55, abs(p.x.add(p.y).mul(3).fract().sub(0.5)).mul(2));
-  col = select(mark.bitAnd(uint(DIG_BIT)).greaterThan(uint(0)).and(isWall.not()), mix(col, vec3(0.95, 0.75, 0.15), stripes.mul(0.55)), col);
+  // Dig orders: fine diagonal hatching, amber where drones can get at it, red where they can't
+  // yet. fwidth keeps the lines anti-aliased and fades them to a flat tint when zoomed out.
+  const u = p.x.add(p.y).mul(11);
+  const hatch = smoothstep(float(0.35).sub(fwidth(u)), fwidth(u).add(0.35), abs(u.fract().sub(0.5)));
+  const reachable = mark.bitAnd(uint(REACH_BIT)).greaterThan(uint(0));
+  const orderTint = select(reachable, vec3(1.0, 0.72, 0.1), vec3(0.95, 0.12, 0.08));
+  const ordered = mark.bitAnd(uint(DIG_BIT)).greaterThan(uint(0)).and(isWall.not());
+  col = select(ordered, mix(col, orderTint, hatch.mul(0.6).add(0.12)), col);
 
   // Rock about to cave in pales with dust, then splits along dark fractures that glow faintly.
   const pr = crackProgress(mark);
   const crack = quality.low
-    ? select(pr.greaterThan(0), smoothstep(mix(0.02, 0.12, pr), 0, abs(noise(p.xy.mul(3)))), float(0))
+    ? select(pr.greaterThan(0), float(1).sub(smoothstep(0, mix(0.02, 0.12, pr), abs(noise(p.xy.mul(3))))), float(0))
     : crackMask({ p, progress: pr });
   col = mix(col, col.mul(1.6).add(0.03), pr.mul(0.35));
   col = col.mul(crack.mul(-0.85).add(1));

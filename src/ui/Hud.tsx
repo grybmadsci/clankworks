@@ -6,7 +6,7 @@ import { unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
 const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
-  { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine (within the dashed range ring)' },
+  { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
   { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support; braces cracking rock (2 scrap)' },
   { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates. Runs hot (8 scrap)' },

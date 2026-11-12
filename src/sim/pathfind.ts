@@ -1,7 +1,7 @@
 import { CELL, H, ISO, W, cellIndex } from '../config';
 import { Terrain } from './terrain';
 
-/** Path nodes are 2x2 cell blocks: big enough for a scrapbot to squeeze through. */
+/** Path nodes are 2x2 cell blocks: big enough for a drone to squeeze through. */
 const N = 2;
 export const GW = Math.ceil(W / N), GH = Math.ceil(H / N);
 const NODE = CELL * N;
@@ -65,20 +65,56 @@ class Heap {
  * A* from a world position to any open node within `reach` of the goal point.
  * Returns world-space waypoints (excluding the start), or null if unreachable.
  */
+/** The node under a world position, or the nearest open one if that is blocked; -1 if enclosed. */
+function startNode(t: Terrain, sx: number, sy: number) {
+  const sxN = toNode(sx), syN = toNode(sy);
+  for (let r = 0; r <= 2; r++)
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++)
+        if (nodeOpen(t, sxN + dx, syN + dy)) return sxN + dx + (syN + dy) * GW;
+  return -1;
+}
+
+/** Whether A* may step from node (cx, cy) by (dx, dy): diagonals can't cut corners. */
+function canStep(t: Terrain, cx: number, cy: number, dx: number, dy: number) {
+  if (!nodeOpen(t, cx + dx, cy + dy)) return false;
+  return !(dx && dy) || (nodeOpen(t, cx + dx, cy) && nodeOpen(t, cx, cy + dy));
+}
+
+const floodQueue = new Int32Array(GW * GH);
+
+/** Mark (1) every node reachable from a world position, using the same moves as findPath. */
+export function floodNodes(t: Terrain, sx: number, sy: number, out: Uint8Array) {
+  out.fill(0);
+  const start = startNode(t, sx, sy);
+  if (start < 0) return;
+  let head = 0, tail = 0;
+  floodQueue[tail++] = start;
+  out[start] = 1;
+  while (head < tail) {
+    const cur = floodQueue[head++];
+    const cx = cur % GW, cy = (cur / GW) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const id = cx + dx + (cy + dy) * GW;
+      if ((dx || dy) && canStep(t, cx, cy, dx, dy) && !out[id]) { out[id] = 1; floodQueue[tail++] = id; }
+    }
+  }
+}
+
+/** True if some node marked by floodNodes is within `reach` of (x, y): findPath's goal test. */
+export function nearFlooded(flood: Uint8Array, x: number, y: number, reach: number) {
+  const r = Math.ceil(reach / NODE);
+  const gx = toNode(x), gy = toNode(y);
+  for (let ny = Math.max(0, gy - r); ny <= Math.min(GH - 1, gy + r); ny++)
+    for (let nx = Math.max(0, gx - r); nx <= Math.min(GW - 1, gx + r); nx++)
+      if (flood[nx + ny * GW] && Math.hypot(nodeCenter(nx) - x, nodeCenter(ny) - y) <= reach) return true;
+  return false;
+}
+
 export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand = 6000) {
   generation++;
-  let start = toNode(sx) + toNode(sy) * GW;
-  if (!nodeOpen(t, start % GW, (start / GW) | 0)) {
-    // Bot is wedged against a wall; start from the nearest open neighbour.
-    const sxN = toNode(sx), syN = toNode(sy);
-    let found = -1;
-    for (let r = 1; r <= 2 && found < 0; r++)
-      for (let dy = -r; dy <= r && found < 0; dy++)
-        for (let dx = -r; dx <= r && found < 0; dx++)
-          if (nodeOpen(t, sxN + dx, syN + dy)) found = sxN + dx + (syN + dy) * GW;
-    if (found < 0) return null;
-    start = found;
-  }
+  const start = startNode(t, sx, sy);
+  if (start < 0) return null;
   const h = (id: number) => Math.hypot(nodeCenter(id % GW) - gx, nodeCenter((id / GW) | 0) - gy);
   const heap = new Heap();
   gScore[start] = 0;
@@ -95,10 +131,8 @@ export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: num
     const cx = cur % GW, cy = (cur / GW) | 0;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       if (!dx && !dy) continue;
-      const nx = cx + dx, ny = cy + dy;
-      if (!nodeOpen(t, nx, ny)) continue;
-      if (dx && dy && (!nodeOpen(t, cx + dx, cy) || !nodeOpen(t, cx, cy + dy))) continue;
-      const id = nx + ny * GW;
+      if (!canStep(t, cx, cy, dx, dy)) continue;
+      const id = cx + dx + (cy + dy) * GW;
       if (closed[id] === generation) continue;
       const g = gScore[cur] + (dx && dy ? 1.414 : 1) * NODE;
       if (seen.get(id) === generation && g >= gScore[id]) continue;

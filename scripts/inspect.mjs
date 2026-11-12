@@ -1,7 +1,7 @@
 // Debug helper: node scripts/inspect.mjs [query] [seconds] — logs console output with timestamps
 // and samples game state once per second. Expects `npm run dev` on port 5287, or run it through
 // scripts/win.mjs.
-import { baseUrl, launchBrowser, newPage } from './browser.mjs';
+import { baseUrl, gotoApp, launchBrowser, newPage } from './browser.mjs';
 
 const [query = '', seconds = '8'] = process.argv.slice(2);
 const browser = await launchBrowser();
@@ -10,7 +10,7 @@ const t0 = Date.now();
 const stamp = () => ((Date.now() - t0) / 1000).toFixed(1).padStart(5);
 page.on('console', (m) => console.log(`${stamp()} [${m.type()}] ${m.text().slice(0, 600)}`));
 page.on('pageerror', (e) => console.log(`${stamp()} [pageerror] ${e.message.slice(0, 600)}`));
-await page.goto(new URL(query, baseUrl ?? 'http://localhost:5287/').href);
+await gotoApp(page, new URL(query, baseUrl ?? 'http://localhost:5287/').href);
 for (let s = 0; s < Number(seconds); s++) {
   await page.waitForTimeout(1000);
   const info = await page.evaluate(() => {

@@ -4,7 +4,7 @@
 //   npm run smoke:win             (WSL: Windows Chrome on the real GPU, headless)
 //   npm run smoke                 (Linux Chromium, headed; under WSL this is SwiftShader)
 //   HEADLESS=1 npm run smoke      (for machines where headless WebGPU presentation works)
-import { baseUrl, launchBrowser, newPage } from './browser.mjs';
+import { baseUrl, gotoApp, launchBrowser, newPage } from './browser.mjs';
 
 // With BASE_URL set, the caller (scripts/win.mjs) is already serving the app.
 const server = baseUrl ? null : await (await import('vite')).createServer({ server: { port: 5288, strictPort: true }, logLevel: 'error' });
@@ -28,7 +28,7 @@ const fastForward = (seconds) => page.evaluate(async (s) => {
 const shot = async (name) => { await page.waitForTimeout(600); await page.screenshot({ path: `smoke-${name}.png` }); };
 
 try {
-  await page.goto(baseUrl ?? 'http://localhost:5288/');
+  await gotoApp(page, baseUrl ?? 'http://localhost:5288/');
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
   console.log('quality:', await page.evaluate(() => document.querySelector('canvas')?.dataset.quality ?? 'high'));
   console.log('adapter:', await page.evaluate(async () => {
@@ -78,10 +78,31 @@ try {
     for (let x = 0; x < 2.4; x += 0.3) g.designate(d.x + 4.2 + x, d.y + 0.6, 0.7, true);
     return { density: g.terrain.density.reduce((a, b) => a + b, 0), resources: { ...g.resources } };
   });
+  // An order sealed inside solid rock is flagged unreachable; the strip beside the base is not.
+  await page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot;
+    for (let f = 0; f <= 1; f += 0.1) g.designate(d.x - 6.5 + f * 1.5, d.y - 5 - f, 0.7, true);
+  });
   await fastForward(4);
+  const marks = () => page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot, m = g.terrain.digMark;
+    const out = { strip: 0, stripReach: 0, sealed: 0, sealedReach: 0 };
+    for (let k = 0; k < m.length; k++) {
+      if (!(m[k] & 1)) continue;
+      const x = (k % 128 + 0.5) * 0.25, key = x > d.x ? 'strip' : 'sealed';
+      out[key]++;
+      if (m[k] & 2) out[key + 'Reach']++;
+    }
+    return out;
+  });
+  const m0 = await marks();
+  check(m0.strip > 0 && m0.stripReach === m0.strip && m0.sealed > 0 && m0.sealedReach === 0,
+    `dig orders flagged reachable vs unreachable (${m0.stripReach}/${m0.strip} reachable beside the base, ${m0.sealedReach}/${m0.sealed} sealed in rock)`);
   const launched = await page.evaluate(() => window.__game.bots.filter((b) => b.state !== 'docked').length);
   check(launched > 0, `drones launched from the base for the dig orders (${launched} airborne)`);
   await fastForward(26);
+  const m1 = await marks();
+  check(m1.stripReach === 0, `drones finished every reachable dig order (${m1.stripReach} left)`);
   const after = await page.evaluate(() => {
     const g = window.__game;
     return {
