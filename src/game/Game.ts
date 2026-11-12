@@ -454,19 +454,30 @@ export class Game {
     this.info(`Steel strut installed (${((j1 - j0 + 1) * CELL).toFixed(1)}m).`);
   }
 
-  placeSmelter(x: number, y: number) {
+  /**
+   * Where a smelter would stand for a click at (x, y): dropped to the floor below, centred on the
+   * clicked column. `error` says why it can't be built there (also used by the placement hologram).
+   */
+  smelterSite(x: number, y: number): { x: number; y: number; error?: string } {
     const t = this.terrain;
     const i = toCell(x);
     let j = toCell(y);
-    if (!t.isOpen(i, j)) return this.warn('Smelters must be placed in open space.');
+    if (!t.isOpen(i, j)) return { x, y, error: 'Smelters must be placed in open space.' };
     while (j > 0 && t.isOpen(i, j - 1)) j--;
+    const site = { x: cellCenter(i), y: j * CELL };
     for (let dj = 0; dj < 5; dj++) for (let di = -2; di <= 2; di++) {
-      if (!t.isOpen(i + di, j + dj)) return this.warn('Not enough room for a smelter (needs 1.25m × 1.25m).');
+      if (!t.isOpen(i + di, j + dj)) return { ...site, error: 'Not enough room for a smelter (needs 1.25m × 1.25m).' };
     }
-    if (!this.pay(COST.smelter)) return this.warn('Insufficient scrap for a smelter (8).');
-    this.smelters.push({ id: nextId++, x: cellCenter(i), y: j * CELL, hp: 100, smeltTimer: 0, hotUntil: 0 });
+    if (!this.canAfford(COST.smelter)) return { ...site, error: 'Insufficient scrap for a smelter (8).' };
+    return site;
+  }
+
+  placeSmelter(x: number, y: number) {
+    const site = this.smelterSite(x, y);
+    if (site.error || !this.pay(COST.smelter)) return this.warn(site.error ?? 'Insufficient scrap for a smelter (8).');
+    this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0 });
     this.entityVersion++;
-    this.info('Smelter online. It runs hot. Keep it away from anything that breathes.');
+    this.info('Smelter online. Ore in, plates out.');
     this.emote(this.randomBot(), 'quarryMustGrow');
   }
 
@@ -587,13 +598,10 @@ export class Game {
     const list = this.layout.emitters
       .filter((e) => this.terrain.isLoadedCell(Math.floor(e.x), Math.floor(e.y)))
       .sort((a, b) => Math.hypot(a.x * CELL - v.x, a.y * CELL - v.y) - Math.hypot(b.x * CELL - v.x, b.y * CELL - v.y))
-      .slice(0, MAX_EMITTERS - 1 - this.smelters.length);
+      .slice(0, MAX_EMITTERS - 1);
     const t = this.layout.terrarium;
     const alive = this.critters.filter((c) => !c.dead).length;
     list.push({ x: t.x / CELL, y: (t.y + 0.6) / CELL, radius: 7, type: Emit.Oxygen, rate: -0.0012 * alive });
-    for (const s of this.smelters) {
-      if (this.time < s.hotUntil) list.push({ x: s.x / CELL, y: s.y / CELL + 2, radius: 7, type: Emit.Heat, rate: 420 });
-    }
     return list;
   }
 

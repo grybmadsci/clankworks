@@ -41,16 +41,15 @@ then red, as they approach their limit. Cracking rock flashes.
 | Input | Action |
 | --- | --- |
 | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
-| `3` Strut | Floor-to-ceiling steel support (2 scrap). Wide ceilings collapse without them; one placed under cracking rock saves it |
-| `4` Smelter | Ore → plates. It runs hot, so keep it away from the critters (8 scrap) |
+| `3` Strut | Floor-to-ceiling steel support with a hanging lantern (2 scrap). Wide ceilings collapse without them; one placed under cracking rock saves it |
+| `4` Smelter | Ore → plates (8 scrap). A hologram previews where it will stand: cyan if it fits, red if not |
 | `5` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
 | `B` | Build a drone (3 plates + 2 goo) |
 | `T` | Cycle the heat, oxygen and structural integrity overlays |
 | Right-drag / WASD, wheel | Pan, zoom |
 
 The critters need 6–38 °C, oxygen, no toxic gas and dry feet. Breaching the toxic pocket under
-the terrarium, flooding it from the aquifer, or parking a smelter next to it will cost you
-critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
+the terrarium or flooding it from the aquifer will cost you critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
 survivors, Carl's alcove, stuck drones, losses that still increased ore output, and so on).
 
 ## Architecture

@@ -9,7 +9,7 @@ import { CELL, H, SKY_ROWS, W } from '../config';
 import { enabled } from '../debug';
 import { unlockAudio } from '../game/audio';
 import type { Game } from '../game/Game';
-import { Entities } from './Entities';
+import { Entities, SmelterBody, Z_ACTORS } from './Entities';
 import { gameTime, overlayMode } from './materials';
 import { quality } from './quality';
 import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
@@ -48,6 +48,7 @@ export function Scene({ game }: { game: Game }) {
       {enabled('entities') && <Entities game={game} />}
       <Foreground />
       <DigRange game={game} />
+      <SmelterHologram game={game} />
       <Cursor game={game} />
       <CameraRig game={game} />
       {enabled('post') && !quality.low && <PostFx />}
@@ -153,6 +154,8 @@ function Cursor({ game }: { game: Game }) {
     ref.current.visible = !!c;
     if (!c) return;
     ref.current.position.set(c.x, c.y, 0.08);
+    // The smelter hologram replaces the ring.
+    ref.current.visible = game.tool !== 'smelter';
     const r = game.tool === 'dig' ? 0.7 : game.tool === 'cancel' ? 0.9 : 0.25;
     ref.current.scale.setScalar(r);
     const outOfRange = game.tool === 'dig' && !game.inDigRange(c.x, c.y);
@@ -163,6 +166,41 @@ function Cursor({ game }: { game: Game }) {
       <ringGeometry args={[0.92, 1, 40]} />
       <meshBasicMaterial ref={mat} transparent opacity={0.8} depthTest={false} />
     </mesh>
+  );
+}
+
+/**
+ * With the Smelter tool, a hologram of the building follows the cursor, snapped to where it
+ * would actually stand: cyan when it can be built there, red when it can't.
+ */
+function SmelterHologram({ game }: { game: Game }) {
+  const group = useRef<THREE.Group>(null!);
+  const { material, tint } = useMemo(() => {
+    const { color, positionWorld, sin, smoothstep, time, uniform, normalView, positionViewDirection, dot, abs, float } = TSL as any;
+    const tint = uniform(color('#5fe3ff'));
+    const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+    // Rising scanlines, bright silhouette edges, and the odd flicker.
+    const scan = smoothstep(0.55, 0.95, sin(positionWorld.y.mul(60).sub(time.mul(6))).mul(0.5).add(0.5));
+    const rim = float(1).sub(abs(dot(normalView, positionViewDirection))).pow(2);
+    const flicker = sin(time.mul(37)).mul(sin(time.mul(11))).mul(0.08).add(0.92);
+    m.colorNode = tint.mul(1.4);
+    m.opacityNode = scan.mul(0.35).add(rim.mul(0.6)).add(0.12).mul(flicker);
+    return { material: m, tint };
+  }, []);
+  useFrame(() => {
+    const c = view.cursor;
+    const show = game.tool === 'smelter' && !!c;
+    group.current.visible = show;
+    if (!show) return;
+    const site = game.smelterSite(c.x, c.y);
+    group.current.position.set(site.x, site.y, Z_ACTORS);
+    tint.value.set(site.error ? '#ff4a3a' : '#5fe3ff');
+  });
+  return (
+    <group ref={group} visible={false} renderOrder={15}>
+      <SmelterBody material={material} />
+      <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]} material={material}><ringGeometry args={[0.5, 0.56, 32]} /></mesh>
+    </group>
   );
 }
 

@@ -1,11 +1,11 @@
 import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef, useState } from 'react';
+import { type Ref, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { CELL, DEPTH } from '../config';
 import type { Blast, Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
 import { Base } from './Base';
 
-const Z_ACTORS = -DEPTH * 0.45;
+export const Z_ACTORS = -DEPTH * 0.45;
 const DEBRIS_COLORS = ['#000', '#7a5236', '#6f6c6a', '#9a6440', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450'];
 
 /** Re-render when the game's entity lists change (checked once per frame). */
@@ -29,6 +29,7 @@ export function Entities({ game }: { game: Game }) {
       {game.blasts.map((b) => <BlastModel key={b.id} blast={b} />)}
       {game.critters.map((c) => <CritterModel key={c.id} critter={c} />)}
       <HeadLamps game={game} />
+      <StrutLamps game={game} />
     </>
   );
 }
@@ -166,13 +167,68 @@ function DebrisModel({ debris }: { debris: Debris }) {
   return <group ref={ref}><primitive object={mesh} /></group>;
 }
 
+const Z_STRUT = -DEPTH * 0.72;
+
+/** Where a strut's lantern hangs: just under the top plate, in front of the strut. */
+function strutLamp(strut: Strut) {
+  const y1 = (strut.j1 + 1) * CELL, h = y1 - strut.j0 * CELL;
+  return { x: (strut.i + 0.5) * CELL, y: y1 - Math.min(0.32, h * 0.4), z: Z_STRUT + 0.11 };
+}
+
+/** A small caged lamp hanging from a hook; its flame flickers. */
+function StrutLantern({ strut }: { strut: Strut }) {
+  const flame = useRef<THREE.MeshBasicMaterial>(null!);
+  const phase = useMemo(() => Math.random() * 10, []);
+  const p = strutLamp(strut);
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime + phase;
+    const f = 0.8 + Math.sin(t * 11) * 0.08 + Math.sin(t * 23) * 0.06 + (Math.random() - 0.5) * 0.06;
+    flame.current.color.setRGB(3 * f, 1.5 * f, 0.4 * f);
+  });
+  return (
+    <group position={[p.x, p.y, p.z]}>
+      <mesh position={[0, 0.09, -0.05]}><boxGeometry args={[0.012, 0.012, 0.1]} /><meshStandardMaterial color="#2b2725" metalness={0.7} /></mesh>
+      <mesh position={[0, 0.07, 0]}><coneGeometry args={[0.035, 0.03, 8]} /><meshStandardMaterial color="#c19a4b" metalness={0.9} roughness={0.3} /></mesh>
+      <mesh><cylinderGeometry args={[0.022, 0.022, 0.08, 10]} /><meshBasicMaterial ref={flame} /></mesh>
+      {[0, 1, 2, 3].map((n) => (
+        <mesh key={n} position={[Math.cos(n * Math.PI / 2) * 0.026, 0, Math.sin(n * Math.PI / 2) * 0.026]}>
+          <cylinderGeometry args={[0.003, 0.003, 0.09, 4]} /><meshStandardMaterial color="#2b2725" metalness={0.7} />
+        </mesh>
+      ))}
+      <mesh position={[0, -0.05, 0]}><cylinderGeometry args={[0.03, 0.025, 0.015, 10]} /><meshStandardMaterial color="#c19a4b" metalness={0.9} roughness={0.3} /></mesh>
+    </group>
+  );
+}
+
+/**
+ * Point lights for the strut lanterns nearest the middle of the view. Every lantern glows, but
+ * only a handful cast light, so building lots of struts doesn't multiply the lighting cost.
+ */
+function StrutLamps({ game }: { game: Game }) {
+  const lights = useRef<(THREE.PointLight | null)[]>([]);
+  useFrame(({ clock }) => {
+    const v = game.view;
+    const near = game.struts.map((s) => ({ p: strutLamp(s), id: s.id }))
+      .sort((a, b) => Math.hypot(a.p.x - v.x, a.p.y - v.y) - Math.hypot(b.p.x - v.x, b.p.y - v.y));
+    lights.current.forEach((l, n) => {
+      if (!l) return;
+      const s = near[n];
+      l.intensity = s ? 1.6 * (0.85 + Math.sin(clock.elapsedTime * 11 + s.id) * 0.08) : 0;
+      if (s) l.position.set(s.p.x, s.p.y, s.p.z + 0.2);
+    });
+  });
+  return <>{Array.from({ length: 8 }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={4} decay={1.4} />)}</>;
+}
+
 function StrutModel({ strut }: { strut: Strut }) {
   const x = (strut.i + 0.5) * CELL;
   const y0 = strut.j0 * CELL, y1 = (strut.j1 + 1) * CELL;
   const h = y1 - y0;
   const braces = Math.max(1, Math.floor(h / 0.6));
   return (
-    <group position={[x, y0 + h / 2, -DEPTH * 0.72]}>
+    <>
+    <StrutLantern strut={strut} />
+    <group position={[x, y0 + h / 2, Z_STRUT]}>
       {[-0.07, 0.07].map((dx) => (
         <mesh key={dx} position={[dx, 0, 0]}><boxGeometry args={[0.05, h, 0.1]} /><meshStandardMaterial color="#5d6670" metalness={0.7} roughness={0.45} /></mesh>
       ))}
@@ -184,6 +240,31 @@ function StrutModel({ strut }: { strut: Strut }) {
       <mesh position={[0, h / 2 - 0.03, 0]}><boxGeometry args={[0.3, 0.06, 0.3]} /><meshStandardMaterial color="#4a525a" metalness={0.6} /></mesh>
       <mesh position={[0, -h / 2 + 0.03, 0]}><boxGeometry args={[0.3, 0.06, 0.3]} /><meshStandardMaterial color="#4a525a" metalness={0.6} /></mesh>
     </group>
+    </>
+  );
+}
+
+const SMELTER_MATS = {
+  body: new THREE.MeshStandardMaterial({ color: '#5b4a3f', metalness: 0.5, roughness: 0.6 }),
+  stack: new THREE.MeshStandardMaterial({ color: '#3d3530', metalness: 0.5 }),
+  trim: new THREE.MeshStandardMaterial({ color: rust }),
+};
+
+/**
+ * The smelter's shapes, with origin at its base. Real smelters pass their materials; the
+ * placement hologram passes one see-through material for everything.
+ */
+export function SmelterBody({ material, mouth }: { material?: THREE.Material; mouth?: Ref<THREE.MeshBasicMaterial> }) {
+  const m = (own: THREE.Material) => material ?? own;
+  return (
+    <>
+      <mesh position={[0, 0.3, 0]} material={m(SMELTER_MATS.body)}><boxGeometry args={[0.8, 0.6, 0.6]} /></mesh>
+      <mesh position={[0.22, 0.85, -0.1]} material={m(SMELTER_MATS.stack)}><cylinderGeometry args={[0.08, 0.1, 0.6]} /></mesh>
+      <mesh position={[0, 0.62, 0]} material={m(SMELTER_MATS.trim)}><boxGeometry args={[0.86, 0.05, 0.66]} /></mesh>
+      {material
+        ? <mesh position={[-0.1, 0.25, 0.301]} material={material}><planeGeometry args={[0.3, 0.22]} /></mesh>
+        : <mesh position={[-0.1, 0.25, 0.301]}><planeGeometry args={[0.3, 0.22]} /><meshBasicMaterial ref={mouth} /></mesh>}
+    </>
   );
 }
 
@@ -195,10 +276,7 @@ function SmelterModel({ smelter, game }: { smelter: Smelter; game: Game }) {
   });
   return (
     <group position={[smelter.x, smelter.y, Z_ACTORS]}>
-      <mesh position={[0, 0.3, 0]}><boxGeometry args={[0.8, 0.6, 0.6]} /><meshStandardMaterial color="#5b4a3f" metalness={0.5} roughness={0.6} /></mesh>
-      <mesh position={[0.22, 0.85, -0.1]}><cylinderGeometry args={[0.08, 0.1, 0.6]} /><meshStandardMaterial color="#3d3530" metalness={0.5} /></mesh>
-      <mesh position={[-0.1, 0.25, 0.301]}><planeGeometry args={[0.3, 0.22]} /><meshBasicMaterial ref={mouth} /></mesh>
-      <mesh position={[0, 0.62, 0]}><boxGeometry args={[0.86, 0.05, 0.66]} /><meshStandardMaterial color={rust} /></mesh>
+      <SmelterBody mouth={mouth} />
     </group>
   );
 }
