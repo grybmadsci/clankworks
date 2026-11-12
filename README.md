@@ -65,8 +65,12 @@ The simulation is split between a CPU-authoritative 2D voxel grid and GPU-reside
   buffers in TSL fragment shaders. Gameplay reads a snapshot of the fluid and temperature
   fields asynchronously about three times a second.
 
-**Render (`src/render`).** Triplanar procedural rock with cutaway strata, layered fluid slices
-in the diorama cavity, parallax foreground silhouettes, GTAO ambient occlusion with bloom, and
+**Render (`src/render`).** Procedural rock evaluated in world-space 3D (`rock.ts`): gradient-noise
+fBm plus Worley cells give each material its own grain (granite crystals, copper flecks and
+malachite veins, soil pebbles, ice cracks, rubble chunks), with a matching height field for
+derivative bump mapping. It needs no UVs and has no triplanar seams. Material boundaries are
+looked up through a noise warp so they meander instead of following the cell grid. The low tier
+swaps all this for two octaves of 2D noise. Also: layered fluid slices in the diorama cavity, parallax foreground silhouettes, GTAO ambient occlusion with bloom, and
 a velocity-driven fake Z tilt on the 2D bodies.
 
 `GpuSim.Buf` exists because TSL's `storage(...).toReadOnly()` mutates the node it is called on.

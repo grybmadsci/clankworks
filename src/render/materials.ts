@@ -5,13 +5,14 @@ import { enabled } from '../debug';
 import { GpuSim } from '../gpu/GpuSim';
 import { noise2 } from '../gpu/kernels';
 import { quality } from './quality';
+import { boundaryWarp, rockSurface } from './rock';
 
 type Node = any;
 // TSL's TypeScript typings don't model swizzles on storage elements; keep the node graph untyped.
 const {
-  abs, clamp, cross, dFdx, dFdy, float, floor, instanceIndex, int, max, mix, normalize,
-  positionLocal, positionWorld, pow, select, sin, smoothstep, time, uint, uniform, uniformArray, varying,
-  vec2, vec3, vertexIndex,
+  abs, clamp, cross, dFdx, dFdy, dot, float, floor, instanceIndex, int, max, mix, normalize,
+  positionLocal, positionView, positionWorld, select, sign, sin, smoothstep, time, uint, uniform, uniformArray,
+  varying, vec2, vec3, vertexIndex,
 } = TSL as any;
 const noise = (p: Node) => noise2({ p });
 
@@ -31,17 +32,39 @@ function cellAt(p: Node) {
   return uint(j.mul(W).add(i));
 }
 
-/** Procedural rock texture projected along X, Y and Z and blended by the surface normal. */
-function triplanar(p: Node, n: Node, seed: Node) {
-  if (quality.low) return noise(p.xy.mul(3.1).add(seed));
-  const w0 = pow(abs(n), vec3(4));
-  const w = w0.div(w0.x.add(w0.y).add(w0.z));
-  const tex = (a: Node, b: Node) => noise(vec2(a, b).mul(3.1).add(seed));
-  return tex(p.y, p.z).mul(w.x).add(tex(p.x, p.z).mul(w.y)).add(tex(p.x, p.y).mul(w.z));
+/** Mean albedo per material for the low tier (linear; matches rockSurface's averages). */
+const LOW_COLORS = [[0, 0, 0], [0.2, 0.12, 0.065], [0.16, 0.155, 0.15], [0.2, 0.1, 0.05], [0.5, 0.7, 0.8],
+  [0.035, 0.033, 0.04], [0.22, 0.18, 0.14], [0.14, 0.15, 0.11]].map(([r, g, b]) => new THREE.Color(r, g, b));
+
+/** Rock albedo (xyz) and bump height (w). The low tier swaps the 3D shading for two octaves of 2D noise. */
+function rock(p: Node, mat: Node) {
+  if (!quality.low) return rockSurface({ p, mat });
+  const n = noise(p.xy.mul(2.3)).mul(0.65).add(noise(p.xy.mul(9.1)).mul(0.35));
+  return TSL.vec4(uniformArray(LOW_COLORS, 'color').element(int(mat)).mul(n.mul(0.25).add(1)), 0);
+}
+
+function warpOffset(p: Node) {
+  if (!quality.low) return boundaryWarp({ p });
+  return vec2(noise(p.xy.mul(3)), noise(p.xy.mul(3).add(11.3))).mul(0.5);
+}
+
+/**
+ * Perturbs the flat face normal by a procedural height field (world units), using screen-space
+ * derivatives so no tangent frame or UVs are needed.
+ */
+function bumpNormal(height: Node) {
+  const pv = positionView;
+  const sx = dFdx(pv), sy = dFdy(pv);
+  const n0 = normalize(cross(sx, sy));
+  const n = select(dot(n0, pv).greaterThan(0), n0.negate(), n0);
+  const r1 = cross(sy, n), r2 = cross(n, sx);
+  const det = dot(sx, r1);
+  const grad = r1.mul(dFdx(height)).add(r2.mul(dFdy(height))).mul(sign(det));
+  return normalize(n.mul(abs(det)).sub(grad));
 }
 
 export function terrainMaterial(gpu: GpuSim) {
-  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0, side: THREE.DoubleSide });
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
   m.flatShading = true;
   const slot = gpu.meshPos.ro().element(vertexIndex);
   m.positionNode = slot.xyz;
@@ -50,21 +73,17 @@ export function terrainMaterial(gpu: GpuSim) {
 
   const p = positionWorld;
   const isWall = code.greaterThanEqual(16);
-  const mid = select(isWall, code.sub(16), code);
-  const n = normalize(cross(dFdx(p), dFdy(p)));
-  const base = uniformArray(MATERIAL_COLORS, 'color').element(int(mid));
-  const tex = triplanar(p, n, mid.mul(7.3));
-  let col: Node = base.mul(tex.mul(0.35).add(0.85));
+  const own = select(isWall, code.sub(16), code);
+  // Look the material up through a noisy offset so boundaries between rock types meander
+  // instead of following the cell grid. Offsets that land in open air keep the cell's own material.
+  const warped = gpu.mat.ro().element(cellAt(p.xy.add(warpOffset(p).mul(CELL * 1.4))));
+  const mid = select(warped.equal(0), uint(own), warped);
+  const surf = rock(p, mid);
+  let col: Node = surf.xyz;
 
-  // Cutaway face shows sediment strata like an ant farm; walls recede into shadow.
-  const strata = sin(p.y.mul(9).add(noise(p.xy.mul(0.7)).mul(5))).mul(0.5).add(0.5);
-  col = select(isWall, col.mul(mix(1, 0.5, clamp(p.z.negate().div(DEPTH), 0, 1))), col.mul(mix(0.8, 1.1, strata)));
-  // Copper glints and fossil junk speckles.
-  if (!quality.low) {
-    const speck = smoothstep(0.55, 0.75, noise(p.xy.mul(14).add(p.z.mul(9))));
-    col = select(mid.equal(3), mix(col, vec3(1.0, 0.55, 0.25), speck), col);
-    col = select(mid.equal(7), mix(col, vec3(0.35, 0.6, 0.55), speck), col);
-  }
+  // Cutaway face shows faint sediment bedding; walls recede into shadow.
+  const bedding = sin(p.y.mul(2.3).add(noise(p.xy.mul(0.4)).mul(3))).mul(0.5).add(0.5);
+  col = select(isWall, col.mul(mix(1, 0.5, clamp(p.z.negate().div(DEPTH), 0, 1))), col.mul(mix(0.93, 1.05, bedding)));
   // Deeper is darker.
   col = col.mul(mix(0.55, 1, smoothstep(0, surfaceY, p.y)));
 
@@ -73,6 +92,9 @@ export function terrainMaterial(gpu: GpuSim) {
   const stripes = smoothstep(0.45, 0.55, abs(p.x.add(p.y).mul(3).fract().sub(0.5)).mul(2));
   col = select(dig.greaterThan(0).and(isWall.not()), mix(col, vec3(0.95, 0.75, 0.15), stripes.mul(0.55)), col);
   m.colorNode = col;
+  if (!quality.low) m.normalNode = bumpNormal(surf.w);
+  // Ice and copper flecks catch the light a little.
+  m.roughnessNode = select(mid.equal(4), float(0.35), select(mid.equal(3), float(0.6), float(0.92)));
 
   const T = gpu.temp[0].ro().element(k);
   m.emissiveNode = vec3(1.0, 0.3, 0.06).mul(smoothstep(160, 900, T).mul(2.2));
@@ -133,11 +155,12 @@ export function overlayMaterial(gpu: GpuSim) {
 export function backWallMaterial() {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 1 });
   const p = positionWorld;
-  const tex = triplanar(p, vec3(0, 0, 1), float(1.7));
-  const rock = vec3(0.2, 0.17, 0.15).mul(tex.mul(0.4).add(0.8)).mul(mix(0.4, 1, smoothstep(0, surfaceY, p.y)));
+  const surf = rock(p, uint(1));
+  const wall = surf.xyz.mul(0.7).mul(mix(0.4, 1, smoothstep(0, surfaceY, p.y)));
   const skyMix = smoothstep(surfaceY + 0.2, surfaceY + 0.8, p.y.add(noise(vec2(p.x.mul(0.5), 0)).mul(0.4)));
-  m.colorNode = mix(rock, vec3(0), skyMix);
+  m.colorNode = mix(wall, vec3(0), skyMix);
   m.emissiveNode = mix(vec3(0), mix(vec3(0.75, 0.55, 0.4), vec3(0.3, 0.45, 0.75), smoothstep(surfaceY, surfaceY + 3, p.y)), skyMix);
+  if (!quality.low) m.normalNode = bumpNormal(surf.w);
   return m;
 }
 
