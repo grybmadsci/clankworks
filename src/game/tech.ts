@@ -57,7 +57,7 @@ export const DEPOT = { cost: { scrap: 6, plates: 4 } as Cost, width: 1.5, height
 export const VEHICLE = {
   cost: { plates: 8 } as Cost,
   /** What the bucket holds, in cells of rock. */
-  bucket: 24,
+  bucket: 40,
   /** Drilling speed (density per second at hardness 1). */
   drillRate: 4,
   /** Top wheel speed (rad/s). */

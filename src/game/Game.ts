@@ -53,7 +53,16 @@ const VEHICLE_NAMES = ['Digby', 'Old Bessie', 'Rumbletum', 'Grindle', 'Mudlark',
 /** Loose rock keeps its material when it lands if it is ore (or junk); anything else is rubble. */
 const KEEPS_MATERIAL = new Set<number>([Mat.Copper, Mat.Junk, Mat.Iron, Mat.Titanium]);
 /** Vehicle geometry (world units, chassis frame): hull half-size, wheel offsets and radius, drill pivot and length. */
-const CHASSIS = { hw: 0.4, hh: 0.09, wheelX: 0.24, wheelY: -0.12, wheelR: 0.14, pivotX: 0.42, pivotY: 0.02, drillLen: 0.3, drillR: 0.32 };
+const CHASSIS = { hw: 0.4, hh: 0.09, wheelX: 0.24, wheelY: -0.12, wheelR: 0.14, pivotX: 0.42, pivotY: 0.02, drillLen: 0.3 };
+/**
+ * The bore the drill cuts: a band `height` tall whose floor runs from just under the front wheel
+ * along the drill's aim for `reach`, built from circles of `r` stacked up from that floor line.
+ */
+const BORE = { reach: 0.65, height: 0.95, r: 0.2 };
+/** How far the drill aims above or below level (radians), and how far the arm swings on the hull. */
+const DRILL_AIM = 0.45, ARM_SWING = 1.0;
+/** Cells of rock a drone takes from a vehicle's bucket per pickup trip. */
+const PICKUP_CELLS = 8;
 
 const BOT_NAMES = ['Rivet', 'Sprocket', 'Gasket', 'Ratchet', 'Clunk', 'Widget', 'Dinky', 'Bolt', 'Grommet', 'Tinpot', 'Flange', 'Pinion'];
 
@@ -70,8 +79,10 @@ export interface Bot {
   hp: number;
   heat: number;
   cargo: Partial<Record<Resource, number>>;
-  state: 'docked' | 'idle' | 'toDig' | 'digging' | 'toDepot' | 'salute' | 'tantrum';
+  state: 'docked' | 'idle' | 'toDig' | 'digging' | 'toDepot' | 'toVehicle' | 'loading' | 'salute' | 'tantrum';
   target: number;
+  /** The vehicle this drone is fetching a load from (see Vehicle.pickup), or -1. */
+  pickup: number;
   path: Vec[];
   replanAt: number;
   stuck: number;
@@ -129,8 +140,19 @@ export interface Vehicle {
   motors: RAPIER.RevoluteImpulseJoint[];
   /** Which way the drill points: 1 right, -1 left. */
   facing: 1 | -1;
-  /** Drill arm angle above (+) or below (-) straight ahead, radians. */
+  /**
+   * Where the drill aims: radians above (+) or below (-) level, whatever the hull's tilt (the arm
+   * swings to hold it), so a ramp it cuts keeps one slope.
+   */
   drillAngle: number;
+  /** The driver has asked for drones to come and empty the bucket. */
+  pickup: boolean;
+  /**
+   * The line the bore's floor follows, fixed in the world: through (x, y) at the drill's aim. It
+   * stays put while the aim and direction hold, so a ramp keeps rising at the same slope however
+   * slowly the vehicle creeps up it.
+   */
+  bore: { x: number; y: number; aim: number; facing: number } | null;
   drilling: boolean;
   bucket: Record<number, number>;
   /** How long it has been lying on its back or side (it rights itself after a moment). */
@@ -1279,7 +1301,7 @@ export class Game {
     const n = this.vehiclesBuilt++;
     const v: Vehicle = {
       id: nextId++, name: VEHICLE_NAMES[n % VEHICLE_NAMES.length] + (n >= VEHICLE_NAMES.length ? ' II' : ''), depotId: depot.id,
-      body, wheels, motors, facing: 1, drillAngle: 0, drilling: false, bucket: {}, upset: 0, unloading: false, fullWarned: false, removed: false,
+      body, wheels, motors, facing: 1, drillAngle: 0, pickup: false, bore: null, drilling: false, bucket: {}, upset: 0, unloading: false, fullWarned: false, removed: false,
     };
     this.vehicles.push(v);
     this.entityVersion++;
@@ -1320,7 +1342,34 @@ export class Game {
     if (!n) return this.warn('The bucket is empty.', 'hints');
     v.bucket = {};
     v.fullWarned = false;
+    v.pickup = false;
     this.gpu?.burst(p.x - v.facing * 0.7, p.y, 30, Mat.Dirt, 1.2, 0.2);
+  }
+
+  /**
+   * Ask for (or call off) a pickup: drones come to the vehicle being driven and carry its bucket
+   * home a load at a time. They only go to a vehicle within a base's range.
+   */
+  requestPickup() {
+    const v = this.driving;
+    if (!v) return;
+    if (v.pickup) { v.pickup = false; return this.info(`Pickup for ${v.name} called off.`); }
+    if (bucketTotal(v) < 0.5) return this.warn('The bucket is empty.', 'hints');
+    const p = v.body.translation();
+    if (!this.inDigRange(p.x, p.y)) return this.warn(`${v.name} is out of drone range: pickups only reach ${DIG_RADIUS}m from a base.`, 'hints');
+    v.pickup = true;
+    this.info(`${v.name} requested a pickup. Drones will come and empty its bucket.`);
+  }
+
+  /** Where drones hover to load from a vehicle: over its bucket. */
+  bucketPos(v: Vehicle) {
+    return this.chassisPoint(v, -v.facing * 0.46, 0.38);
+  }
+
+  /** A point in a vehicle's hull frame (x forward-right, y up), in world space. */
+  private chassisPoint(v: Vehicle, lx: number, ly: number) {
+    const p = v.body.translation(), a = v.body.rotation();
+    return { x: p.x + lx * Math.cos(a) - ly * Math.sin(a), y: p.y + lx * Math.sin(a) + ly * Math.cos(a) };
   }
 
   /** Turn the vehicle being driven around, so the drill points the other way. */
@@ -1365,11 +1414,60 @@ export class Game {
     return placed;
   }
 
+  /** The drill arm's angle on the hull: the aim, less the hull's tilt, as far as the arm swings. */
+  armAngle(v: Vehicle) {
+    const a = Math.atan2(Math.sin(v.body.rotation()), Math.cos(v.body.rotation()));
+    return Math.max(-ARM_SWING, Math.min(ARM_SWING, v.drillAngle - v.facing * a));
+  }
+
   /** Where the drill bit is, in world space. */
-  drillTip(v: Vehicle, along = 1) {
-    const p = v.body.translation(), a = v.body.rotation();
-    const lx = v.facing * (CHASSIS.pivotX + Math.cos(v.drillAngle) * CHASSIS.drillLen * along), ly = CHASSIS.pivotY + Math.sin(v.drillAngle) * CHASSIS.drillLen * along;
-    return { x: p.x + lx * Math.cos(a) - ly * Math.sin(a), y: p.y + lx * Math.sin(a) + ly * Math.cos(a) };
+  drillTip(v: Vehicle) {
+    const arm = this.armAngle(v);
+    return this.chassisPoint(v, v.facing * (CHASSIS.pivotX + Math.cos(arm) * CHASSIS.drillLen), CHASSIS.pivotY + Math.sin(arm) * CHASSIS.drillLen);
+  }
+
+  /**
+   * The bore's floor line (see Vehicle.bore) and how far along it the front wheel is. The line is
+   * laid from the ground under the front wheel when drilling starts, and again when the aim or
+   * direction changes or the vehicle has left it; otherwise it stays where it is, so the floor the
+   * wheels drive onto is the floor the drill cut, at the slope it was aimed.
+   */
+  private boreLine(v: Vehicle) {
+    const wheel = v.wheels[v.facing === 1 ? 1 : 0].translation();
+    const ground = { x: wheel.x + v.facing * CHASSIS.wheelR * 0.7, y: wheel.y - CHASSIS.wheelR + 0.02 };
+    const dx = v.facing * Math.cos(v.drillAngle), dy = Math.sin(v.drillAngle);
+    let b = v.bore;
+    const along = (q: Vec) => (q.x - b!.x) * dx + (q.y - b!.y) * dy;
+    const off = () => Math.abs((ground.x - b!.x) * dy - (ground.y - b!.y) * dx);
+    if (!b || b.aim !== v.drillAngle || b.facing !== v.facing || off() > 0.2 || along(ground) < -0.5) b = v.bore = { ...ground, aim: v.drillAngle, facing: v.facing };
+    return { b, dx, dy, s0: along(ground), at: (x: number) => b.y + ((x - b.x) / dx) * dy };
+  }
+
+  /**
+   * Cut the bore (see BORE) ahead of the front wheel, into `got`: stacks of circles above the
+   * floor line, which leave the cells under the line alone, then the cells the line passes through
+   * shaved to just the density that puts the rock's surface on the line. Cut cell by cell alone, a
+   * ramp is a staircase whose corners are steeper than the wheels can climb.
+   */
+  private cutBore(v: Vehicle, amount: number, got: Yield, room: () => boolean) {
+    const t = this.terrain, { b, dx, dy, s0, at } = this.boreLine(v);
+    const above = (k: number) => cellCenter((k / W) | 0) > at(cellCenter(k % W)) && room();
+    for (let s = s0 - 0.1; s <= s0 + BORE.reach + 1e-6; s += BORE.r * 0.8) {
+      // The lowest circles sit at cell-centre height over the floor line, so the row of cells just
+      // above it is cut cleanly.
+      for (let h = CELL / 2; h <= BORE.height - BORE.r + 1e-6; h += BORE.r * 1.25) t.carve(b.x + dx * s, b.y + dy * s + h, BORE.r, amount, got, above);
+    }
+    const xa = b.x + dx * (s0 - 0.1), xb = b.x + dx * (s0 + BORE.reach);
+    const i0 = toCell(Math.min(xa, xb)), i1 = toCell(Math.max(xa, xb));
+    let j0 = H, j1 = 0;
+    for (let i = i0; i <= i1; i++) {
+      const line = at(cellCenter(i));
+      for (let j = toCell(line - CELL); j <= toCell(line + CELL); j++) {
+        if (!room()) break;
+        if (t.lowerTo(i, j, Math.max(0, Math.min(1, 0.5 + (line - cellCenter(j)) / CELL)), amount, got) > 0) { j0 = Math.min(j0, j); j1 = Math.max(j1, j); }
+      }
+    }
+    if (j0 <= j1) t.markDirty(i0, j0, i1, j1);
   }
 
   /**
@@ -1383,7 +1481,7 @@ export class Game {
       // Wheels spin clockwise (negative) to roll right.
       for (const m of v.motors) m.configureMotorVelocity(-input.throttle * VEHICLE.wheelSpeed, input.throttle ? 30 : 12);
       if (input.throttle) for (const w of v.wheels) w.wakeUp();
-      v.drillAngle = Math.max(-0.9, Math.min(0.9, v.drillAngle + input.tilt * dt * 1.6));
+      v.drillAngle = Math.max(-DRILL_AIM, Math.min(DRILL_AIM, v.drillAngle + input.tilt * dt * 1.2));
       const p = v.body.translation();
       if (p.y < -2) { this.removeVehicle(v); continue; }
 
@@ -1398,13 +1496,9 @@ export class Game {
         const k = cellIndex(Math.max(0, Math.min(W - 1, toCell(tip.x))), Math.max(0, Math.min(H - 1, toCell(tip.y))));
         const hard = Math.max(0.4, t.density[k] > ISO ? t.hardness(k) : 1);
         if (Number.isFinite(hard)) {
-          // The bore runs the length of the arm, so the tunnel floor stays level with the wheels
-          // (a round hole at the tip alone leaves a lip the front wheel would climb).
           const got: Yield = {};
-          for (const along of [0, 0.5, 1]) {
-            const q = this.drillTip(v, along);
-            t.carve(q.x, q.y, CHASSIS.drillR, (dt * VEHICLE.drillRate) / hard, got, () => bucketTotal(v) + Object.values(got).reduce((s, n) => s + n, 0) < VEHICLE.bucket);
-          }
+          const room = () => bucketTotal(v) + Object.values(got).reduce((s, n) => s + n, 0) < VEHICLE.bucket;
+          this.cutBore(v, (dt * VEHICLE.drillRate) / hard, got, room);
           let cut = 0;
           for (const [m, n] of Object.entries(got)) { v.bucket[Number(m)] = (v.bucket[Number(m)] ?? 0) + n; cut += n; }
           if (cut > 0 && Math.random() < dt * 20) {
@@ -1428,13 +1522,13 @@ export class Game {
           if (n - take <= 1e-6) delete v.bucket[Number(m)]; else v.bucket[Number(m)] = n - take;
           if (room <= 0) break;
         }
-        if (!bucketTotal(v)) { v.bucket = {}; v.fullWarned = false; this.info(`${v.name} unloaded at the depot.`); }
+        if (!bucketTotal(v)) { v.bucket = {}; v.fullWarned = false; v.pickup = false; this.info(`${v.name} unloaded at the depot.`); }
       }
 
       // A gyro keeps it from rearing over when it climbs or pushes against a wall; if it does end
       // up on its back or side anyway, it hops and flips itself upright after a moment.
       const a = Math.atan2(Math.sin(v.body.rotation()), Math.cos(v.body.rotation()));
-      if (Math.abs(a) > 0.4 && Math.abs(a) < 1.8) v.body.setAngvel(v.body.angvel() * (1 - Math.min(1, dt * 6)) - Math.sign(a) * (Math.abs(a) - 0.4) * 160 * dt, true);
+      if (Math.abs(a) > DRILL_AIM + 0.1 && Math.abs(a) < 1.8) v.body.setAngvel(v.body.angvel() * (1 - Math.min(1, dt * 6)) - Math.sign(a) * (Math.abs(a) - DRILL_AIM - 0.1) * 160 * dt, true);
       v.upset = Math.abs(a) > 1.4 ? v.upset + dt : 0;
       if (v.upset > 1) {
         v.upset = 0;
@@ -1479,7 +1573,7 @@ export class Game {
     );
     const bot: Bot = {
       id: nextId++, name: BOT_NAMES[this.bots.length % BOT_NAMES.length] + (this.bots.length >= BOT_NAMES.length ? ' II' : ''),
-      pad, battery: 100, lowBattery: false, body, hp: 100, heat: 0, cargo: {}, state: 'docked', target: -1, path: [], replanAt: 0,
+      pad, battery: 100, lowBattery: false, body, hp: 100, heat: 0, cargo: {}, state: 'docked', target: -1, pickup: -1, path: [], replanAt: 0,
       stuck: 0, progressPos: { x, y }, progressAt: this.time, stateTimer: 0, emoteAt: {}, blacklist: new Map(),
       drillPoint: null, drillFx: 0, facing: 1, dead: false,
     };
@@ -2039,6 +2133,8 @@ export class Game {
         case 'idle': this.botIdle(bot); break;
         case 'toDig':
         case 'toDepot': this.botTravel(bot, dt); break;
+        case 'toVehicle': this.botToVehicle(bot, dt); break;
+        case 'loading': this.botLoading(bot, dt); break;
         case 'digging': this.botDig(bot, dt); break;
       }
       if (bot.state === 'idle' || bot.state === 'digging') this.steer(bot, null, dt);
@@ -2054,7 +2150,7 @@ export class Game {
 
       // Stuck detection drives the tantrum.
       if (this.time - bot.progressAt > 2) {
-        const moving = bot.state === 'toDig' || bot.state === 'toDepot';
+        const moving = bot.state === 'toDig' || bot.state === 'toDepot' || bot.state === 'toVehicle';
         bot.stuck = moving && dist(p, bot.progressPos) < 0.25 ? bot.stuck + 2 : 0;
         bot.progressPos = { x: p.x, y: p.y };
         bot.progressAt = this.time;
@@ -2086,8 +2182,9 @@ export class Game {
     if (!this.findWork(bot)) this.goDepot(bot);
   }
 
-  /** Claim one of the nearest exposed designated cells and plan a route to it. */
+  /** Pick up a load from a vehicle that asked, else claim one of the nearest exposed designated cells and plan a route to it. */
   private findWork(bot: Bot) {
+    if (cargoTotal(bot) < 0.5 && this.findPickup(bot)) return true;
     const p = bot.body.translation();
     for (const k of this.exposedTargets(p, bot).slice(0, 4)) {
       const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
@@ -2105,6 +2202,74 @@ export class Game {
       bot.blacklist.set(k, this.time + 12);
     }
     return false;
+  }
+
+  /**
+   * A vehicle that asked for a pickup, is within range of a base, and has more in its bucket than
+   * the drones already on their way will take: plan a route to it.
+   */
+  private findPickup(bot: Bot) {
+    const p = bot.body.translation();
+    for (const v of this.vehicles) {
+      const vp = v.body.translation();
+      if (!v.pickup || !this.inDigRange(vp.x, vp.y)) continue;
+      const coming = this.bots.filter((b) => !b.dead && b.pickup === v.id).length;
+      if (coming * PICKUP_CELLS >= bucketTotal(v)) continue;
+      const q = this.bucketPos(v);
+      const path = this.route(p.x, p.y, q.x, q.y, 0.45);
+      if (!path) continue;
+      this.releaseClaim(bot);
+      bot.pickup = v.id;
+      bot.path = path;
+      bot.state = 'toVehicle';
+      bot.replanAt = this.time + 1;
+      return true;
+    }
+    return false;
+  }
+
+  /** The vehicle a drone is fetching from, if the pickup is still on. */
+  private pickupFor(bot: Bot) {
+    const v = this.vehicles.find((o) => o.id === bot.pickup);
+    if (!v || !v.pickup || bucketTotal(v) < 0.05) return null;
+    const vp = v.body.translation();
+    return this.inDigRange(vp.x, vp.y) ? v : null;
+  }
+
+  /** Fly to a vehicle's bucket (it may be moving, so keep re-planning), then load. */
+  private botToVehicle(bot: Bot, dt: number) {
+    const v = this.pickupFor(bot);
+    if (!v) { this.releaseClaim(bot); bot.state = 'idle'; return; }
+    const p = bot.body.translation(), q = this.bucketPos(v);
+    if (dist(p, q) < 0.35) { bot.state = 'loading'; bot.stateTimer = 1.2; bot.path = []; return; }
+    if (this.time >= bot.replanAt) {
+      bot.replanAt = this.time + 1;
+      const path = this.route(p.x, p.y, q.x, q.y, 0.45);
+      if (path) bot.path = path;
+    }
+    while (bot.path.length && dist(p, bot.path[0]) < 0.3) bot.path.shift();
+    this.steer(bot, bot.path[0] ?? q, dt, !bot.path.length);
+  }
+
+  /** Hover over the bucket while it's tipped in, then take a load home. */
+  private botLoading(bot: Bot, dt: number) {
+    const v = this.pickupFor(bot);
+    if (!v) { this.releaseClaim(bot); bot.state = 'idle'; return; }
+    const q = this.bucketPos(v);
+    this.steer(bot, q, dt, true);
+    if (Math.random() < dt * 10) this.gpu?.burst(q.x, q.y - 0.15, 2, Number(Object.keys(v.bucket)[0]) || Mat.Dirt, 0.6, 0.06);
+    if (bot.stateTimer > 0) return;
+    let room = PICKUP_CELLS;
+    for (const [m, n] of Object.entries(v.bucket)) {
+      const take = Math.min(n, room);
+      room -= take;
+      for (const [res, per] of Object.entries(MATERIALS[Number(m)].yields) as [Resource, number][]) bot.cargo[res] = (bot.cargo[res] ?? 0) + per * take;
+      if (n - take <= 1e-6) delete v.bucket[Number(m)]; else v.bucket[Number(m)] = n - take;
+      if (room <= 0) break;
+    }
+    v.fullWarned = false;
+    if (bucketTotal(v) < 0.05) { v.bucket = {}; v.pickup = false; this.info(`${v.name}'s bucket is empty: pickup done.`); }
+    this.goDepot(bot);
   }
 
   private exposedTargets(p: Vec, bot: Bot) {
@@ -2160,9 +2325,11 @@ export class Game {
     this.claims.set(k, bot.id);
   }
 
+  /** Drop whatever job the drone holds: its dig target and any pickup. */
   private releaseClaim(bot: Bot) {
     if (bot.target >= 0 && this.claims.get(bot.target) === bot.id) this.claims.delete(bot.target);
     bot.target = -1;
+    bot.pickup = -1;
   }
 
   private startDig(bot: Bot, k: number) {

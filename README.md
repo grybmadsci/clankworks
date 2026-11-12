@@ -56,12 +56,18 @@ and drones fly around it.
 
 **Vehicles.** A **vehicle depot** (6 scrap + 4 plates; one per base, within its dig range, on
 flat ground) builds one steam-driven mining vehicle at a time (8 plates, `V`). You drive it
-yourself: click it with the Select cursor, then `A`/`D` drive, `W`/`S` tilt the drill arm,
-`Space` drills, `E` dumps the bucket behind it, `F` turns it around, and `Esc` gets out; the
-camera follows it. The drill bores a tunnel it fits through and cuts any rock except bedrock,
-slowly for the hard stuff, into a 24-cell bucket. Parking at its depot empties the bucket into the
-stockpiles (ore as ore, spoil as a little scrap). A gyro keeps it from rearing over, and if it does
-end up on its back it hops upright again. Scrapping a vehicle refunds its full cost and spills its
+yourself: click it with the Select cursor, then `A`/`D` drive, `W`/`S` aim the drill (up to
+about 26° above or below level), `Space` drills, `E` dumps the bucket behind it, `P` calls drones
+to fetch the bucket, `F` turns it around, and `Esc` gets out; the camera follows it. The drill cuts
+a bore about 0.95m tall into any rock except bedrock (slowly for the hard stuff), into a 40-cell
+bucket. The bore's floor follows the aim along a line laid down when drilling starts, and its
+surface is shaved smooth, so aiming up cuts a steady ramp the wheels can climb (and aiming down a
+steady decline), however slowly you creep forward. The arm holds its aim relative to level ground
+as the hull tilts, so the slope doesn't steepen as the vehicle climbs. Parking at its depot empties the
+bucket into the stockpiles (ore as ore, spoil as a little scrap). Within a base's range, `P`
+requests a pickup instead: idle drones fly to the vehicle, take up to 8 cells each and carry them
+home until the bucket is empty (`P` again calls it off). A gyro keeps it from rearing over, and if
+it does end up on its back it hops upright again. Scrapping a vehicle refunds its full cost and spills its
 bucket onto the ground: ore lands as ore, other rock as rubble. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
 red. Flying drains it, and the mining laser drains it faster. Below 25% a drone drops its job
 and flies home to recharge on its pad, and it won't launch again until it's back above 70%. A
@@ -124,7 +130,7 @@ The toolbar has three sections:
 | Buildings | `R` Research | Open the tech tree |
 | Buildings | `B` Drone | Build a drone (3 plates), one per landing pad in service |
 | Buildings | `V` Vehicle | Build a mining vehicle at a depot (8 plates) and take the wheel; if every depot's vehicle is out, take the wheel of one |
-| Driving | `A`/`D`, `W`/`S`, `Space`, `E`, `F`, `Esc` | Drive, tilt the drill, drill, dump the bucket, turn around, get out |
+| Driving | `A`/`D`, `W`/`S`, `Space`, `E`, `P`, `F`, `Esc` | Drive, aim the drill, drill, dump the bucket, request (or call off) a drone pickup, turn around, get out |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 

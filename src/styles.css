@@ -296,3 +296,4 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .girder-label .err { color: #ff9a85; margin-top: 2px; }
 .girder-label.bad { border-color: #a04030; }
 .girder-label b { display: inline-flex; align-items: center; gap: 3px; }
+.driving p.pickup { color: #7fd8ff; margin-top: 4px; }

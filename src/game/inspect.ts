@@ -32,6 +32,8 @@ function droneStatus(b: Bot) {
     case 'toDig': return 'Flying to a dig order';
     case 'digging': return 'Mining';
     case 'toDepot': return cargoTotal(b) > 0.5 ? 'Returning to unload' : 'Returning to base';
+    case 'toVehicle': return 'Flying to pick up from a vehicle';
+    case 'loading': return 'Loading from a vehicle\'s bucket';
     case 'tantrum': return 'Having a tantrum';
     case 'salute': return 'Saluting Carl';
     default: return 'Looking for work';
@@ -65,6 +67,7 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
       title: `Mining vehicle ${v.name}`,
       lines: [
         v === game.driving ? (v.drilling ? 'Drilling' : v.unloading ? 'Unloading at the depot' : 'You are driving') : 'Parked: click it with Select to drive',
+        ...(v.pickup ? [`Pickup requested: ${game.bots.filter((b) => !b.dead && b.pickup === v.id).length} drones on the way`] : []),
         `Bucket ${load.toFixed(1)} / ${VEHICLE.bucket} cells${held.length ? ` · ${held.join(', ')}` : ''}`,
         'Empties into the stockpiles at its depot',
       ],

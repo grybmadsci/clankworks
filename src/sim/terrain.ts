@@ -162,6 +162,22 @@ export class Terrain {
     return out;
   }
 
+  /**
+   * Lower cell (i, j)'s density towards `target` by at most `step`, adding what's removed to `out`
+   * by material (like carve). The caller marks the area dirty. Returns the density removed.
+   */
+  lowerTo(i: number, j: number, target: number, step: number, out: Yield) {
+    if (!this.inBounds(i, j)) return 0;
+    const k = cellIndex(i, j), m = this.material[k], before = this.density[k];
+    if (m === Mat.Bedrock || before <= target) return 0;
+    const after = Math.max(target, before - step);
+    this.density[k] = after;
+    out[m] = (out[m] ?? 0) + (before - after);
+    if (after <= ISO) this.digMark[k] &= EXPLORED_BIT;
+    if (after === 0) this.material[k] = Mat.Air;
+    return before - after;
+  }
+
   /** Remove a whole set of cells (used when an island detaches into a rigidbody). */
   clearCells(cells: number[]) {
     let i0 = W, j0 = H, i1 = 0, j1 = 0;

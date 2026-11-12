@@ -69,6 +69,7 @@ export function Hud({ game }: { game: Game }) {
       if (e.key === 'v') game.buildVehicle();
       if (game.driving && e.key === 'e') game.dumpBucket();
       if (game.driving && e.key === 'f') game.turnVehicle();
+      if (game.driving && e.key === 'p') game.requestPickup();
       // Space drills while driving; keep it from pressing the focused button.
       if (game.driving && e.key === ' ') e.preventDefault();
       if (e.key === 'r') setTech(!techRef.current);
@@ -180,8 +181,9 @@ export function Hud({ game }: { game: Game }) {
             <div className="bar"><div style={{ width: `${Math.min(100, (bucketTotal(game.driving) / VEHICLE.bucket) * 100)}%` }} /></div>
             <b>{bucketTotal(game.driving).toFixed(0)}/{VEHICLE.bucket}</b>
           </div>
-          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill · <kbd>E</kbd> dump bucket · <kbd>F</kbd> turn around · <kbd>Esc</kbd> get out</p>
-          <p className="sub">The bucket empties into the stockpiles when you park at the depot.</p>
+          {game.driving.pickup && <p className="pickup">Pickup requested: {game.bots.filter((b) => !b.dead && b.pickup === game.driving!.id).length} drones on the way</p>}
+          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill · <kbd>E</kbd> dump bucket · <kbd>P</kbd> {game.driving.pickup ? 'call off pickup' : 'request pickup'} · <kbd>F</kbd> turn around · <kbd>Esc</kbd> get out</p>
+          <p className="sub">The bucket empties into the stockpiles when you park at the depot, or drones fetch it (P) while you're within a base's range.</p>
         </aside>
       )}
       {game.strutConfirm && <StrutConfirm game={game} onDone={() => force((n) => n + 1)} />}

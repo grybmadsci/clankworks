@@ -659,7 +659,7 @@ try {
     window.__view.goto(ox, oy + 1);
     for (let n = 0; n < 30; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
     const ci = Math.floor(ox / 0.25), cj = Math.floor(oy / 0.25), c = (i) => (i + 0.5) * 0.25;
-    for (let j = cj - 4; j <= cj + 10; j++) for (let i = ci - 14; i <= ci + 14; i++) {
+    for (let j = cj - 4; j <= cj + 10; j++) for (let i = ci - 14; i <= ci + 34; i++) {
       const k = j * 512 + i;
       const open = (j >= cj && j < cj + 8 && i >= ci - 12 && i <= ci + 12) || (j >= cj - 3 && j < cj && i >= ci - 6 && i <= ci - 3);
       const copper = j >= cj && j < cj + 5 && i >= ci + 8 && i <= ci + 12;
@@ -667,11 +667,11 @@ try {
       t.strut[k] = 0; t.occupied[k] = 0;
     }
     // Earlier tests' struts may stand here; the room replaces them.
-    g.struts = g.struts.filter((s) => s.i < ci - 14 || s.i > ci + 14 || s.j1 < cj - 4 || s.j0 > cj + 10);
+    g.struts = g.struts.filter((s) => s.i < ci - 14 || s.i > ci + 34 || s.j1 < cj - 4 || s.j0 > cj + 10);
     // A pocket out of every base's range, to try a depot in.
     const pj = cj - 40;
     for (let j = pj - 1; j <= pj + 6; j++) for (let i = ci - 5; i <= ci + 5; i++) { const k = j * 512 + i, open = j >= pj && j < pj + 6 && Math.abs(i - ci) < 5; t.density[k] = open ? 0 : 1; t.material[k] = open ? 0 : 2; }
-    t.markDirty(ci - 15, pj - 2, ci + 15, cj + 11, false);
+    t.markDirty(ci - 15, pj - 2, ci + 35, cj + 11, false);
     g.reveal(ox, oy + 1, 6);
     g.update(1 / 30);
     g.entityVersion++;
@@ -703,16 +703,58 @@ try {
   const vstate = () => page.evaluate(() => { const g = window.__game, v = g.vehicles[0], p = v.body.translation(); return { x: p.x, y: p.y, a: v.body.rotation(), bucket: { ...v.bucket }, ore: g.resources.ore }; });
   await drive(['d'], 2.5);
   const across = await vstate();
+  // Aiming up cuts a ramp even at a crawl: tap forward with the drill running and the vehicle
+  // climbs. Then level the drill again.
+  await drive(['w'], 1.2);
+  const aim = await page.evaluate(() => window.__game.vehicles[0].drillAngle);
+  const face = await vstate();
+  for (let n = 0; n < 16; n++) { await drive(['d', ' '], 0.25); await drive([' '], 0.35); }
+  const ramp = await vstate();
+  await shot('9-ramp');
+  // Keep going up it: the slope holds at the aim rather than steepening.
+  await drive(['d', ' '], 3);
+  const climbed = await vstate();
+  console.log('ramp', JSON.stringify({ aim, face, ramp, climbed }));
+  check(Math.abs(aim - 0.45) < 0.01, `the drill aims at most ${aim.toFixed(2)} rad up`);
+  check(ramp.y - face.y > 0.05 && ramp.x > face.x && ramp.a > 0.3 && ramp.a < 0.6, `aimed up, creeping forward cuts a ramp it starts up (tilted ${ramp.a.toFixed(2)})`);
+  check(climbed.y - face.y > 0.4 && climbed.a > 0.3 && climbed.a < 0.6, `driving on, it climbs the ramp at a steady slope (${(climbed.y - face.y).toFixed(2)}m up, tilted ${climbed.a.toFixed(2)})`);
+  await drive(['s'], 0.375);
   await drive(['d', ' '], 3);
   const drilled = await vstate();
   await shot('8-vehicle');
   await drive(['a'], 4);
-  await fastForward(1.5);
+  await fastForward(4);
   const home = await vstate();
   console.log('drive', JSON.stringify({ across, drilled, home }));
   check(across.x > (room.ci - 3 + 1) * 0.25 + 0.4 && Math.abs(across.y - room.floor - 0.26) < 0.1, 'the vehicle drives across the girder over the pit');
-  check((drilled.bucket[3] ?? 0) > 2 && Math.abs(drilled.a) < 0.7, `the drill cuts copper into the bucket (${(drilled.bucket[3] ?? 0).toFixed(1)} cells) without the vehicle rearing over`);
+  check((drilled.bucket[3] ?? 0) > 2 && Math.abs(drilled.a) < 0.6, `the drill cuts copper into the bucket (${(drilled.bucket[3] ?? 0).toFixed(1)} cells) without the vehicle rearing over`);
   check(Object.keys(home.bucket).length === 0 && home.ore - drilled.ore > 2, `parking at the depot empties the bucket into the stockpile (+${(home.ore - drilled.ore).toFixed(1)} ore)`);
+  const pickup = await page.evaluate(async () => {
+    const g = window.__game, t = g.terrain, d = g.layout.depot, v = g.vehicles[0];
+    const ci = Math.floor((d.x + 4) / 0.25), cj = Math.floor((d.y - 4) / 0.25);
+    // A shaft up from the room until it opens into the base cavern.
+    let j = cj + 8;
+    for (; j < cj + 60 && [-1, 0, 1].some((di) => t.density[j * 512 + ci + di] > 0.5); j++) for (let i = ci - 1; i <= ci + 1; i++) { const k = j * 512 + i; t.density[k] = 0; t.material[k] = 0; }
+    t.markDirty(ci - 2, cj + 7, ci + 2, j + 1);
+    for (let n = 0; n < 10; n++) g.update(1 / 30);
+    return { shaft: [cj + 8, j], depotRow: Math.floor(d.y / 0.25), pathTop: !!g.route(d.x, d.y + 1.5, (ci + 0.5) * 0.25, (j + 1) * 0.25, 0.3) };
+  });
+  // Away from the depot (or parking there would unload it), in reach of the shaft.
+  await drive(['d'], 1.3);
+  await fastForward(1);
+  const delivered0 = await page.evaluate(() => { const g = window.__game; g.vehicles[0].bucket = { 3: 10, 1: 6 }; return g.oreDelivered; });
+  await page.keyboard.press('p');
+  const asked = await page.evaluate(() => window.__game.vehicles[0].pickup);
+  let fetched = null;
+  for (let n = 0; n < 15 && !fetched; n++) {
+    await fastForward(2);
+    fetched = await page.evaluate(() => { const g = window.__game, v = g.vehicles[0]; return v.pickup || Object.keys(v.bucket).length ? null : { ore: g.resources.ore, busy: g.bots.filter((b) => b.state === 'toDepot' || b.state === 'loading').length }; });
+  }
+  await fastForward(6);
+  const delivered = (await page.evaluate(() => window.__game.oreDelivered)) - delivered0;
+  const bots = await page.evaluate(() => { const g = window.__game, v = g.vehicles[0], q = g.bucketPos(v); return { v: [v.body.translation().x, v.body.translation().y], bucket: v.bucket, bots: g.bots.filter((b) => !b.dead).map((b) => [b.state, b.pickup, +b.body.translation().x.toFixed(1), +b.body.translation().y.toFixed(1)]), route: !!g.route(g.layout.depot.x, g.layout.depot.y + 1.5, q.x, q.y, 0.45) }; });
+  console.log('pickup', JSON.stringify({ ...pickup, asked, fetched, delivered, ...bots }));
+  check(asked && fetched && delivered > 8, `P calls drones to empty the bucket and carry it home (${delivered.toFixed(1)} ore delivered)`);
   const wrecked = await page.evaluate(async () => {
     const g = window.__game, v = g.vehicles[0], t = g.terrain;
     const solid = () => { let n = 0; for (let k = 0; k < t.density.length; k++) if (t.density[k] > 0.5) n++; return n; };

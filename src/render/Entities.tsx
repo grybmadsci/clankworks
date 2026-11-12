@@ -761,7 +761,7 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
     root.current.position.set(p.x, p.y, Z_ACTORS);
     root.current.rotation.z = vehicle.body.rotation();
     flip.current.scale.x = vehicle.facing;
-    arm.current.rotation.z = vehicle.drillAngle;
+    arm.current.rotation.z = game.armAngle(vehicle);
     state.spin += dt * (vehicle.drilling ? 30 : 0);
     bit.current.rotation.x = state.spin;
     const load = Math.min(1, bucketTotal(vehicle) / VEHICLE.bucket);
