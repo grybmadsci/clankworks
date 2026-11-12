@@ -3,11 +3,14 @@ import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
 import type { Game, Overlay, Tool } from '../game/Game';
 import { MATERIAL_KEY } from '../render/materials';
+import { inspect } from '../game/inspect';
+import { Icon, cursorFor } from './icons';
 import { unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
 interface ToolDef { id: Tool; key: string; label: string; hint: string }
 const ORDERS: ToolDef[] = [
+  { id: 'select', key: 'Esc', label: 'Select', hint: 'Plain cursor: hover anything to see what it is' },
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
   { id: 'blast', key: '3', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
@@ -19,11 +22,11 @@ const BUILDINGS: ToolDef[] = [
 ];
 const TOOLS = [...ORDERS, ...BUILDINGS];
 const LAYERS = [
-  { label: 'Normal', hint: 'Plain view' },
-  { label: 'Heat', hint: 'Temperature: blue freezing, green comfortable, red hot' },
-  { label: 'Oxygen', hint: 'Breathable air in blue, none in red, toxic gas in green' },
-  { label: 'Integrity', hint: 'Structural stress: green sound, yellow to red near its limit, flashing when cracking' },
-  { label: 'Material', hint: 'What the ground is made of, in high-contrast colours. Click the key to show or hide each material' },
+  { label: 'Normal', icon: 'normal', hint: 'Plain view' },
+  { label: 'Heat', icon: 'heat', hint: 'Temperature: blue freezing, green comfortable, red hot' },
+  { label: 'Oxygen', icon: 'oxygen', hint: 'Breathable air in blue, none in red, toxic gas in green' },
+  { label: 'Integrity', icon: 'integrity', hint: 'Structural stress: green sound, yellow to red near its limit, flashing when cracking' },
+  { label: 'Material', icon: 'material', hint: 'What the ground is made of, in high-contrast colours. Click the key to show or hide each material' },
 ];
 
 /** DOM overlay: resources, tools, critter status, the status log, and emote speech bubbles. */
@@ -37,7 +40,7 @@ export function Hud({ game }: { game: Game }) {
         if (e.key === ' ') game.skipIntro();
         return;
       }
-      const tool = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
+      const tool = e.key === 'Escape' ? TOOLS[0] : TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
       if (e.key === 't') game.overlay = ((game.overlay + 1) % LAYERS.length) as Overlay;
@@ -78,7 +81,7 @@ export function Hud({ game }: { game: Game }) {
           <ToolGroup title="Buildings">
             {BUILDINGS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
             <button className="build" title="A mining drone: 3 plates + 2 critter goo (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
-              <kbd>B</kbd>Drone
+              <Icon name="drone" /><span>Drone</span><kbd>B</kbd>
             </button>
           </ToolGroup>
         </nav>
@@ -89,7 +92,7 @@ export function Hud({ game }: { game: Game }) {
           <h3>Layers <span>T cycles</span></h3>
           {LAYERS.map((l, n) => (
             <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as Overlay; force((k) => k + 1); }}>
-              {l.label}
+              <Icon name={l.icon} />{l.label}
             </button>
           ))}
           {game.overlay === 4 && (
@@ -105,6 +108,7 @@ export function Hud({ game }: { game: Game }) {
               })}
             </div>
           )}
+          <p className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom</p>
         </aside>
       )}
 
@@ -132,9 +136,8 @@ export function Hud({ game }: { game: Game }) {
       <aside className="panel log">
         {game.log.slice(-8).map((l) => <div key={l.id} className={l.kind}>{l.text}</div>)}
       </aside>
-
-      <div className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom</div>
       <Bubbles game={game} />
+      <Inspector game={game} />
     </div>
   );
 }
@@ -151,9 +154,47 @@ function ToolGroup({ title, hint, children }: { title: string; hint?: string; ch
 function ToolButton({ t, game, onPick }: { t: ToolDef; game: Game; onPick: () => void }) {
   return (
     <button className={game.tool === t.id ? 'active' : ''} title={t.hint} onClick={() => { game.tool = t.id; onPick(); }}>
-      <kbd>{t.key}</kbd>{t.label}
+      <Icon name={t.id} /><span>{t.label}</span><kbd>{t.key}</kbd>
     </button>
   );
+}
+
+/**
+ * Hover card for the plain cursor: what's under the pointer (a drone, a strut, the base, a
+ * critter, or the rock itself) with a few facts about it. Also keeps the canvas cursor matched
+ * to the active tool.
+ */
+function Inspector({ game }: { game: Game }) {
+  const card = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let raf = 0, next = 0, tool = '';
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      const canvas = document.querySelector('canvas');
+      if (canvas && tool !== game.tool) {
+        tool = game.tool;
+        // Strut and Smelter show holograms; the rest get an icon cursor.
+        canvas.style.cursor = tool === 'strut' || tool === 'smelter' ? 'crosshair' : cursorFor(tool, tool === 'cancel' ? '#ff9a85' : tool === 'scrap' ? '#ffb38a' : '#ffe2a8');
+      }
+      const el = card.current, ray = view.ray;
+      if (!el) return;
+      if (game.tool !== 'select' || !ray || !view.cursor) { el.style.display = 'none'; return; }
+      el.style.transform = `translate(${view.mouse.x + 18}px, ${view.mouse.y + 14}px)`;
+      if (now < next) return;
+      next = now + 100;
+      const info = inspect(game, (z) => {
+        const t = (z - ray.origin.z) / ray.direction.z;
+        return { x: ray.origin.x + ray.direction.x * t, y: ray.origin.y + ray.direction.y * t };
+      });
+      if (!info) { el.style.display = 'none'; return; }
+      el.style.display = 'block';
+      el.replaceChildren(Object.assign(document.createElement('h4'), { textContent: info.title }),
+        ...info.lines.map((l) => Object.assign(document.createElement('div'), { textContent: l })));
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [game]);
+  return <div ref={card} className="inspector" />;
 }
 
 function Res({ label, value, color }: { label: string; value: string; color: string }) {

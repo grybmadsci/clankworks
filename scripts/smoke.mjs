@@ -367,6 +367,32 @@ try {
   });
   check(/too tall/i.test(tall.error) && tall.placed === 0, `struts refuse gaps over their height limit (${tall.span}m gap: "${tall.error}")`);
 
+  // Plain cursor: the default tool, and hovering things describes them.
+  const project = (x, y, z) => page.evaluate(([x, y, z]) => {
+    const cam = window.__view.camera, e = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse).elements;
+    const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+    const r = document.querySelector('canvas').getBoundingClientRect();
+    return { x: r.left + ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w * 0.5 + 0.5) * r.width, y: r.top + (-(e[1] * x + e[5] * y + e[9] * z + e[13]) / w * 0.5 + 0.5) * r.height };
+  }, [x, y, z]);
+  const hover = async (x, y, z) => {
+    const p = await project(x, y, z);
+    await page.mouse.move(p.x, p.y);
+    await page.waitForTimeout(400);
+    return page.evaluate(() => { const el = document.querySelector('.inspector'); return el.style.display === 'block' ? el.textContent : ''; });
+  };
+  await page.keyboard.press('Escape');
+  const base = await page.evaluate(() => window.__game.layout.depot);
+  const tool0 = await page.evaluate(() => window.__game.tool);
+  const hoverBase = await hover(base.x, base.y + 0.45, -0.775);
+  const hoverRock = await hover(base.x, base.y - 1.2, 0);
+  const icons = await page.evaluate(() => [...document.querySelectorAll('.tools button, .layers > button')].every((b) => b.querySelector('svg')));
+  console.log('hover', JSON.stringify({ tool0, hoverBase, hoverRock }));
+  check(tool0 === 'select' && /Base/.test(hoverBase) && /drones docked/.test(hoverBase) && /dig|Cannot be dug/i.test(hoverRock), 'plain cursor describes what it hovers (the base, the rock)');
+  check(icons, 'every tool and layer button has an icon');
+  await page.evaluate(() => { window.__game.tool = 'dig'; });
+  await hover(base.x + 3.5, base.y + 1.2, 0);
+  await shot('8-dig-cursor');
+
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {
     const g = window.__game;

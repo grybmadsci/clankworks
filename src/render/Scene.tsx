@@ -19,7 +19,12 @@ const WORLD_W = W * CELL, WORLD_H = H * CELL;
 /** Shared with the DOM HUD, which projects speech bubbles itself. */
 export const view = {
   camera: null as THREE.PerspectiveCamera | null,
+  /** Where the pointer meets the cutaway face (z = 0), or null when it is off the canvas. */
   cursor: null as { x: number; y: number } | null,
+  /** The pointer's ray, refreshed every frame so it stays right while the camera moves. */
+  ray: null as THREE.Ray | null,
+  /** Pointer position in CSS pixels, for HUD tooltips. */
+  mouse: { x: 0, y: 0 },
   /** Centre the camera on a world position (set up by the camera rig). */
   goto: (_x: number, _y: number) => {},
 };
@@ -65,7 +70,7 @@ export function Scene({ game }: { game: Game }) {
  */
 function CameraRig({ game }: { game: Game }) {
   const { camera, gl } = useThree();
-  const state = useRef({ x: game.layout.depot.x, y: game.layout.depot.y + 1, dist: 16, following: true, keys: new Set<string>(), painting: false, panning: null as null | { x: number; y: number } });
+  const state = useRef({ x: game.layout.depot.x, y: game.layout.depot.y + 1, dist: 16, following: true, ndc: null as THREE.Vector2 | null, recast: null as null | (() => void), keys: new Set<string>(), painting: false, panning: null as null | { x: number; y: number } });
 
   useEffect(() => {
     view.camera = camera as THREE.PerspectiveCamera;
@@ -81,6 +86,20 @@ function CameraRig({ game }: { game: Game }) {
       const hit = new THREE.Vector3();
       return raycaster.ray.intersectPlane(plane, hit) ? { x: hit.x, y: hit.y } : null;
     };
+    // Re-cast the pointer every frame (the camera pans, zooms and shakes under a still mouse).
+    s.recast = () => {
+      if (!s.ndc) { view.cursor = null; view.ray = null; return; }
+      raycaster.setFromCamera(s.ndc, camera);
+      const hit = new THREE.Vector3();
+      view.ray = raycaster.ray.clone();
+      view.cursor = raycaster.ray.intersectPlane(plane, hit) ? { x: hit.x, y: hit.y } : null;
+    };
+    const track = (e: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      view.mouse = { x: e.clientX, y: e.clientY };
+      const over = e.target === el && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      s.ndc = over ? new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1) : null;
+    };
     const down = (e: PointerEvent) => {
       unlockAudio();
       if (e.button === 2 || e.button === 1) { s.panning = { x: e.clientX, y: e.clientY }; return; }
@@ -91,8 +110,8 @@ function CameraRig({ game }: { game: Game }) {
       game.useTool(p.x, p.y, false);
     };
     const move = (e: PointerEvent) => {
+      track(e);
       const p = toWorld(e);
-      view.cursor = p;
       if (s.panning) {
         const scale = s.dist * 0.0012;
         s.x -= (e.clientX - s.panning.x) * scale;
@@ -149,6 +168,8 @@ function CameraRig({ game }: { game: Game }) {
     // Slightly above and looking down into the diorama, cabinet style.
     camera.position.set(s.x + sx, s.y + s.dist * 0.16 + sy, s.dist);
     camera.lookAt(s.x + sx * 0.5, s.y + sy * 0.5, -0.6);
+    camera.updateMatrixWorld();
+    s.recast?.();
     // Tell the game what is on screen, so it can stream the chunks in.
     const cam = camera as THREE.PerspectiveCamera;
     const halfH = (s.dist + 0.6) * Math.tan((cam.fov * Math.PI) / 360);
@@ -157,27 +178,51 @@ function CameraRig({ game }: { game: Game }) {
   return null;
 }
 
-/** Brush preview ring that follows the mouse. */
+/**
+ * What the active tool will touch. Dig and Cancel show their brush as a disc hatched like the
+ * dig orders themselves (amber to dig, red to erase or when out of the drones' range), other
+ * placement tools a small ring; the plain cursor, Strut and Smelter (which have holograms) none.
+ */
 function Cursor({ game }: { game: Game }) {
-  const ref = useRef<THREE.Mesh>(null!);
-  const mat = useRef<THREE.MeshBasicMaterial>(null!);
+  const ring = useRef<THREE.Mesh>(null!);
+  const ringMat = useRef<THREE.MeshBasicMaterial>(null!);
+  const { disc, tint } = useMemo(() => {
+    const { abs, color, fract, fwidth, positionWorld, smoothstep, uniform } = TSL as any;
+    const tint = uniform(color('#ffbe2e'));
+    const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false });
+    const u = positionWorld.x.add(positionWorld.y).mul(11);
+    const hatch = smoothstep(float(0.35).sub(fwidth(u)), fwidth(u).add(0.35), abs(fract(u).sub(0.5)));
+    m.colorNode = tint;
+    m.opacityNode = hatch.mul(0.55).add(0.12);
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 48), m);
+    disc.renderOrder = 19;
+    return { disc, tint };
+  }, []);
   useFrame(() => {
     const c = view.cursor;
-    ref.current.visible = !!c;
+    const brush = game.tool === 'dig' || game.tool === 'cancel';
+    const marker = game.tool === 'blast' || game.tool === 'scrap';
+    ring.current.visible = !!c && (brush || marker);
+    disc.visible = !!c && brush;
     if (!c) return;
-    ref.current.position.set(c.x, c.y, 0.08);
-    // The smelter hologram replaces the ring.
-    ref.current.visible = game.tool !== 'smelter' && game.tool !== 'strut';
     const r = game.tool === 'dig' ? 0.7 : game.tool === 'cancel' ? 0.9 : 0.25;
-    ref.current.scale.setScalar(r);
-    const outOfRange = game.tool === 'dig' && !game.inDigRange(c.x, c.y);
-    mat.current.color.set(game.tool === 'cancel' || outOfRange ? '#ff5544' : game.tool === 'blast' ? '#ff2222' : '#ffd23f');
+    const bad = game.tool === 'cancel' || (game.tool === 'dig' && !game.inDigRange(c.x, c.y));
+    const col = bad ? '#ff5544' : game.tool === 'blast' ? '#ff2222' : '#ffd23f';
+    ring.current.position.set(c.x, c.y, 0.08);
+    ring.current.scale.setScalar(r);
+    ringMat.current.color.set(col);
+    disc.position.set(c.x, c.y, 0.07);
+    disc.scale.setScalar(r * 0.95);
+    tint.value.set(bad ? '#ff5544' : '#ffbe2e');
   });
   return (
-    <mesh ref={ref} renderOrder={20}>
-      <ringGeometry args={[0.92, 1, 40]} />
-      <meshBasicMaterial ref={mat} transparent opacity={0.8} depthTest={false} />
-    </mesh>
+    <>
+      <primitive object={disc} />
+      <mesh ref={ring} renderOrder={20}>
+        <ringGeometry args={[0.92, 1, 40]} />
+        <meshBasicMaterial ref={ringMat} transparent opacity={0.85} depthTest={false} />
+      </mesh>
+    </>
   );
 }
 

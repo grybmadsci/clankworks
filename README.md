@@ -53,11 +53,13 @@ and rusty, and shows "⚠ Strut not supporting" until the gap is short enough to
 The integrity layer shows the stress map: green rock is sound, and ceilings turn yellow,
 then red, as they approach their limit. Cracking rock flashes.
 
+Every tool and layer has an icon, and the canvas cursor changes to match the active tool.
 The toolbar has three sections:
 
 | Section | Input | Action |
 | --- | --- | --- |
-| Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
+| Orders | `Esc` Select | The default plain cursor: hover anything (a drone, strut, the base, a critter, rock or open cave) for a card of basic facts about it |
+| Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor |
 | Orders | `3` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
 | Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
 | Buildings | `4` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |

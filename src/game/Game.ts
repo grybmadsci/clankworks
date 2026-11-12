@@ -15,7 +15,7 @@ import { alarm, chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
-export type Tool = 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast' | 'scrap';
+export type Tool = 'select' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast' | 'scrap';
 export type Overlay = 0 | 1 | 2 | 3 | 4;
 type Vec = { x: number; y: number };
 
@@ -133,7 +133,8 @@ export class Game {
   /** Incremented whenever entity lists change, so React can re-render the lists. */
   entityVersion = 0;
   shake = 0;
-  tool: Tool = 'dig';
+  /** The plain cursor ('select') only inspects; the others act on click. */
+  tool: Tool = 'select';
   /** 0 normal, 1 heat, 2 oxygen, 3 structural integrity, 4 materials. */
   overlay: Overlay = 0;
   /** Materials the material layer shows, one bit per material id (all solids by default). */
