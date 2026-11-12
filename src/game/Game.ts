@@ -110,41 +110,107 @@ export interface Env { water: number; magma: number; o2: number; toxic: number; 
 
 let nextId = 1;
 
-/** One tutorial step: tour steps point at a UI area; objectives have a goal with progress text. */
+/** Tutorial progress the checklist items look at. */
+export interface TutorialState {
+  step: number;
+  skipped: boolean;
+  /** Which of the current step's items have been ticked (they stay ticked). */
+  checked: boolean[];
+  /** The camera view when the step began, for the pan/zoom items. */
+  view0: { x: number; y: number; halfH: number } | null;
+  /** Things the player has done that the game doesn't otherwise keep, e.g. 'saw:base'. */
+  flags: Set<string>;
+  /** When every item was ticked; the step advances a moment later. */
+  doneAt: number | null;
+}
+
+/** One checklist item: ticked by the game when `done` first holds, with optional live progress. */
+export interface TutorialItem {
+  label: string;
+  done: (g: Game, t: TutorialState) => boolean;
+  progress?: (g: Game) => string;
+}
+
+/** One tutorial step. Tour steps point at a UI area (`focus`); objectives are marked `objective`. */
 export interface TutorialStep {
   title: string;
   text: string;
   /** CSS selector of the UI area to highlight. */
   focus?: string;
-  goal?: (g: Game) => { done: boolean; progress: string };
+  objective?: boolean;
+  items: TutorialItem[];
 }
 
 export const TUTORIAL: TutorialStep[] = [
-  { title: 'Welcome to Clankworks', text: 'Your base has dug in. Drones mine whatever rock you mark, and the base turns what they bring back into something useful. Take a quick look around first: drag with the right mouse button (or use WASD) to pan, and scroll the mouse wheel to zoom in and out.' },
-  { title: 'Stockpiles', focus: '.topbar', text: 'Ore, scrap, plates and your drone count. The bins beside the base fill up to match. The quota on the right is the long-term goal: 30 copper plates.' },
-  { title: 'Orders and buildings', focus: '.tools', text: 'Orders tell drones what to do: Dig, Cancel, Blast, Scrap. Buildings cost resources: struts hold up ceilings, smelters turn ore into plates, and Drone builds another drone. Hover any button for details.' },
-  { title: 'Layers', focus: '.layers', text: 'Switch how the world is drawn: heat, oxygen, structural stress, or the Material layer, which colour-codes rock so ore is easy to spot.' },
-  { title: 'Critters and log', focus: '.critters, .log', text: 'The critters live in a cave to the left of the base; keep them warm, breathing and dry. The log reports cave-ins, warnings and what the crew is up to. Hover anything in the world with the Select cursor to learn about it.' },
+  {
+    title: 'Welcome to Clankworks',
+    text: 'Your base has dug in. Drones mine whatever rock you mark, and the base turns what they bring back into something useful. Take a quick look around first.',
+    items: [
+      { label: 'Pan the camera: drag with the right mouse button, or use WASD', done: (g, t) => !!t.view0 && Math.hypot(g.view.x - t.view0.x, g.view.y - t.view0.y) > 2 },
+      { label: 'Zoom: scroll the mouse wheel', done: (g, t) => !!t.view0 && Math.abs(g.view.halfH / t.view0.halfH - 1) > 0.15 },
+    ],
+  },
+  {
+    title: 'Stockpiles',
+    focus: '.topbar',
+    text: 'Ore, scrap, plates and your drone count. The bins beside the base fill up to match. The quota on the right is the long-term goal: 30 copper plates.',
+    items: [{ label: 'Hover the base with the Select cursor to see what it holds', done: (_, t) => t.flags.has('saw:base') }],
+  },
+  {
+    title: 'Orders and buildings',
+    focus: '.tools',
+    text: 'Orders tell drones what to do: Dig, Cancel, Blast, Scrap. Buildings cost resources: struts hold up ceilings, smelters turn ore into plates, and Drone builds another drone. Hover any button for details.',
+    items: [
+      { label: 'Pick the Dig tool (1)', done: (g) => g.tool === 'dig' },
+      { label: 'Pick a building: Strut (4) or Smelter (5)', done: (g) => g.tool === 'strut' || g.tool === 'smelter' },
+      { label: 'Go back to the Select cursor (Esc)', done: (g, t) => t.checked[0] && t.checked[1] && g.tool === 'select' },
+    ],
+  },
+  {
+    title: 'Layers',
+    focus: '.layers',
+    text: 'Switch how the world is drawn: heat, oxygen, structural stress, or the Material layer, which colour-codes rock so ore is easy to spot.',
+    items: [
+      { label: 'Show the Material layer', done: (g) => g.overlay === 4 },
+      { label: 'Click a material in its key to hide or show it', done: (g) => g.materialMask !== 0b11111110 },
+      { label: 'Back to the Normal view', done: (g, t) => t.checked[0] && g.overlay === 0 },
+    ],
+  },
+  {
+    title: 'Critters and log',
+    focus: '.critters, .log',
+    text: 'The critters live in a cave to the left of the base; keep them warm, breathing and dry. The log reports cave-ins, warnings and what the crew is up to.',
+    items: [{ label: 'Find the critters and hover one with the Select cursor', done: (_, t) => t.flags.has('saw:critter') }],
+  },
   {
     title: 'Mine some ore',
-    text: 'Copper ore is the rusty rock to the right of the base (the Material layer shows it in orange). Pick Dig and paint over it; your drone will mine it and bring it home.',
+    objective: true,
     focus: '.tools',
-    goal: (g) => ({ done: g.oreDelivered >= 5, progress: `Ore delivered ${Math.min(5, g.oreDelivered).toFixed(1)} / 5` }),
+    text: 'Copper ore is the rusty rock to the right of the base (the Material layer shows it in orange). Pick Dig and paint over it; your drone will mine it and bring it home.',
+    items: [
+      { label: 'Order a dig on copper ore', done: (_, t) => t.flags.has('order:copper') },
+      { label: 'Deliver 5 ore', done: (g) => g.oreDelivered >= 5, progress: (g) => `${Math.min(5, g.oreDelivered).toFixed(1)} / 5` },
+    ],
   },
   {
     title: 'Smelt plates',
-    text: 'Build a Smelter on open floor near the base (it costs scrap). It turns each ore into a copper plate.',
+    objective: true,
     focus: '.tools',
-    goal: (g) => ({ done: g.platesMade >= 3, progress: `${g.smelters.length ? 'Smelter built ✓' : 'Build a smelter'} · plates ${Math.min(3, g.platesMade)} / 3` }),
+    text: 'Build a Smelter on open floor near the base (it costs scrap). It turns each ore into a copper plate.',
+    items: [
+      { label: 'Build a smelter', done: (g) => g.smelters.length > 0 },
+      { label: 'Make 3 plates', done: (g) => g.platesMade >= 3, progress: (g) => `${Math.min(3, g.platesMade)} / 3` },
+    ],
   },
   {
     title: 'Build a drone',
-    text: 'A new drone costs 3 plates. Press Drone (or B) to build one; it takes the next free landing pad.',
+    objective: true,
     focus: '.tools',
-    goal: (g) => {
-      const n = g.bots.filter((b) => !b.dead).length;
-      return { done: n >= 2, progress: `Drones ${n} / 2 · plates ${Math.floor(g.resources.plates)} / 3` };
-    },
+    text: 'A new drone costs 3 plates. Press Drone (or B) to build one; it takes the next free landing pad.',
+    items: [
+      { label: 'Have 3 plates', done: (g) => g.resources.plates >= 3, progress: (g) => `${Math.min(3, Math.floor(g.resources.plates))} / 3` },
+      { label: 'Build a drone', done: (g) => g.bots.filter((b) => !b.dead).length >= 2 },
+    ],
   },
 ];
 
@@ -160,10 +226,10 @@ export class Game {
   /** Ore drones have brought home over the whole shift. */
   oreDelivered = 0;
   /**
-   * The tutorial: a short tour of the UI (steps 0..TOUR_STEPS-1), then objectives that advance by
-   * themselves as they're met (see TUTORIAL). `step` past the end means it's finished.
+   * The tutorial: a checklist per step (see TUTORIAL). Items tick themselves as the player does
+   * them, and the step advances once they're all ticked. `step` past the end means it's finished.
    */
-  tutorial = { step: 0, skipped: false };
+  tutorial: TutorialState = { step: 0, skipped: false, checked: [], view0: null, flags: new Set(), doneAt: null };
   /**
    * Dig orders that would undermine these struts are on hold until the player confirms or cancels
    * them; drones leave orders near the struts alone meanwhile.
@@ -532,23 +598,37 @@ export class Game {
   // ---------------------------------------------------------------- tutorial
 
   skipTutorial() {
-    this.tutorial = { step: TUTORIAL.length, skipped: true };
+    this.tutorial = { ...this.tutorial, step: TUTORIAL.length, skipped: true };
   }
 
-  /** Advance the tour by hand, or the objectives when their goal is met. */
+  /** Record something the player did that a checklist item watches for (e.g. 'saw:base'). */
+  tutorialNote(flag: string) {
+    this.tutorial.flags.add(flag);
+  }
+
+  /** Move to the next step (when its checklist is complete, or the player skips it). */
   tutorialNext() {
-    if (this.tutorial.step < TUTORIAL.length) this.tutorial.step++;
+    const t = this.tutorial;
+    if (t.step >= TUTORIAL.length) return;
+    t.step++;
+    Object.assign(t, { checked: [], view0: null, doneAt: null });
+    const next = TUTORIAL[t.step];
+    if (next?.objective) this.info(`New objective: ${next.title}.`);
+    else if (!next) this.info('Tutorial complete. The quarry is yours.');
   }
 
+  /** Tick checklist items as they're done; advance a beat after the last one so it can be seen. */
   private updateTutorial() {
-    const step = TUTORIAL[this.tutorial.step];
-    if (!step || this.intro.phase !== 'done' || !step.goal) return;
-    if (step.goal(this).done) {
-      this.tutorial.step++;
-      chirp(1, 4);
-      const next = TUTORIAL[this.tutorial.step];
-      this.info(next ? `Objective complete. Next: ${next.title}.` : 'Tutorial complete. The quarry is yours.');
-    }
+    const t = this.tutorial, step = TUTORIAL[t.step];
+    if (!step || this.intro.phase !== 'done') return;
+    t.view0 ??= { x: this.view.x, y: this.view.y, halfH: this.view.halfH };
+    step.items.forEach((item, n) => {
+      if (t.checked[n] || !item.done(this, t)) return;
+      t.checked[n] = true;
+      chirp(1, 2);
+    });
+    if (t.doneAt === null && step.items.every((_, n) => t.checked[n])) t.doneAt = this.time;
+    if (t.doneAt !== null && this.time - t.doneAt > 1.2) this.tutorialNext();
   }
 
   // ---------------------------------------------------------------- strut upkeep
@@ -688,6 +768,7 @@ export class Game {
       if (on && !this.inDigRange(cellCenter(i), cellCenter(j))) { outOfRange = true; continue; }
       if (!on && !(marks[k] & DIG_BIT)) continue;
       marks[k] = on ? marks[k] | DIG_BIT : marks[k] & ~(DIG_BIT | REACH_BIT);
+      if (on && this.terrain.material[k] === Mat.Copper) this.tutorialNote('order:copper');
       if (on) this.marked.add(k); else this.marked.delete(k);
       changed = true;
     }

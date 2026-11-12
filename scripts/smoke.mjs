@@ -106,34 +106,95 @@ try {
   const docked = await page.evaluate(() => window.__game.bots.map((b) => b.state));
   check(docked.length === 1 && docked[0] === 'docked', `the shift starts with one drone, docked at the base (${docked.join(',')})`);
 
-  // Tutorial: a tour of the HUD, then objectives that complete as you play.
-  const tutorial = await page.evaluate(async () => {
-    const g = window.__game;
-    const wait = () => new Promise((r) => setTimeout(r, 300));
-    await wait();
-    const seen = [];
-    for (let n = 0; n < 5; n++) {
-      const panel = document.querySelector('.tutorial');
-      seen.push(`${panel?.querySelector('h4')?.textContent}|${Math.min(document.querySelectorAll('.tut-focus').length, document.querySelectorAll('.tut-lines line').length)}`);
-      panel?.querySelector('button')?.click();
-      await wait();
-    }
-    const quests = [];
-    const step = async (setup) => {
-      quests.push(document.querySelector('.tutorial h4')?.textContent + ' — ' + document.querySelector('.tutorial .progress')?.textContent);
-      setup();
-      for (let n = 0; n < 5; n++) g.update(1 / 30);
-      await wait();
-    };
-    await step(() => { g.oreDelivered = 5; });
-    await step(() => { g.platesMade = 3; });
-    await step(() => { g.resources.plates += 3; g.buildBot(); });
-    return { seen, quests, done: !document.querySelector('.tutorial'), drones: g.bots.length, log: g.log.some((l) => /Tutorial complete/.test(l.text)) };
+  // Tutorial: a checklist per step that ticks itself as you do things, then moves on. Do each
+  // step for real (pan, zoom, hover, hotkeys, clicks) and watch it advance.
+  const tut = () => page.evaluate(() => ({
+    step: window.__game.tutorial.step,
+    title: document.querySelector('.tutorial h4')?.textContent ?? '',
+    items: document.querySelectorAll('.checklist li').length,
+    ticked: document.querySelectorAll('.checklist li.done').length,
+    pointers: Math.min(document.querySelectorAll('.tut-focus').length, document.querySelectorAll('.tut-lines line').length),
+  }));
+  const toScreen = (x, y, z) => page.evaluate(([x, y, z]) => {
+    const cam = window.__view.camera, e = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse).elements;
+    const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+    const r = document.querySelector('canvas').getBoundingClientRect();
+    return { x: r.left + ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w * 0.5 + 0.5) * r.width, y: r.top + (-(e[1] * x + e[5] * y + e[9] * z + e[13]) / w * 0.5 + 0.5) * r.height };
+  }, [x, y, z]);
+  const tutorialLog = [];
+  // Do the step's actions, check its items all ticked, then wait for it to move on by itself.
+  // (The HUD redraws a few times a second, so give it a moment before reading it.)
+  const doStep = async (act) => {
+    await page.waitForTimeout(350);
+    const before = await tut();
+    await act();
+    // Wait for the ticks to show; if the step already moved on, count what the game ticked.
+    await page.waitForFunction((n) => document.querySelectorAll('.checklist li.done').length >= n, before.items, { timeout: 2000 }).catch(() => {});
+    const shown = await tut();
+    const ticked = shown.step === before.step ? shown.ticked : before.items;
+    await page.waitForFunction((s) => window.__game.tutorial.step > s, before.step, { timeout: 8000 }).catch(() => {});
+    const after = await tut();
+    tutorialLog.push({ title: before.title, items: before.items, ticked, pointers: before.pointers, advanced: after.step === before.step + 1 });
+  };
+  const d0 = await page.evaluate(() => window.__game.layout.depot);
+  await page.mouse.move(640, 420);
+  await doStep(async () => {
+    await page.keyboard.down('d'); await page.waitForTimeout(500); await page.keyboard.up('d');
+    for (let n = 0; n < 3; n++) { await page.mouse.wheel(0, -300); await page.waitForTimeout(60); }
   });
+  await page.evaluate((d) => window.__view.goto(d.x, d.y + 1), d0);
+  await page.waitForTimeout(400);
+  await doStep(async () => { const p = await toScreen(d0.x, d0.y + 0.45, -0.775); await page.mouse.move(p.x, p.y); await page.waitForTimeout(400); });
+  await doStep(async () => { for (const k of ['1', '4', 'Escape']) { await page.keyboard.press(k); await page.waitForTimeout(150); } });
+  await doStep(async () => {
+    await page.getByRole('button', { name: 'Material' }).click();
+    await page.waitForTimeout(200);
+    await page.getByRole('button', { name: 'Granite' }).click();
+    await page.getByRole('button', { name: 'Granite' }).click();
+    await page.getByRole('button', { name: 'Normal' }).click();
+  });
+  await doStep(async () => {
+    const c = await page.evaluate(() => { const c = window.__game.critters[0]; window.__view.goto(c.x, c.y + 0.5); return { x: c.x, y: c.y }; });
+    await page.waitForTimeout(600);
+    const cc = await page.evaluate(() => { const c = window.__game.critters[0]; return { x: c.x, y: c.y + 0.1 }; });
+    const p = await toScreen(cc.x, cc.y, -1.25 * 0.35);
+    await page.mouse.move(p.x, p.y);
+    await page.waitForTimeout(400);
+  });
+  await page.evaluate((d) => window.__view.goto(d.x, d.y + 1), d0);
+  await doStep(() => page.evaluate(() => {
+    const g = window.__game, t = g.terrain, d = g.layout.depot;
+    // Order a dig on the nearest copper ore in range, and pretend the drone has brought ore home.
+    for (let r = 4; r < 44; r++) for (let j = Math.floor(d.y / 0.25) - r; j <= Math.floor(d.y / 0.25) + r; j++) for (const i of [Math.floor(d.x / 0.25) - r, Math.floor(d.x / 0.25) + r]) {
+      const k = j * 512 + i;
+      if (t.material[k] === 3 && t.density[k] > 0.5 && g.inDigRange((i + 0.5) * 0.25, (j + 0.5) * 0.25)) {
+        g.designate((i + 0.5) * 0.25, (j + 0.5) * 0.25, 0.2, true);
+        window.__copperOrder = { x: (i + 0.5) * 0.25, y: (j + 0.5) * 0.25 };
+        r = 99; break;
+      }
+    }
+    g.oreDelivered = 5;
+  }));
+  // Withdraw that order again so it doesn't skew the mining checks below.
+  await page.evaluate(() => { const o = window.__copperOrder; if (o) window.__game.designate(o.x, o.y, 0.3, false); });
+  await doStep(() => page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot;
+    g.resources.scrap += 8;
+    g.placeSmelter(d.x - 2.6, d.y + 1.5);
+    g.platesMade = 3;
+  }));
+  await doStep(async () => {
+    await page.evaluate(() => { window.__game.resources.plates = 3; });
+    await page.waitForTimeout(300);
+    await page.keyboard.press('b');
+  });
+  await page.waitForTimeout(400);
+  const tutorial = { steps: tutorialLog, done: !(await page.evaluate(() => !!document.querySelector('.tutorial'))), drones: await page.evaluate(() => window.__game.bots.length) };
   console.log('tutorial', JSON.stringify(tutorial));
-  check(tutorial.seen.every((s) => !s.startsWith('undefined')) && tutorial.seen.slice(1).every((s) => !s.endsWith('|0')),
-    `tutorial tours ${tutorial.seen.length} HUD areas, highlighting each and drawing a line to it`);
-  check(tutorial.quests.length === 3 && tutorial.done && tutorial.log && tutorial.drones === 2, 'tutorial objectives (ore, plates, drone) complete as they are met');
+  check(tutorial.steps.length === 8 && tutorial.steps.every((s) => s.items > 0 && s.ticked === s.items && s.advanced),
+    `tutorial checklists tick as each action is done and move on by themselves (${tutorial.steps.map((s) => `${s.ticked}/${s.items}`).join(' ')})`);
+  check(tutorial.steps.slice(1, 5).every((s) => s.pointers > 0), 'tutorial steps about the HUD highlight it and draw a line to it');
+  check(tutorial.done && tutorial.drones === 2, 'tutorial finishes after building a drone');
   // A third drone for the mining tests below.
   await page.evaluate(() => { const g = window.__game; g.resources.plates += 3; g.buildBot(); });
 

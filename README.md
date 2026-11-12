@@ -20,10 +20,18 @@ clamp it to the back wall, and the conveyor, shelf, lamps and bulbs unfold (`Spa
 the base push it back as they go. Underground there is very little ambient light, so the base's
 gas lamps, the drones' headlamps, glowing machinery and magma provide most of it.
 
-A short tutorial follows: a tour of the HUD (each area is highlighted as it is described), then
-three objectives that tick over as you play: deliver 5 ore, smelt 3 plates, and build a second
-drone. You start with one drone and no plates. Tutorial steps about the HUD draw a line to the
-panel they describe. Skip it any time.
+A short tutorial follows. Each step is a checklist that ticks itself as you do things, and the
+next step starts a moment after the last box is ticked:
+1. Pan and zoom the camera.
+2. Hover the base to see its stockpile.
+3. Pick the Dig tool, then a building, then go back to Select.
+4. Show the Material layer, toggle a material in its key, and go back to Normal.
+5. Find a critter and hover it.
+
+Objectives follow: order a dig on copper ore and deliver 5 ore, build a smelter and make 3 plates,
+then save 3 plates and build a second drone. Each step about part of the HUD highlights it and
+draws a line to it. You start with one drone and no plates. "Skip step" and "Skip tutorial" are
+always there.
 
 Mining drones wait on the four brass landing pads on top of the base's boiler, so the fleet tops
 out at four. Each drone has a battery gauge on its flanks: green, then yellow, then blinking

@@ -188,20 +188,31 @@ function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
     return () => { cancelAnimationFrame(raf); els.forEach((e) => e.classList.remove('tut-focus')); if (lines.current) lines.current.innerHTML = ''; };
   }, [focus]);
   if (!step) return null;
-  const tour = !step.goal;
-  const objectives = TUTORIAL.filter((t) => t.goal);
+  const tour = !step.objective;
+  const objectives = TUTORIAL.filter((t) => t.objective);
   const n = objectives.indexOf(step);
-  const goal = step.goal?.(game);
+  const t = game.tutorial;
+  const complete = t.doneAt !== null;
   return (
     <>
     <svg ref={lines} className="tut-lines" />
-    <aside ref={panel} className={`panel tutorial ${tour ? 'tour' : 'quest'}`}>
-      <h3>{tour ? `Tutorial ${game.tutorial.step + 1} / ${TUTORIAL.length - objectives.length}` : `Objective ${n + 1} / ${objectives.length}`}</h3>
+    <aside ref={panel} className={`panel tutorial ${tour ? 'tour' : 'quest'}${complete ? ' complete' : ''}`}>
+      <h3>{tour ? `Tutorial ${t.step + 1} / ${TUTORIAL.length - objectives.length}` : `Objective ${n + 1} / ${objectives.length}`}</h3>
       <h4>{step.title}</h4>
       <p>{step.text}</p>
-      {goal && <div className="progress">{goal.progress}</div>}
+      {/* Items tick themselves as you do them; the step moves on once they're all ticked. */}
+      <ul className="checklist">
+        {step.items.map((item, k) => (
+          <li key={k} className={t.checked[k] ? 'done' : ''}>
+            <i aria-hidden="true" />
+            <span>{item.label}</span>
+            {item.progress && !t.checked[k] && <em>{item.progress(game)}</em>}
+          </li>
+        ))}
+      </ul>
       <div className="buttons">
-        {tour && <button onClick={() => { game.tutorialNext(); onChange(); }}>{game.tutorial.step === TUTORIAL.length - objectives.length - 1 ? 'Start' : 'Next'}</button>}
+        <span className="status">{complete ? '✓ Done!' : ''}</span>
+        <button className="quiet" onClick={() => { game.tutorialNext(); onChange(); }}>Skip step</button>
         <button className="quiet" onClick={() => { game.skipTutorial(); onChange(); }}>Skip tutorial</button>
       </div>
     </aside>
@@ -254,6 +265,7 @@ function Inspector({ game }: { game: Game }) {
         return { x: ray.origin.x + ray.direction.x * t, y: ray.origin.y + ray.direction.y * t };
       });
       if (!info) { el.style.display = 'none'; return; }
+      game.tutorialNote(`saw:${info.kind}`);
       el.style.display = 'block';
       el.replaceChildren(Object.assign(document.createElement('h4'), { textContent: info.title }),
         ...info.lines.map((l) => Object.assign(document.createElement('div'), { textContent: l })));
