@@ -96,6 +96,13 @@ try {
   check(magma > 200, `magma conducts heat into surrounding rock (max rock ${magma.toFixed(0)}°C)`);
   check(gpu.meshVerts > 50000 && gpu.slots > 10, `GPU mesher built ${gpu.meshVerts} terrain vertices across ${gpu.slots} chunk slots`);
 
+  const startup = await page.evaluate(() => ({
+    warnings: window.__game.log.filter((l) => /structural warning|cave-in/i.test(l.text)).length,
+    goo: 'goo' in window.__game.resources || /goo/i.test(document.querySelector('.topbar').textContent),
+    terrarium: /terrarium/i.test(document.body.textContent),
+  }));
+  check(startup.warnings === 0, `the starting caves raise no structural warnings (${startup.warnings})`);
+  check(!startup.goo && !startup.terrarium, 'no goo and no terrarium in the game or HUD');
   const docked = await page.evaluate(() => window.__game.bots.map((b) => b.state));
   check(docked.length === 1 && docked[0] === 'docked', `the shift starts with one drone, docked at the base (${docked.join(',')})`);
 
@@ -107,7 +114,7 @@ try {
     const seen = [];
     for (let n = 0; n < 5; n++) {
       const panel = document.querySelector('.tutorial');
-      seen.push(`${panel?.querySelector('h4')?.textContent}|${document.querySelectorAll('.tut-focus').length}`);
+      seen.push(`${panel?.querySelector('h4')?.textContent}|${Math.min(document.querySelectorAll('.tut-focus').length, document.querySelectorAll('.tut-lines line').length)}`);
       panel?.querySelector('button')?.click();
       await wait();
     }
@@ -120,15 +127,15 @@ try {
     };
     await step(() => { g.oreDelivered = 5; });
     await step(() => { g.platesMade = 3; });
-    await step(() => { g.resources.plates += 3; g.resources.goo += 2; g.buildBot(); });
+    await step(() => { g.resources.plates += 3; g.buildBot(); });
     return { seen, quests, done: !document.querySelector('.tutorial'), drones: g.bots.length, log: g.log.some((l) => /Tutorial complete/.test(l.text)) };
   });
   console.log('tutorial', JSON.stringify(tutorial));
   check(tutorial.seen.every((s) => !s.startsWith('undefined')) && tutorial.seen.slice(1).every((s) => !s.endsWith('|0')),
-    `tutorial tours ${tutorial.seen.length} HUD areas, highlighting each`);
+    `tutorial tours ${tutorial.seen.length} HUD areas, highlighting each and drawing a line to it`);
   check(tutorial.quests.length === 3 && tutorial.done && tutorial.log && tutorial.drones === 2, 'tutorial objectives (ore, plates, drone) complete as they are met');
   // A third drone for the mining tests below.
-  await page.evaluate(() => { const g = window.__game; g.resources.plates += 3; g.resources.goo += 2; g.buildBot(); });
+  await page.evaluate(() => { const g = window.__game; g.resources.plates += 3; g.buildBot(); });
 
   // Dig orders outside the drones' range are refused.
   const range = await page.evaluate(() => {
@@ -439,7 +446,7 @@ try {
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {
     const g = window.__game;
-    g.resources.scrap += 10; g.resources.plates += 3; g.resources.goo += 2;
+    g.resources.scrap += 10; g.resources.plates += 3;
     g.tool = 'dig';
     const d = g.layout.depot;
     const v = { x: d.x - 2.5, y: d.y + 1.2, z: 0 };

@@ -27,14 +27,16 @@ function WallArm({ x, y, z, r = 0.014 }: { x: number; y: number; z: number; r?: 
 }
 
 const mat = (color: string, metalness = 0.6, roughness = 0.45) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
+// Worn, dusty metal: modest metalness and fairly rough, so it doesn't read as polished chrome.
 const M = {
-  iron: mat('#3b3530', 0.7, 0.55),
-  darkIron: mat('#25221f', 0.75, 0.5),
-  brass: mat('#c19a4b', 0.9, 0.3),
-  copper: mat('#b5643a', 0.9, 0.35),
+  iron: mat('#3b3530', 0.4, 0.75),
+  darkIron: mat('#25221f', 0.4, 0.72),
+  brass: mat('#b8934a', 0.55, 0.52),
+  copper: mat('#ad6038', 0.5, 0.55),
   verdigris: mat('#5f8f7c', 0.4, 0.6),
   wood: mat('#5a3b22', 0, 0.85),
-  ore: mat('#7a4a2a', 0.2, 0.9),
+  ore: mat('#a5602f', 0.25, 0.8),
+  steelScrap: mat('#8a8f95', 0.45, 0.6),
   enamel: mat('#e8dcc0', 0.1, 0.4),
   black: mat('#141210', 0.3, 0.7),
 };
@@ -136,6 +138,74 @@ function Lantern({ x, z, h, power }: { x: number; z: number; h: number; power: (
   );
 }
 
+const BIN = { w: 0.28, d: 0.3, h: 0.24, y: 0.14, z: Z_WALL + 0.2 };
+const STOCK_MAX = { ore: 40, scrap: 40, plates: 30 };
+
+/** Heap positions inside a bin, lowest first, so the pile grows upward as items are added. */
+function heap(count: number, size: number, seed: number) {
+  let a = seed;
+  const rand = () => ((a = (a * 16807) % 2147483647) / 2147483647);
+  const cols = 4, rows = 4, dx = (BIN.w - size) / (cols - 1), dz = (BIN.d - size) / (rows - 1);
+  return Array.from({ length: count }, (_, n) => {
+    const layer = Math.floor(n / (cols * rows)), cell = n % (cols * rows);
+    // Each layer is a little smaller and offset, so the top rounds off into a heap.
+    const shrink = 1 - layer * 0.12;
+    return new THREE.Vector3(
+      (-BIN.w / 2 + size / 2 + (cell % cols) * dx) * shrink + (rand() - 0.5) * size * 0.4,
+      size / 2 + layer * size * 0.8 + rand() * size * 0.2,
+      (-BIN.d / 2 + size / 2 + Math.floor(cell / cols) * dz) * shrink + (rand() - 0.5) * size * 0.4,
+    );
+  });
+}
+
+/**
+ * Three wall-hung bins beside the boiler showing the stockpile: one lump per unit of ore, one
+ * shard per unit of scrap, and a stack of copper plates.
+ */
+function Stockpile({ game }: { game: Game }) {
+  const bins = useMemo(() => {
+    const item = (geo: THREE.BufferGeometry, material: THREE.Material, n: number, place: (k: number) => THREE.Matrix4) => {
+      const m = new THREE.InstancedMesh(geo, material, n);
+      for (let k = 0; k < n; k++) m.setMatrixAt(k, place(k));
+      m.count = 0;
+      return m;
+    };
+    const tilt = new THREE.Euler();
+    const ore = heap(STOCK_MAX.ore, 0.07, 11), scrap = heap(STOCK_MAX.scrap, 0.07, 23);
+    return {
+      ore: item(new THREE.DodecahedronGeometry(0.042), M.ore, STOCK_MAX.ore, (k) => new THREE.Matrix4().compose(ore[k], new THREE.Quaternion().setFromEuler(tilt.set(k, k * 2, k * 3)), new THREE.Vector3(1, 0.85, 1))),
+      scrap: item(new THREE.BoxGeometry(0.08, 0.018, 0.035), M.steelScrap, STOCK_MAX.scrap, (k) => new THREE.Matrix4().compose(scrap[k], new THREE.Quaternion().setFromEuler(tilt.set(k * 1.7, k * 0.9, k * 2.3)), new THREE.Vector3(1, 1, 1))),
+      plates: item(new THREE.BoxGeometry(0.22, 0.011, 0.24), M.copper, STOCK_MAX.plates, (k) => new THREE.Matrix4().compose(
+        new THREE.Vector3((k % 3 - 1) * 0.004, 0.008 + k * 0.0125, ((k * 7) % 3 - 1) * 0.004), new THREE.Quaternion().setFromEuler(tilt.set(0, (k % 4 - 1.5) * 0.03, 0)), new THREE.Vector3(1, 1, 1))),
+    };
+  }, []);
+  useFrame(() => {
+    const r = game.resources;
+    bins.ore.count = Math.min(STOCK_MAX.ore, Math.floor(r.ore));
+    bins.scrap.count = Math.min(STOCK_MAX.scrap, Math.floor(r.scrap));
+    bins.plates.count = Math.min(STOCK_MAX.plates, Math.floor(r.plates));
+  });
+  return (
+    <>
+      {([['ore', -1.76], ['scrap', -1.44], ['plates', -1.12]] as const).map(([kind, x]) => (
+        <group key={kind} position={[x, BIN.y, BIN.z]}>
+          {/* An open-topped iron bin hung on two wall arms */}
+          <mesh position={[0, -0.01, 0]} material={M.darkIron}><boxGeometry args={[BIN.w + 0.02, 0.02, BIN.d + 0.02]} /></mesh>
+          {[-1, 1].map((sx) => <mesh key={`x${sx}`} position={[sx * (BIN.w / 2 + 0.005), BIN.h / 2, -0.06]} material={M.iron}><boxGeometry args={[0.01, BIN.h, BIN.d - 0.1]} /></mesh>)}
+          {/* Full back, low front lip so the pile shows */}
+          <mesh position={[0, BIN.h / 2, -(BIN.d / 2 + 0.005)]} material={M.iron}><boxGeometry args={[BIN.w + 0.02, BIN.h, 0.01]} /></mesh>
+          <mesh position={[0, 0.03, BIN.d / 2 + 0.005]} material={M.iron}><boxGeometry args={[BIN.w + 0.02, 0.06, 0.01]} /></mesh>
+          <mesh position={[0, 0.03, BIN.d / 2 + 0.012]} material={M.brass}><boxGeometry args={[0.1, 0.03, 0.006]} /></mesh>
+          <group position={[-x, -BIN.y, -BIN.z]}>
+            {[-0.09, 0.09].map((dx) => <WallArm key={dx} x={x + dx} y={BIN.y - 0.03} z={BIN.z - BIN.d / 2} />)}
+          </group>
+          <primitive object={bins[kind]} />
+        </group>
+      ))}
+    </>
+  );
+}
+
 /**
  * The starting base, a steam-age boiler house. Its riveted boiler doubles as the landing deck
  * (brass pads on top). In the opening it rides a spinning drill bit down its shaft, then
@@ -199,7 +269,7 @@ export function Base({ game }: { game: Game }) {
     firebox: useRef<THREE.MeshBasicMaterial>(null!),
     root: useRef<THREE.Group>(null!), drill: useRef<THREE.Group>(null!), wall: useRef<THREE.Group>(null!),
     conveyor: useRef<THREE.Group>(null!), shelf: useRef<THREE.Group>(null!), festoon: useRef<THREE.Group>(null!),
-    lamps: useRef<THREE.Group>(null!),
+    lamps: useRef<THREE.Group>(null!), stock: useRef<THREE.Group>(null!),
   };
   /** Seconds into deployment: -1 while drilling, large once deployed. */
   const deployed = () => (game.intro.phase === 'done' ? 99 : game.intro.phase === 'deploy' ? game.intro.t : -1);
@@ -221,6 +291,7 @@ export function Base({ game }: { game: Game }) {
     grow(ref.shelf.current, easeOutBack(stage(1.2, 2.0)));
     grow(ref.festoon.current, easeOutBack(stage(1.6, 2.6)));
     grow(ref.lamps.current, easeOutBack(stage(1.4, 2.2)));
+    grow(ref.stock.current, easeOutBack(stage(1.0, 1.8)));
     const w = t * 0.9;
     ref.big.current.rotation.z = w;
     ref.small.current.rotation.z = -w * (14 / 8) + 0.2;
@@ -327,9 +398,9 @@ export function Base({ game }: { game: Game }) {
           <mesh position={[0, 0.03, 0]}><boxGeometry args={[0.008, 0.06, 0.004]} /><meshBasicMaterial color="#b3261e" /></mesh>
         </group>
       </group>
-      {/* Nixie-tube readout in a wooden case */}
-      <mesh geometry={geo.nixie} material={M.wood} position={[-0.2, 0.86, Z_HUB + 0.3]} rotation={[-0.25, 0, 0]} />
-      <group ref={ref.nixies} position={[-0.36, 0.87, Z_HUB + 0.335]} rotation={[-0.25, 0, 0]}>
+      {/* Nixie-tube readout in a wooden case, on the boiler's face below the landing pads */}
+      <mesh geometry={geo.nixie} material={M.wood} position={[-0.2, 0.73, Z_HUB + 0.33]} rotation={[-0.62, 0, 0]} />
+      <group ref={ref.nixies} position={[-0.36, 0.745, Z_HUB + 0.365]} rotation={[-0.62, 0, 0]}>
         {Array.from({ length: 5 }, (_, n) => (
           <mesh key={n} position={[n * 0.08, 0, 0]}><cylinderGeometry args={[0.018, 0.018, 0.09, 10]} /><meshBasicMaterial /></mesh>
         ))}
@@ -412,6 +483,7 @@ export function Base({ game }: { game: Game }) {
           ))}
         </group>
       </group>
+      <group ref={ref.stock}><Stockpile game={game} /></group>
       <group ref={ref.lamps}>
         <Lantern x={-2.35} z={Z_ACTORS + 0.1} h={0.9} power={() => stage(1.4, 2.2)} />
         <Lantern x={2.62} z={Z_ACTORS + 0.1} h={1.05} power={() => stage(1.4, 2.2)} />

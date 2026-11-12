@@ -40,7 +40,7 @@ const COST = {
   strut: { scrap: 2 },
   smelter: { scrap: 8 },
   blast: { scrap: 1 },
-  bot: { plates: 3, goo: 2 },
+  bot: { plates: 3 },
 } as const;
 
 // Collision groups: (membership << 16) | filter.
@@ -120,11 +120,11 @@ export interface TutorialStep {
 }
 
 export const TUTORIAL: TutorialStep[] = [
-  { title: 'Welcome to Clankworks', text: 'Your base has dug in. Drones mine whatever rock you mark, and the base turns what they bring back into something useful. A quick look around first.' },
-  { title: 'Stockpiles', focus: '.topbar', text: 'Ore, scrap, plates, goo and your drone count. The quota on the right is the long-term goal: 30 copper plates.' },
+  { title: 'Welcome to Clankworks', text: 'Your base has dug in. Drones mine whatever rock you mark, and the base turns what they bring back into something useful. Take a quick look around first: drag with the right mouse button (or use WASD) to pan, and scroll the mouse wheel to zoom in and out.' },
+  { title: 'Stockpiles', focus: '.topbar', text: 'Ore, scrap, plates and your drone count. The bins beside the base fill up to match. The quota on the right is the long-term goal: 30 copper plates.' },
   { title: 'Orders and buildings', focus: '.tools', text: 'Orders tell drones what to do: Dig, Cancel, Blast, Scrap. Buildings cost resources: struts hold up ceilings, smelters turn ore into plates, and Drone builds another drone. Hover any button for details.' },
   { title: 'Layers', focus: '.layers', text: 'Switch how the world is drawn: heat, oxygen, structural stress, or the Material layer, which colour-codes rock so ore is easy to spot.' },
-  { title: 'Terrarium and log', focus: '.critters, .log', text: 'The critters make goo, which drones need. The log reports cave-ins, warnings and what the crew is up to. Hover anything in the world with the Select cursor to learn about it.' },
+  { title: 'Critters and log', focus: '.critters, .log', text: 'The critters live in a cave to the left of the base; keep them warm, breathing and dry. The log reports cave-ins, warnings and what the crew is up to. Hover anything in the world with the Select cursor to learn about it.' },
   {
     title: 'Mine some ore',
     text: 'Copper ore is the rusty rock to the right of the base (the Material layer shows it in orange). Pick Dig and paint over it; your drone will mine it and bring it home.',
@@ -139,11 +139,11 @@ export const TUTORIAL: TutorialStep[] = [
   },
   {
     title: 'Build a drone',
-    text: 'A new drone costs 3 plates and 2 goo from the terrarium. Press Drone (or B) to build one; it takes the next free landing pad.',
+    text: 'A new drone costs 3 plates. Press Drone (or B) to build one; it takes the next free landing pad.',
     focus: '.tools',
     goal: (g) => {
       const n = g.bots.filter((b) => !b.dead).length;
-      return { done: n >= 2, progress: `Drones ${n} / 2 · plates ${Math.floor(g.resources.plates)} / 3 · goo ${g.resources.goo.toFixed(1)} / 2` };
+      return { done: n >= 2, progress: `Drones ${n} / 2 · plates ${Math.floor(g.resources.plates)} / 3` };
     },
   },
 ];
@@ -156,7 +156,7 @@ export class Game {
 
   time = 0;
   frames = 0;
-  resources = { ore: 0, scrap: 14, plates: 0, goo: 2 };
+  resources = { ore: 0, scrap: 14, plates: 0 };
   /** Ore drones have brought home over the whole shift. */
   oreDelivered = 0;
   /**
@@ -805,7 +805,7 @@ export class Game {
   buildBot() {
     if (this.intro.phase !== 'done') return;
     if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.');
-    if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates and 2 critter goo.');
+    if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates.');
     const bot = this.spawnBot(true);
     this.emote(bot, 'strikeTheEarth');
   }
@@ -1264,7 +1264,6 @@ export class Game {
       c.complaint = bad[0]?.[1] ?? '';
       if (c.happy) {
         c.health = Math.min(100, c.health + 1);
-        this.resources.goo += 0.02;
       } else {
         c.health -= bad.reduce((s, b) => s + b[2], 0) * 0.5;
         // Critter alerts are switched off for now; the terrarium panel still shows how they're doing.

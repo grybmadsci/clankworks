@@ -70,8 +70,9 @@ export class WorldGen {
     this.add({ kind: 'floor', i0: i0 - 12, i1: i0 + 12, j0: startJ - 9, floorJ, openI0: i0 - 11, openI1: i0 + 11 });
     ellipse(i0 - 17, startJ - 2, 4, 3);
     this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45 });
-    // Terrarium chamber, joined to Carl's alcove by a narrow tunnel.
-    ellipse(i0 - 42, terrJ, 11, 5, Mat.Granite, OXYGEN);
+    // The critters' cave, joined to Carl's alcove by a narrow tunnel. Kept narrow enough (18 cells
+    // under a granite roof that holds 26) that the start area raises no structural warnings.
+    ellipse(i0 - 42, terrJ, 9, 5, Mat.Granite, OXYGEN);
     tunnel(i0 - 30, terrJ - 2, i0 - 20, startJ - 2, 1.6, OXYGEN);
     emitters.push({ x: i0 - 42, y: terrJ, radius: 5, type: Emit.Oxygen, rate: 0.02 });
     // Toxic pocket under the terrarium and an aquifer with an ice rim to the right.
@@ -119,7 +120,7 @@ export class WorldGen {
       depot: { x: wx(i0), y: floorJ * CELL },
       // Refined once the start chunks exist (see locate()).
       carl: { x: wx(i0 - 17), y: (startJ - 5) * CELL },
-      terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 3.2, h: 2.2 },
+      terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 2.8, h: 2.2 },
       strutCols: [i0 - 8, i0 + 8],
       emitters,
       surfaceY: (surfaceRow + Math.round((this.nA(i0 * 0.05, 3.7) - 0.5) * 5) + 1) * CELL,

@@ -166,3 +166,9 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .tutorial.quest .buttons { justify-content: flex-end; }
 .tut-focus { outline: 2px solid var(--accent); outline-offset: 3px; animation: tut-glow 1.2s ease-in-out infinite alternate; }
 @keyframes tut-glow { from { box-shadow: 0 0 2px rgba(240, 184, 74, 0.3); } to { box-shadow: 0 0 18px rgba(240, 184, 74, 0.8); } }
+
+/* Tutorial indicator lines from the panel to the HUD area being described */
+.tut-lines { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; overflow: visible; }
+.tut-lines line { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; animation: tut-dash 0.8s linear infinite; filter: drop-shadow(0 0 3px rgba(240, 184, 74, 0.7)); }
+.tut-lines circle, .tut-lines path { fill: var(--accent); }
+@keyframes tut-dash { to { stroke-dashoffset: -10; } }

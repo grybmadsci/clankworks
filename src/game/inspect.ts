@@ -57,7 +57,7 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
   const pc = at(Z_CRITTER);
   for (const c of game.critters) {
     if (!near({ x: c.x, y: c.y + 0.1 }, pc, 0.2)) continue;
-    return { title: c.name, lines: [c.dead ? 'Expired' : c.happy ? 'Thriving: making goo' : `Unhappy: ${c.complaint}`, `Health ${pct(Math.max(0, c.health))}`, 'Terrarium critter'] };
+    return { title: c.name, lines: [c.dead ? 'Expired' : c.happy ? 'Thriving' : `Unhappy: ${c.complaint}`, `Health ${pct(Math.max(0, c.health))}`, 'Cave critter'] };
   }
 
   const d = game.layout.depot, ph = at(Z_HUB);

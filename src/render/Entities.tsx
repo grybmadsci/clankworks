@@ -23,7 +23,6 @@ export function Entities({ game }: { game: Game }) {
     <>
       <Base game={game} />
       <Carl game={game} />
-      <Terrarium game={game} />
       {game.bots.filter((b) => !b.dead).map((b) => <DroneModel key={b.id} bot={b} />)}
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
       {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} game={game} />)}
@@ -472,22 +471,6 @@ function Carl({ game }: { game: Game }) {
     <group position={[c.x, c.y + 0.06, -DEPTH * 0.5]} rotation={[0.25, 0, 0.18]}>
       <mesh><cylinderGeometry args={[0.22, 0.22, 0.09, 20]} /><meshStandardMaterial color="#5a5e63" metalness={0.5} roughness={0.5} /></mesh>
       <mesh position={[0.08, 0.05, 0.08]}><sphereGeometry args={[0.025]} /><meshBasicMaterial ref={led} /></mesh>
-    </group>
-  );
-}
-
-function Terrarium({ game }: { game: Game }) {
-  const t = game.layout.terrarium;
-  return (
-    <group position={[t.x, t.y, 0]}>
-      <mesh position={[0, 0.03, -DEPTH * 0.5]}><boxGeometry args={[t.w, 0.06, DEPTH * 0.9]} /><meshStandardMaterial color="#3f6b2a" roughness={1} /></mesh>
-      {[-1.4, -0.7, 0.4, 1.2].map((x, n) => (
-        <mesh key={x} position={[x, 0.2 + n * 0.03, -DEPTH * 0.8]}><coneGeometry args={[0.08, 0.35 + n * 0.08, 6]} /><meshStandardMaterial color="#4f9a3a" /></mesh>
-      ))}
-      <mesh position={[0, t.h / 2, 0.06]}>
-        <planeGeometry args={[t.w, t.h]} />
-        <meshPhysicalMaterial color="#bfe6ff" transparent opacity={0.12} roughness={0.05} metalness={0} />
-      </mesh>
     </group>
   );
 }

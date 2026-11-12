@@ -22,7 +22,8 @@ gas lamps, the drones' headlamps, glowing machinery and magma provide most of it
 
 A short tutorial follows: a tour of the HUD (each area is highlighted as it is described), then
 three objectives that tick over as you play: deliver 5 ore, smelt 3 plates, and build a second
-drone. You start with one drone and no plates. Skip it any time.
+drone. You start with one drone and no plates. Tutorial steps about the HUD draw a line to the
+panel they describe. Skip it any time.
 
 Mining drones wait on the four brass landing pads on top of the base's boiler, so the fleet tops
 out at four. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
@@ -33,7 +34,8 @@ unload and dock. Dig orders only work inside the dashed ring 11m around the base
 as fine hatching. Amber means the drones can reach it: it borders space they can fly to from
 the base, or it joins such rock through other orders, so they will tunnel in. Red means nothing
 can get at it yet, such as a pocket sealed in solid rock. Dirt digs quickly; granite and copper ore take about twice as long as they used to. A smelter
-turns ore into plates. New drones cost plates plus goo from the terrarium critters. The
+turns ore into plates. New drones cost 3 plates. Wall-hung bins beside the base fill with ore,
+scrap and plates to match the stockpile. The
 quarterly quota is 30 plates.
 
 Structural warnings come in two stages:
@@ -69,13 +71,13 @@ The toolbar has three sections:
 | Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
 | Buildings | `4` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
 | Buildings | `5` Smelter | Ore → plates (8 scrap). A hologram previews where it will stand: cyan if it fits, red if not |
-| Buildings | `B` Drone | Build a drone (3 plates + 2 goo), one per landing pad |
+| Buildings | `B` Drone | Build a drone (3 plates), one per landing pad |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 
 The critters need 6–38 °C, oxygen, no toxic gas and dry feet (their alerts are switched off for
-now; the terrarium panel shows how they're doing). Breaching the toxic pocket under
-the terrarium or flooding it from the aquifer will cost you critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
+now; the Critters panel shows how they're doing). Breaching the toxic pocket under
+their cave or flooding it from the aquifer will cost you critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
 survivors, Carl's alcove, stuck drones, losses that still increased ore output, and so on).
 
 ## Architecture

@@ -60,7 +60,6 @@ export function Hud({ game }: { game: Game }) {
         <Res label="Ore" value={fmt(r.ore)} color="#d9844a" />
         <Res label="Scrap" value={fmt(r.scrap)} color="#9aa3ad" />
         <Res label="Plates" value={fmt(r.plates)} color="#f0b84a" />
-        <Res label="Goo" value={fmt(r.goo)} color="#8fd65a" />
         <Res label="Drones" value={`${alive.length}`} color="#7fd8ff" />
         <div className="quota">
           <div>Quota {game.platesMade}/{game.quota} plates</div>
@@ -80,7 +79,7 @@ export function Hud({ game }: { game: Game }) {
           </ToolGroup>
           <ToolGroup title="Buildings">
             {BUILDINGS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
-            <button className="build" data-tip="A mining drone: 3 plates + 2 critter goo (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
+            <button className="build" data-tip="A mining drone: 3 plates (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
               <Icon name="drone" /><span>Drone</span><kbd>B</kbd>
             </button>
           </ToolGroup>
@@ -113,7 +112,7 @@ export function Hud({ game }: { game: Game }) {
       )}
 
       <aside className="panel critters">
-        <h3>Terrarium</h3>
+        <h3>Critters</h3>
         {game.critters.map((c) => (
           <div key={c.id} className={c.dead ? 'dead' : c.happy ? 'happy' : 'sad'}>
             <span>{c.name}</span>
@@ -162,11 +161,31 @@ export function Hud({ game }: { game: Game }) {
 function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
   const step = TUTORIAL[game.tutorial.step];
   const focus = step?.focus;
+  const panel = useRef<HTMLElement>(null);
+  const lines = useRef<SVGSVGElement>(null);
   useEffect(() => {
     if (!focus) return;
     const els = [...document.querySelectorAll(focus)];
     els.forEach((e) => e.classList.add('tut-focus'));
-    return () => els.forEach((e) => e.classList.remove('tut-focus'));
+    // An indicator line from the panel to each highlighted area, kept up to date every frame.
+    let raf = 0;
+    const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      const svg = lines.current, p = panel.current?.getBoundingClientRect();
+      if (!svg || !p) return;
+      const pc = { x: p.left + p.width / 2, y: p.top + p.height / 2 };
+      svg.innerHTML = els.map((e) => {
+        const r = e.getBoundingClientRect();
+        const tc = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        // From the panel's edge nearest the target to the target's edge nearest the panel.
+        const a = { x: clamp(tc.x, p.left, p.right), y: clamp(tc.y, p.top, p.bottom) };
+        const b = { x: clamp(pc.x, r.left - 6, r.right + 6), y: clamp(pc.y, r.top - 6, r.bottom + 6) };
+        return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" marker-end="url(#tut-arrow)" /><circle cx="${a.x}" cy="${a.y}" r="3.5" />`;
+      }).join('') + '<defs><marker id="tut-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" /></marker></defs>';
+    };
+    draw();
+    return () => { cancelAnimationFrame(raf); els.forEach((e) => e.classList.remove('tut-focus')); if (lines.current) lines.current.innerHTML = ''; };
   }, [focus]);
   if (!step) return null;
   const tour = !step.goal;
@@ -174,7 +193,9 @@ function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
   const n = objectives.indexOf(step);
   const goal = step.goal?.(game);
   return (
-    <aside className={`panel tutorial ${tour ? 'tour' : 'quest'}`}>
+    <>
+    <svg ref={lines} className="tut-lines" />
+    <aside ref={panel} className={`panel tutorial ${tour ? 'tour' : 'quest'}`}>
       <h3>{tour ? `Tutorial ${game.tutorial.step + 1} / ${TUTORIAL.length - objectives.length}` : `Objective ${n + 1} / ${objectives.length}`}</h3>
       <h4>{step.title}</h4>
       <p>{step.text}</p>
@@ -184,6 +205,7 @@ function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
         <button className="quiet" onClick={() => { game.skipTutorial(); onChange(); }}>Skip tutorial</button>
       </div>
     </aside>
+    </>
   );
 }
 
