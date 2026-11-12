@@ -30,6 +30,21 @@ const shot = async (name) => { await page.waitForTimeout(600); await page.screen
 try {
   await gotoApp(page, baseUrl ?? 'http://localhost:5288/');
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
+  // Opening: the base drills down from the surface and deploys. Watch it land, then carry on.
+  const intro = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot;
+    const start = g.intro.offset;
+    const shaftCell = () => g.terrain.density[Math.floor((d.y + start / 2) / 0.25) * 512 + Math.floor(d.x / 0.25)];
+    const before = shaftCell();
+    for (let n = 0; n < 30 * 14 && g.intro.phase !== 'done'; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 20)); }
+    return { start, before, after: shaftCell(), phase: g.intro.phase, toolbar: [...document.querySelectorAll('.tool-group h4')].map((h) => h.firstChild.textContent) };
+  });
+  console.log('intro', JSON.stringify(intro));
+  check(intro.start > 25 && intro.before > 0.5 && intro.after < 0.5 && intro.phase === 'done',
+    `base drilled ${intro.start.toFixed(0)}m down its own shaft and deployed`);
+  await page.waitForTimeout(400);
+  const groups = await page.evaluate(() => [...document.querySelectorAll('.tool-group h4')].map((h) => h.firstChild.textContent));
+  check(groups.join(',') === 'Orders,Buildings,Layers', `toolbar split into ${groups.join(' / ')}`);
   console.log('quality:', await page.evaluate(() => document.querySelector('canvas')?.dataset.quality ?? 'high'));
   console.log('adapter:', await page.evaluate(async () => {
     const a = await navigator.gpu.requestAdapter();
@@ -153,10 +168,14 @@ try {
     const d = g.layout.depot;
     g.resources.scrap += 5;
     g.tool = 'blast';
-    // Two charges side by side in the soft dirt below the surface leave an over-long ceiling.
-    const y = (g.layout.surfaceRow - 9) * 0.25;
-    g.useTool(d.x - 7, y, false);
-    g.useTool(d.x - 9, y, false);
+    // Build a block of soft dirt beside the base; two charges side by side in it leave an
+    // over-long ceiling.
+    const t = g.terrain, x = d.x + 9.5, y = d.y - 4;
+    const ci = Math.floor(x / 0.25), cj = Math.floor(y / 0.25);
+    for (let j = cj - 8; j <= cj + 12; j++) for (let i = ci - 14; i <= ci + 14; i++) { t.density[j * 512 + i] = 1; t.material[j * 512 + i] = 1; }
+    t.markDirty(ci - 15, cj - 9, ci + 15, cj + 13, false);
+    g.useTool(x - 1, y, false);
+    g.useTool(x + 1, y, false);
     g.tool = 'dig';
     return g.blasts.length;
   });
@@ -265,6 +284,44 @@ try {
   check(away.loadedFar && away.unloaded && away.placeholder === 1024 && Math.abs(away.restored - away.carved) < 1e-3 && away.carved < 1020,
     `far chunk streamed in, saved on unload and restored with the player's changes (${away.resident} resident)`);
 
+  // Struts follow the rock: build a dirt chamber 2m tall with a strut in it, then dig under it.
+  const telescope = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain, W = 512;
+    const run = async (s) => { for (let n = 0; n < s * 30; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 20)); } };
+    const ci = Math.floor((d.x + 6) / 0.25), cj = Math.floor((d.y + 2) / 0.25);
+    const set = (i, j, open) => { t.density[j * W + i] = open ? 0 : 1; t.material[j * W + i] = open ? 0 : 1; t.digMark[j * W + i] &= 4; };
+    for (let j = cj - 30; j <= cj + 12; j++) for (let i = ci - 6; i <= ci + 6; i++) set(i, j, j >= cj && j < cj + 8 && Math.abs(i - ci) <= 4);
+    t.markDirty(ci - 7, cj - 31, ci + 7, cj + 13, false);
+    g.resources.scrap += 2;
+    const n0 = g.struts.length;
+    g.placeStrut((ci + 0.5) * 0.25, (cj + 3) * 0.25);
+    const s = g.struts[n0];
+    const placed = s ? s.j1 - s.j0 + 1 : 0;
+    // Dig 1m out from under the bottom plate: the strut stretches down to the new floor.
+    for (let j = cj - 4; j < cj; j++) for (let i = ci - 1; i <= ci + 1; i++) set(i, j, true);
+    t.markDirty(ci - 2, cj - 5, ci + 2, cj);
+    await run(0.5);
+    const stretched = s.j1 - s.j0 + 1, brokenAfterStretch = s.broken;
+    // Order a dig another 2m down: that would take it past 4m, so it warns first.
+    const logBefore = g.log.length;
+    g.tool = 'dig';
+    for (let y = (cj - 5) * 0.25; y > (cj - 12) * 0.25; y -= 0.2) g.designate((ci + 0.5) * 0.25, y, 0.3, true);
+    const warned = g.log.slice(logBefore).some((l) => /undermine a strut/i.test(l.text));
+    const atRisk = s.atRisk;
+    // Dig it for real: the strut gives up and stops supporting anything.
+    for (let j = cj - 12; j < cj - 4; j++) for (let i = ci - 1; i <= ci + 1; i++) set(i, j, true);
+    t.markDirty(ci - 2, cj - 13, ci + 2, cj - 4);
+    await run(0.5);
+    const broken = s.broken, bitsCleared = t.strut[(cj + 2) * W + ci] === 0;
+    const tag = !!document.querySelector('.bubble.strut.broken');
+    g.designate((ci + 0.5) * 0.25, (cj - 8) * 0.25, 3, false);
+    return { placed, stretched, brokenAfterStretch, warned, atRisk, broken, bitsCleared, tag };
+  });
+  console.log('telescope', JSON.stringify(telescope));
+  check(telescope.placed === 8 && telescope.stretched === 12 && !telescope.brokenAfterStretch, `a strut stretches when the floor under it is dug out (${telescope.placed} → ${telescope.stretched} cells)`);
+  check(telescope.warned && telescope.atRisk, 'a dig order that would undermine a strut warns first');
+  check(telescope.broken && telescope.bitsCleared && telescope.tag, 'a strut dug out past its limit stops supporting and is flagged');
+
   // Struts are limited in height: the shaft above the base is far too tall to brace.
   const tall = await page.evaluate(() => {
     const g = window.__game, d = g.layout.depot;
@@ -280,6 +337,7 @@ try {
   const ui = await page.evaluate(() => {
     const g = window.__game;
     g.resources.scrap += 10; g.resources.plates += 3; g.resources.goo += 2;
+    g.tool = 'dig';
     const d = g.layout.depot;
     const v = { x: d.x - 2.5, y: d.y + 1.2, z: 0 };
     const cam = window.__view.camera;

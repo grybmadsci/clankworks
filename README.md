@@ -14,13 +14,14 @@ npm run build
 
 ## Playing
 
-The world is 128m wide and 192m deep. Your steam-age base sits in a flat-floored cavern near
-the surface. Everything you haven't explored is hidden under fog of war; the drones' lamps and
+The world is 128m wide and 192m deep. A shift opens with your steam-age base drilling its own
+shaft from the surface down to a flat-floored cavern 30m underground, then deploying: brackets
+clamp it to the back wall, and the conveyor, shelf, lamps and bulbs unfold (`Space` skips). Everything you haven't explored is hidden under fog of war; the drones' lamps and
 the base push it back as they go. Underground there is very little ambient light, so the base's
 gas lamps, the drones' headlamps, glowing machinery and magma provide most of it.
 
-Mining drones wait on brass landing pads on the base's boiler (four) and on the cradle tower
-beside it (eight). When you designate rock, they launch, cut it with their lasers, and fly home to
+Mining drones wait on the four brass landing pads on top of the base's boiler, so the fleet tops
+out at four. When you designate rock, they launch, cut it with their lasers, and fly home to
 unload and dock. Dig orders only work inside the dashed ring 11m around the base. Orders show
 as fine hatching. Amber means the drones can reach it: it borders space they can fly to from
 the base, or it joins such rock through other orders, so they will tunnel in. Red means nothing
@@ -37,18 +38,26 @@ Structural warnings come in two stages:
   jump there. You get 15 seconds to brace it with a strut. If the rock is still unsupported when
   the countdown ends, it collapses.
 
-The integrity overlay (`T`) shows the stress map: green rock is sound, and ceilings turn yellow,
+Struts follow the rock. Dig out the floor under a strut's bottom plate (or the rock above its
+top plate) and it stretches to the new floor or ceiling, up to its 4m limit. Ordering a dig
+that would take it past that warns you first, and the strut gets an "⚠ Dig will undermine
+strut" tag. If the dig goes ahead anyway, the strut stops supporting the ceiling, goes dark
+and rusty, and shows "⚠ Strut not supporting" until the gap is short enough to brace again.
+
+The integrity layer shows the stress map: green rock is sound, and ceilings turn yellow,
 then red, as they approach their limit. Cracking rock flashes.
 
-| Input | Action |
-| --- | --- |
-| `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
-| `3` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
-| `4` Smelter | Ore → plates (8 scrap). A hologram previews where it will stand: cyan if it fits, red if not |
-| `5` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
-| `B` | Build a drone (3 plates + 2 goo) |
-| `T` | Cycle the heat, oxygen and structural integrity overlays |
-| Right-drag / WASD, wheel | Pan, zoom |
+The toolbar has three sections:
+
+| Section | Input | Action |
+| --- | --- | --- |
+| Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
+| Orders | `3` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
+| Buildings | `4` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
+| Buildings | `5` Smelter | Ore → plates (8 scrap). A hologram previews where it will stand: cyan if it fits, red if not |
+| Buildings | `B` Drone | Build a drone (3 plates + 2 goo), one per landing pad |
+| Layers | `T` cycles, or click | Normal, heat, oxygen and structural integrity views |
+| | Right-drag / WASD, wheel | Pan, zoom |
 
 The critters need 6–38 °C, oxygen, no toxic gas and dry feet. Breaching the toxic pocket under
 the terrarium or flooding it from the aquifer will cost you critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
@@ -126,9 +135,11 @@ Each kernel gets its own storage node over the shared attribute.
 
 ## Testing
 
-- `npm run smoke` boots the game in Chromium and fast-forwards the simulation through drone
+- `npm run smoke` boots the game in Chromium, watches the base drill down and deploy, checks the
+  toolbar sections, and fast-forwards the simulation through drone
   mining, the dig range limit, a blast, a cave-in warning and collapse chain, a strut saving a
-  cracking ceiling, a near-collapse warning, fog of war, streaming a far chunk out and back in
+  cracking ceiling, a strut stretching, warning about and then losing its footing, a
+  near-collapse warning, fog of war, streaming a far chunk out and back in
   with its changes intact, a magma chamber heating rock, and real toolbar, canvas and hotkey
   input. It checks that the GPU
   kernels changed the state (no NaNs, heat spreading into rock, compacted mesh size) and saves

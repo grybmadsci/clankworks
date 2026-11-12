@@ -27,6 +27,9 @@ const CARGO_CAP = 6;
 const QUOTA = 30;
 /** Tallest gap a single strut can brace, in cells. */
 const MAX_STRUT_CELLS = 16;
+/** Opening sequence: drill speed (m/s) down from the surface, then how long deploying takes (s). */
+const DRILL_SPEED = 4;
+export const DEPLOY_TIME = 3;
 /** Collapses smaller than this just crumble to dust at once; anything that falls as a chunk is warned first. */
 const MIN_WARNED_COLLAPSE = 4;
 
@@ -81,7 +84,12 @@ export interface Debris {
   removed: boolean;
 }
 
-export interface Strut { id: number; i: number; j0: number; j1: number }
+/**
+ * A steel strut filling cells j0..j1 of column i. `broken` struts have been dug out past what they
+ * can stretch to and no longer hold anything up; `atRisk` ones would be, once pending dig orders
+ * are done.
+ */
+export interface Strut { id: number; i: number; j0: number; j1: number; broken: boolean; atRisk: boolean }
 export interface Smelter { id: number; x: number; y: number; hp: number; smeltTimer: number; hotUntil: number }
 export interface Blast { id: number; x: number; y: number; fuse: number }
 export interface Critter { id: number; name: string; x: number; y: number; vx: number; health: number; happy: boolean; complaint: string; hop: number; dead: boolean }
@@ -125,6 +133,11 @@ export class Game {
   /** What the camera shows (world units), set by the renderer; drives chunk streaming. */
   view = { x: 0, y: 0, halfW: 12, halfH: 8 };
   readonly chunks: ChunkStreamer;
+  /**
+   * Opening sequence. The base starts on the surface and drills straight down to the start cavern
+   * (`offset` is its height above its final resting place), then deploys; play starts after.
+   */
+  intro = { phase: 'drill' as 'drill' | 'deploy' | 'done', t: 0, offset: 0 };
   /** Initial / last-loaded fluid (water, magma, oxygen, toxic) and temperature per cell. */
   readonly fluidInit = new Float32Array(CELLS * 4);
   readonly tempInit = new Float32Array(CELLS);
@@ -155,6 +168,9 @@ export class Game {
   private stressMapAt = 0;
   private stressVersion = -1;
   private readonly warnedUnstable = new Map<string, number>();
+  private strutsVersion = -1;
+  private drillY = 0;
+  private drillFxAt = 0;
 
   static async create(seed?: number) {
     await RAPIER.init();
@@ -176,6 +192,8 @@ export class Game {
     });
     const layout = this.layout;
     this.view = { x: layout.depot.x, y: layout.depot.y + 1, halfW: 12, halfH: 8 };
+    this.intro.offset = layout.surfaceY - layout.depot.y;
+    this.drillY = layout.surfaceY + 0.5;
     for (const id of this.wantedChunks()) this.chunks.loadNow(id);
     gen.locate(this.terrain);
     this.rebuildColliders();
@@ -196,10 +214,9 @@ export class Game {
     for (const i of layout.strutCols) {
       let j0 = -1, j1 = -1;
       for (let j = 0; j < H; j++) if (this.terrain.strut[cellIndex(i, j)]) { if (j0 < 0) j0 = j; j1 = j; }
-      if (j0 >= 0) this.struts.push({ id: nextId++, i, j0, j1 });
+      if (j0 >= 0) this.struts.push({ id: nextId++, i, j0, j1, broken: false, atRisk: false });
     }
-    this.info('Shift started. Designate rock near the base and the drones will mine it. Oxygen is strictly optional.');
-    this.info(`Quarterly quota: ${QUOTA} copper plates. Management believes in you, statistically.`);
+    this.info('Drilling down to the dig site…');
   }
 
   attachGpu(renderer: WebGPURenderer) {
@@ -228,6 +245,11 @@ export class Game {
     };
     const c = this.digCenter;
     add(c.x, c.y, DIG_RADIUS + 2);
+    if (this.intro.phase !== 'done') {
+      // The whole drill shaft, so it can be carved as the base descends.
+      const d = this.layout.depot, top = this.layout.surfaceY + 1;
+      add(d.x, (d.y + top) / 2, 2, (top - d.y) / 2 + 1);
+    }
     for (const b of this.bots) {
       if (b.dead) continue;
       const p = b.body.translation();
@@ -342,6 +364,114 @@ export class Game {
     this.unstable = unstable;
   }
 
+  // ---------------------------------------------------------------- opening sequence
+
+  /** Drill down: carve the shaft ahead of the base, throw rock and sparks, then deploy. */
+  private updateIntro(dt: number) {
+    const intro = this.intro, d = this.layout.depot;
+    intro.t += dt;
+    if (intro.phase === 'drill') {
+      intro.offset = Math.max(0, intro.offset - DRILL_SPEED * dt);
+      this.carveShaft(d.y + intro.offset - 0.25);
+      this.shake = Math.max(this.shake, 0.25);
+      if (this.time >= this.drillFxAt && this.gpu) {
+        this.drillFxAt = this.time + 0.05;
+        const y = d.y + intro.offset - 0.3;
+        const k = cellIndex(toCell(d.x), Math.max(0, toCell(y - 0.4)));
+        this.gpu.burst(d.x + (Math.random() - 0.5) * 2, y, 24, this.terrain.material[k] || Mat.Dirt, 3, 0.3);
+        this.gpu.burst(d.x + (Math.random() - 0.5) * 1.6, y, 8, ParticleKind.Spark, 4, 0.1);
+        if (Math.random() < 0.15) rumble(0.6);
+      }
+      if (intro.offset === 0) {
+        intro.phase = 'deploy';
+        intro.t = 0;
+        this.shake = 0.8;
+        rumble(2.5);
+        this.gpu?.burst(d.x, d.y + 0.1, 160, Mat.Dirt, 3, 1.1);
+        this.gpu?.burst(d.x - 0.12, d.y + 1.24, 60, ParticleKind.Steam, 1.6, 0.05);
+        this.info('Touchdown. Deploying the base.');
+      }
+    } else if (intro.phase === 'deploy' && intro.t >= DEPLOY_TIME) {
+      this.finishIntro();
+    }
+  }
+
+  /**
+   * Carve the shaft from the last drilled height down to `y`, as wide as the base. It stops short
+   * of the cavern floor: once the drill breaks into the cavern there is nothing left to cut.
+   */
+  private carveShaft(y: number) {
+    const d = this.layout.depot;
+    const lowest = d.y + 1.3;
+    for (; this.drillY > Math.max(y, lowest); this.drillY -= 0.2) this.terrain.carve(d.x, this.drillY, 1.25, 4);
+  }
+
+  private finishIntro() {
+    const d = this.layout.depot;
+    this.carveShaft(d.y - 0.25);
+    this.intro = { phase: 'done', t: 0, offset: 0 };
+    this.reveal(d.x, d.y + 1, 9);
+    this.entityVersion++;
+    this.info('Shift started. Designate rock near the base and the drones will mine it. Oxygen is strictly optional.');
+    this.info(`Quarterly quota: ${QUOTA} copper plates. Management believes in you, statistically.`);
+  }
+
+  /** Jump straight to the deployed base (the intro's skip button, and tests). */
+  skipIntro() {
+    if (this.intro.phase === 'done') return;
+    for (const id of this.wantedChunks()) this.chunks.loadNow(id);
+    this.finishIntro();
+  }
+
+  // ---------------------------------------------------------------- strut upkeep
+
+  /**
+   * The open run of column i around a strut's cells, grown up and down until it hits rock (cells
+   * with dig orders count as already dug when `withOrders` is set). `ok` when both ends are solid
+   * within the strut's maximum length.
+   */
+  private strutSpan(s: Strut, withOrders: boolean) {
+    const t = this.terrain;
+    const open = (j: number) => t.isOpen(s.i, j) || (withOrders && (t.digMark[cellIndex(s.i, j)] & DIG_BIT) !== 0);
+    let a = s.j0, b = s.j1;
+    while (a > 0 && open(a - 1) && b - a < MAX_STRUT_CELLS) a--;
+    while (b < H - 1 && open(b + 1) && b - a < MAX_STRUT_CELLS) b++;
+    const ok = b - a + 1 <= MAX_STRUT_CELLS && !open(a - 1) && !open(b + 1) && t.isSolid(s.i, a - 1) && t.isSolid(s.i, b + 1);
+    return { a, b, ok };
+  }
+
+  /**
+   * Struts follow the rock: when the ground under a plate (or the rock above one) is dug away,
+   * the strut telescopes to the new floor or ceiling. If that would take it past its maximum
+   * length it gives up and stops supporting anything until the gap is short enough again.
+   */
+  private updateStruts(force = false) {
+    const t = this.terrain;
+    if (!force && this.strutsVersion === t.version) return;
+    this.strutsVersion = t.version;
+    for (const s of this.struts) {
+      if (!t.isLoadedCell(s.i, s.j0)) continue;
+      const span = this.strutSpan(s, false);
+      if (span.ok) {
+        if (span.a !== s.j0 || span.b !== s.j1 || s.broken) {
+          for (let j = span.a; j <= span.b; j++) t.strut[cellIndex(s.i, j)] = 1;
+          if (s.broken) this.info('A strut is braced again.');
+          s.j0 = span.a; s.j1 = span.b; s.broken = false;
+          this.entityVersion++;
+        }
+      } else if (!s.broken) {
+        s.broken = true;
+        for (let j = s.j0; j <= s.j1; j++) t.strut[cellIndex(s.i, j)] = 0;
+        this.entityVersion++;
+        this.warn('A strut was dug out and is no longer supporting the ceiling.');
+        // Whatever it held up needs re-checking.
+        const r = t.structuralDirty, i0 = s.i - 2, i1 = s.i + 2, j0 = s.j0 - 2, j1 = s.j1 + 2;
+        t.structuralDirty = r ? { i0: Math.min(r.i0, i0), j0: Math.min(r.j0, j0), i1: Math.max(r.i1, i1), j1: Math.max(r.j1, j1) } : { i0, j0, i1, j1 };
+      }
+      s.atRisk = !s.broken && !this.strutSpan(s, true).ok;
+    }
+  }
+
   // ---------------------------------------------------------------- environment queries
 
   env(x: number, y: number): Env {
@@ -402,6 +532,7 @@ export class Game {
 
   /** Apply the current tool at a world position. `drag` is true for painting while held. */
   useTool(x: number, y: number, drag: boolean) {
+    if (this.intro.phase !== 'done') return;
     switch (this.tool) {
       case 'dig': this.designate(x, y, 0.7, true); break;
       case 'cancel': this.designate(x, y, 0.9, false); break;
@@ -431,7 +562,15 @@ export class Game {
       if (on) this.marked.add(k); else this.marked.delete(k);
       changed = true;
     }
-    if (changed) { this.terrain.touchMarks(Math.floor(ci - r), Math.floor(cj - r), Math.ceil(ci + r), Math.ceil(cj + r)); this.reachAt = 0; }
+    if (changed) {
+      this.terrain.touchMarks(Math.floor(ci - r), Math.floor(cj - r), Math.ceil(ci + r), Math.ceil(cj + r));
+      this.reachAt = 0;
+      const risky = this.struts.filter((s) => s.atRisk).length;
+      this.updateStruts(true);
+      if (on && this.struts.filter((s) => s.atRisk).length > risky) {
+        this.warn(`This dig would undermine a strut: it can only stretch to ${MAX_STRUT_CELLS * CELL}m, then it stops holding up the ceiling.`);
+      }
+    }
     if (outOfRange && !changed && this.time >= this.rangeWarnAt) {
       this.rangeWarnAt = this.time + 3;
       this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`);
@@ -468,7 +607,7 @@ export class Game {
     const { i, j0, j1, error } = this.strutSite(x, y);
     if (error || !this.pay(COST.strut)) return this.warn(error ?? 'Insufficient scrap for a strut (2).');
     for (let j = j0; j <= j1; j++) t.strut[cellIndex(i, j)] = 1;
-    this.struts.push({ id: nextId++, i, j0, j1 });
+    this.struts.push({ id: nextId++, i, j0, j1, broken: false, atRisk: false });
     // A strut may have saved cracking rock; re-evaluate straight away.
     this.pendingCheckAt = 0;
     this.entityVersion++;
@@ -509,6 +648,7 @@ export class Game {
   }
 
   buildBot() {
+    if (this.intro.phase !== 'done') return;
     if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.');
     if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates and 2 critter goo.');
     const bot = this.spawnBot(true);
@@ -570,6 +710,7 @@ export class Game {
     this.frames++;
     this.shake = Math.max(0, this.shake - dt * 2);
 
+    if (this.intro.phase !== 'done') this.updateIntro(dt);
     this.updateBots(dt);
     this.updateBlasts(dt);
     this.physics.timestep = dt;
@@ -588,9 +729,11 @@ export class Game {
       this.revealAt = this.time + 0.2;
       for (const b of this.bots) if (!b.dead) { const p = b.body.translation(); this.reveal(p.x, p.y, 3.5); }
       const d = this.layout.depot;
-      this.reveal(d.x, d.y + 1, 9);
+      if (this.intro.phase === 'done') this.reveal(d.x, d.y + 1, 9);
+      else this.reveal(d.x, d.y + this.intro.offset + 0.5, 3.5);
     }
     this.updateStressMap();
+    this.updateStruts();
 
     if (this.terrain.structuralDirty && this.time >= this.structuralAt) {
       this.structuralAt = this.time + 0.15;
@@ -1044,6 +1187,15 @@ export class Game {
   // ---------------------------------------------------------------- drones
 
   private updateBots(dt: number) {
+    if (this.intro.phase !== 'done') {
+      // Riding down on their pads.
+      for (const bot of this.bots) {
+        const slot = this.slotOf(bot);
+        bot.body.setTranslation({ x: slot.x, y: slot.y + this.intro.offset }, true);
+        bot.body.setLinvel({ x: 0, y: 0 }, true);
+      }
+      return;
+    }
     for (const bot of this.bots) {
       if (bot.dead) continue;
       const p = bot.body.translation();

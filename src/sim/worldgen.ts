@@ -29,6 +29,8 @@ export interface WorldLayout {
   terrarium: { x: number; y: number; w: number; h: number };
   strutCols: number[];
   emitters: EmitterDef[];
+  /** Height (world units) of the ground surface above the base, where the intro drill starts. */
+  surfaceY: number;
 }
 
 /** Background rock temperature by row: cool near the surface, hot near the bedrock. */
@@ -51,7 +53,8 @@ export class WorldGen {
     this.nA = makeNoise2(seed + 1); this.nB = makeNoise2(seed + 2); this.nC = makeNoise2(seed + 3); this.nD = makeNoise2(seed + 4);
     const surfaceRow = H - SKY_ROWS - 2;
     const i0 = W / 2;
-    const startJ = surfaceRow - 26;
+    // The base drills its own shaft down to the start cavern (see Game's intro), 30m deep.
+    const startJ = surfaceRow - 120;
     const floorJ = startJ - 4;
     const terrJ = startJ + 1;
     const emitters: EmitterDef[] = [];
@@ -62,10 +65,9 @@ export class WorldGen {
       for (let s = 0; s <= steps; s++) ellipse(ia + (ib - ia) * (s / steps), ja + (jb - ja) * (s / steps), r, r, undefined, fill);
     };
 
-    // Starting cavern with a flat floor, its shaft to the surface, and Carl's alcove.
+    // Starting cavern with a flat floor, and Carl's alcove.
     ellipse(i0, startJ, 15, 7, Mat.Granite);
     this.add({ kind: 'floor', i0: i0 - 12, i1: i0 + 12, j0: startJ - 9, floorJ, openI0: i0 - 11, openI1: i0 + 11 });
-    tunnel(i0, startJ + 4, i0, surfaceRow + 3, 2.6);
     ellipse(i0 - 17, startJ - 2, 4, 3);
     this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45 });
     // Terrarium chamber, joined to Carl's alcove by a narrow tunnel.
@@ -79,7 +81,9 @@ export class WorldGen {
     emitters.push({ x: i0 + 36, y: startJ - 40, radius: 3, type: Emit.Water, rate: 0.01 });
 
     // The wider world: voids, ore veins, aquifers, gas pockets, and magma at depth.
-    const nearStart = (ci: number, cj: number, r: number) => Math.hypot(ci - i0, cj - startJ) < r;
+    // Keep random features clear of the start and of the column the base drills down.
+    const nearStart = (ci: number, cj: number, r: number) =>
+      Math.hypot(ci - i0, cj - startJ) < r || (Math.abs(ci - i0) < 24 && cj > startJ);
     const spot = (jLo: number, jHi: number, keepOut: number) => {
       for (;;) {
         const ci = 16 + rand() * (W - 32), cj = jLo + rand() * (jHi - jLo);
@@ -87,20 +91,20 @@ export class WorldGen {
       }
     };
     for (let n = 0; n < 16; n++) {
-      const [ci, cj] = spot(40, startJ - 60, 70);
+      const [ci, cj] = spot(40, surfaceRow - 30, 70);
       this.add({ kind: 'ore', i0: Math.round(ci - 8), i1: Math.round(ci + 8), j0: Math.round(cj - 10), j1: Math.round(cj + 10), threshold: 0.45 });
     }
     for (let n = 0; n < 110; n++) {
-      const [ci, cj] = spot(30, startJ - 20, 48);
+      const [ci, cj] = spot(30, surfaceRow - 16, 48);
       ellipse(ci, cj, 3 + rand() * 6, 2 + rand() * 3.5, Mat.Granite);
     }
     for (let n = 0; n < 7; n++) {
-      const [ci, cj] = spot(200, startJ - 80, 60);
+      const [ci, cj] = spot(200, surfaceRow - 60, 60);
       ellipse(ci, cj, 7 + rand() * 6, 4 + rand() * 3, Mat.Ice, WATER);
       emitters.push({ x: ci, y: cj, radius: 3, type: Emit.Water, rate: 0.01 });
     }
     for (let n = 0; n < 8; n++) {
-      const [ci, cj] = spot(120, startJ - 70, 60);
+      const [ci, cj] = spot(120, surfaceRow - 50, 60);
       ellipse(ci, cj, 5 + rand() * 5, 3 + rand() * 2, Mat.Granite, TOXIC);
       emitters.push({ x: ci, y: cj, radius: 3, type: Emit.Toxic, rate: 0.01 });
     }
@@ -118,6 +122,7 @@ export class WorldGen {
       terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 3.2, h: 2.2 },
       strutCols: [i0 - 8, i0 + 8],
       emitters,
+      surfaceY: (surfaceRow + Math.round((this.nA(i0 * 0.05, 3.7) - 0.5) * 5) + 1) * CELL,
     };
   }
 

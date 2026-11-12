@@ -126,6 +126,14 @@ function CameraRig({ game }: { game: Game }) {
 
   useFrame((_, dt) => {
     const s = state.current;
+    if (game.intro.phase !== 'done') {
+      // Follow the base down its shaft.
+      const d = game.layout.depot;
+      s.x = d.x;
+      s.y = d.y + game.intro.offset + 0.9;
+      s.dist += (11 - s.dist) * Math.min(1, dt * 2);
+      s.keys.clear();
+    }
     const speed = s.dist * 0.9 * dt;
     if (s.keys.has('a') || s.keys.has('arrowleft')) s.x -= speed;
     if (s.keys.has('d') || s.keys.has('arrowright')) s.x += speed;

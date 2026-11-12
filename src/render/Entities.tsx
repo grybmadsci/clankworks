@@ -24,7 +24,7 @@ export function Entities({ game }: { game: Game }) {
       <Terrarium game={game} />
       {game.bots.filter((b) => !b.dead).map((b) => <DroneModel key={b.id} bot={b} />)}
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
-      {game.struts.map((s) => <StrutModel key={s.id} strut={s} />)}
+      {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} />)}
       {game.smelters.map((s) => <SmelterModel key={s.id} smelter={s} game={game} />)}
       {game.blasts.map((b) => <BlastModel key={b.id} blast={b} />)}
       {game.critters.map((c) => <CritterModel key={c.id} critter={c} />)}
@@ -181,14 +181,16 @@ function seeded(seed: number) {
 }
 
 interface Lamp { x: number; y: number; z: number; side: number }
-const lampCache = new WeakMap<Strut, Lamp[]>();
+/** Keyed by span, since struts stretch when the rock at their ends is dug away. */
+const lampCache = new Map<string, Lamp[]>();
 
 /**
  * Lamps spread up a strut, roughly one per 0.7m, alternating between the two posts with a
  * little random offset so they don't line up.
  */
 export function strutLamps(strut: Pick<Strut, 'i' | 'j0' | 'j1'>): Lamp[] {
-  const cached = lampCache.get(strut as Strut);
+  const key = `${strut.i}:${strut.j0}:${strut.j1}`;
+  const cached = lampCache.get(key);
   if (cached) return cached;
   const rand = seeded(strut.i * 92821 + strut.j0 * 1237 + strut.j1);
   const y0 = strut.j0 * CELL, y1 = (strut.j1 + 1) * CELL, h = y1 - y0;
@@ -199,7 +201,7 @@ export function strutLamps(strut: Pick<Strut, 'i' | 'j0' | 'j1'>): Lamp[] {
     const y = Math.min(y1 - 0.15, Math.max(y0 + 0.15, y0 + ((k + 0.5) / n) * h + (rand() - 0.5) * 0.22));
     out.push({ x: (strut.i + 0.5) * CELL + side * (0.12 + rand() * 0.025), y, z: Z_STRUT + 0.06 + rand() * 0.04, side });
   }
-  lampCache.set(strut as Strut, out);
+  lampCache.set(key, out);
   return out;
 }
 
@@ -208,6 +210,7 @@ const STRUT_MATS = {
   brace: new THREE.MeshStandardMaterial({ color: '#7c858e', metalness: 0.7, roughness: 0.4 }),
   plate: new THREE.MeshStandardMaterial({ color: '#4a525a', metalness: 0.6 }),
   iron: new THREE.MeshStandardMaterial({ color: '#2b2725', metalness: 0.7 }),
+  rusted: new THREE.MeshStandardMaterial({ color: '#5a3a2c', metalness: 0.4, roughness: 0.8 }),
   brass: new THREE.MeshStandardMaterial({ color: '#c19a4b', metalness: 0.9, roughness: 0.3 }),
 };
 
@@ -215,8 +218,11 @@ const STRUT_MATS = {
  * A strut's frame (posts, cross braces, end plates) and its lamps, centred on the strut. Real
  * struts pass nothing and get steel and glowing lamps; the hologram passes one material.
  */
-export function StrutBody({ strut, material, flames }: { strut: Pick<Strut, 'i' | 'j0' | 'j1'>; material?: THREE.Material; flames?: (THREE.MeshBasicMaterial | null)[] }) {
-  const m = (own: THREE.Material) => material ?? own;
+export function StrutBody({ strut, material, flames, broken }: {
+  strut: Pick<Strut, 'i' | 'j0' | 'j1'>; material?: THREE.Material; flames?: (THREE.MeshBasicMaterial | null)[]; broken?: boolean;
+}) {
+  // A dug-out strut looks dead: dark rusty steel, lamps out.
+  const m = (own: THREE.Material) => material ?? (broken && own !== STRUT_MATS.brass ? STRUT_MATS.rusted : own);
   const y0 = strut.j0 * CELL, h = (strut.j1 + 1) * CELL - y0;
   const cx = (strut.i + 0.5) * CELL, cy = y0 + h / 2;
   const braces = Math.max(1, Math.floor(h / 0.6));
@@ -254,7 +260,7 @@ function StrutLamps({ game }: { game: Game }) {
   const lights = useRef<(THREE.PointLight | null)[]>([]);
   useFrame(({ clock }) => {
     const v = game.view;
-    const near = game.struts.flatMap((s) => strutLamps(s))
+    const near = game.struts.filter((s) => !s.broken).flatMap((s) => strutLamps(s))
       .sort((a, b) => Math.hypot(a.x - v.x, a.y - v.y) - Math.hypot(b.x - v.x, b.y - v.y));
     lights.current.forEach((l, n) => {
       if (!l) return;
@@ -273,11 +279,11 @@ function StrutModel({ strut }: { strut: Strut }) {
     const t = clock.elapsedTime + phase;
     flames.current.forEach((f, n) => {
       if (!f) return;
-      const k = 0.8 + Math.sin(t * 11 + n * 1.9) * 0.08 + Math.sin(t * 23 + n) * 0.06 + (Math.random() - 0.5) * 0.06;
+      const k = strut.broken ? 0.03 : 0.8 + Math.sin(t * 11 + n * 1.9) * 0.08 + Math.sin(t * 23 + n) * 0.06 + (Math.random() - 0.5) * 0.06;
       f.color.setRGB(3 * k, 1.5 * k, 0.4 * k);
     });
   });
-  return <StrutBody strut={strut} flames={flames.current} />;
+  return <StrutBody strut={strut} flames={flames.current} broken={strut.broken} />;
 }
 
 const SMELTER_MATS = {

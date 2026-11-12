@@ -5,14 +5,23 @@ import type { Game, Tool } from '../game/Game';
 import { unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
-const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
+interface ToolDef { id: Tool; key: string; label: string; hint: string }
+const ORDERS: ToolDef[] = [
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
-  { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support; braces cracking rock (2 scrap)' },
-  { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates (8 scrap). Shows a hologram where it would go' },
-  { id: 'blast', key: '5', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
+  { id: 'blast', key: '3', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
 ];
-const OVERLAYS = ['Normal view', 'Heat overlay', 'Oxygen overlay', 'Integrity overlay'];
+const BUILDINGS: ToolDef[] = [
+  { id: 'strut', key: '4', label: 'Strut', hint: 'Floor-to-ceiling steel support up to 4m; stretches when its ends are dug out; braces cracking rock (2 scrap)' },
+  { id: 'smelter', key: '5', label: 'Smelter', hint: 'Turns ore into plates (8 scrap). Shows a hologram where it would go' },
+];
+const TOOLS = [...ORDERS, ...BUILDINGS];
+const LAYERS = [
+  { label: 'Normal', hint: 'Plain view' },
+  { label: 'Heat', hint: 'Temperature: blue freezing, green comfortable, red hot' },
+  { label: 'Oxygen', hint: 'Breathable air in blue, none in red, toxic gas in green' },
+  { label: 'Integrity', hint: 'Structural stress: green sound, yellow to red near its limit, flashing when cracking' },
+];
 
 /** DOM overlay: resources, tools, critter status, the status log, and emote speech bubbles. */
 export function Hud({ game }: { game: Game }) {
@@ -21,6 +30,10 @@ export function Hud({ game }: { game: Game }) {
     const id = setInterval(() => force((n) => n + 1), 200);
     const key = (e: KeyboardEvent) => {
       unlockAudio();
+      if (game.intro.phase !== 'done') {
+        if (e.key === ' ') game.skipIntro();
+        return;
+      }
       const tool = TOOLS.find((t) => t.key === e.key);
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
@@ -49,19 +62,31 @@ export function Hud({ game }: { game: Game }) {
         </div>
       </header>
 
-      <nav className="tools">
-        {TOOLS.map((t) => (
-          <button key={t.id} className={game.tool === t.id ? 'active' : ''} title={t.hint} onClick={() => { game.tool = t.id; force((n) => n + 1); }}>
-            <kbd>{t.key}</kbd>{t.label}
-          </button>
-        ))}
-        <button className="build" title="3 plates + 2 critter goo" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
-          <kbd>B</kbd>Build drone
-        </button>
-        <button onClick={() => { game.overlay = ((game.overlay + 1) % 4) as 0 | 1 | 2 | 3; force((n) => n + 1); }}>
-          <kbd>T</kbd>{OVERLAYS[game.overlay]}
-        </button>
-      </nav>
+      {game.intro.phase !== 'done' ? (
+        <div className="intro">
+          <div>{game.intro.phase === 'drill' ? `Drilling to the dig site — ${game.intro.offset.toFixed(0)}m to go` : 'Touchdown. Deploying the base…'}</div>
+          <button onClick={() => { unlockAudio(); game.skipIntro(); force((n) => n + 1); }}><kbd>Space</kbd>Skip</button>
+        </div>
+      ) : (
+        <nav className="tools">
+          <ToolGroup title="Orders">
+            {ORDERS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
+          </ToolGroup>
+          <ToolGroup title="Buildings">
+            {BUILDINGS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
+            <button className="build" title="A mining drone: 3 plates + 2 critter goo (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
+              <kbd>B</kbd>Drone
+            </button>
+          </ToolGroup>
+          <ToolGroup title="Layers" hint="T cycles">
+            {LAYERS.map((l, n) => (
+              <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as 0 | 1 | 2 | 3; force((k) => k + 1); }}>
+                {l.label}
+              </button>
+            ))}
+          </ToolGroup>
+        </nav>
+      )}
 
       <aside className="panel critters">
         <h3>Terrarium</h3>
@@ -91,6 +116,23 @@ export function Hud({ game }: { game: Game }) {
       <div className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom</div>
       <Bubbles game={game} />
     </div>
+  );
+}
+
+function ToolGroup({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <section className="tool-group">
+      <h4>{title}{hint && <span>{hint}</span>}</h4>
+      <div>{children}</div>
+    </section>
+  );
+}
+
+function ToolButton({ t, game, onPick }: { t: ToolDef; game: Game; onPick: () => void }) {
+  return (
+    <button className={game.tool === t.id ? 'active' : ''} title={t.hint} onClick={() => { game.tool = t.id; onPick(); }}>
+      <kbd>{t.key}</kbd>{t.label}
+    </button>
   );
 }
 
@@ -155,6 +197,22 @@ function Bubbles({ game }: { game: Game }) {
         el.classList.toggle('offscreen', off);
         el.classList.toggle('urgent', left < 5);
         el.style.transform = `translate(-50%, -50%) translate(${sx}px, ${sy}px)`;
+      }
+      // Struts that were dug out, or would be by pending dig orders.
+      for (const s of game.struts) {
+        if (!s.broken && !s.atRisk) continue;
+        const id = `s${s.id}`;
+        live.add(id);
+        let el = els.get(id);
+        if (!el) {
+          el = document.createElement('div');
+          host.appendChild(el);
+          els.set(id, el);
+        }
+        el.className = `bubble strut ${s.broken ? 'broken' : 'risk'}`;
+        el.textContent = s.broken ? '⚠ Strut not supporting' : '⚠ Dig will undermine strut';
+        v.set((s.i + 0.5) * 0.25, ((s.j0 + s.j1 + 1) / 2) * 0.25, 0).project(cam);
+        el.style.transform = `translate(-50%, -50%) translate(${(v.x * 0.5 + 0.5) * W}px, ${(-v.y * 0.5 + 0.5) * H}px)`;
       }
       // Early warnings over ceilings close to their safe span.
       for (const u of game.unstable) {

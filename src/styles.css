@@ -80,3 +80,23 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
   .log { width: auto; left: 12px; bottom: 100px; }
   .help { display: none; }
 }
+
+/* Toolbar groups: Orders, Buildings, Layers */
+.tools { align-items: flex-end; }
+.tool-group { display: flex; flex-direction: column; gap: 3px; padding: 4px 8px 6px; background: rgba(20, 16, 12, 0.72); border: 1px solid #3a2f24; border-radius: 8px; }
+.tool-group h4 { margin: 0; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b89a6a; display: flex; gap: 8px; }
+.tool-group h4 span { color: #7a6a55; letter-spacing: 0; text-transform: none; }
+.tool-group > div { display: flex; gap: 4px; }
+
+/* Opening sequence card */
+.intro {
+  position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); display: flex; align-items: center; gap: 14px;
+  padding: 10px 16px; background: rgba(20, 16, 12, 0.85); border: 1px solid #c19a4b; border-radius: 8px; color: #f3dfb5; font-weight: 700;
+}
+.intro button { pointer-events: auto; }
+
+/* Strut warnings */
+.bubble.strut { font-size: 11px; padding: 3px 8px; }
+.bubble.strut::after { display: none; }
+.bubble.strut.broken { background: #3a0c08; color: #ff9b85; border: 1px solid #e0442b; }
+.bubble.strut.risk { background: #2a2206; color: #ffd76b; border: 1px solid #d9a521; }
