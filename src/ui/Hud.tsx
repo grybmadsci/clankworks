@@ -10,6 +10,7 @@ const ORDERS: ToolDef[] = [
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
   { id: 'blast', key: '3', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
+  { id: 'scrap', key: 'X', label: 'Scrap', hint: 'Take down a strut for 1 scrap back. Whatever it was holding up may come down' },
 ];
 const BUILDINGS: ToolDef[] = [
   { id: 'strut', key: '4', label: 'Strut', hint: 'Floor-to-ceiling steel support up to 4m; stretches when its ends are dug out; braces cracking rock (2 scrap)' },
@@ -34,7 +35,7 @@ export function Hud({ game }: { game: Game }) {
         if (e.key === ' ') game.skipIntro();
         return;
       }
-      const tool = TOOLS.find((t) => t.key === e.key);
+      const tool = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
       if (e.key === 't') game.overlay = ((game.overlay + 1) % 4) as 0 | 1 | 2 | 3;
@@ -78,14 +79,18 @@ export function Hud({ game }: { game: Game }) {
               <kbd>B</kbd>Drone
             </button>
           </ToolGroup>
-          <ToolGroup title="Layers" hint="T cycles">
-            {LAYERS.map((l, n) => (
-              <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as 0 | 1 | 2 | 3; force((k) => k + 1); }}>
-                {l.label}
-              </button>
-            ))}
-          </ToolGroup>
         </nav>
+      )}
+
+      {game.intro.phase === 'done' && (
+        <aside className="panel layers">
+          <h3>Layers <span>T cycles</span></h3>
+          {LAYERS.map((l, n) => (
+            <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as 0 | 1 | 2 | 3; force((k) => k + 1); }}>
+              {l.label}
+            </button>
+          ))}
+        </aside>
       )}
 
       <aside className="panel critters">

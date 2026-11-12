@@ -50,6 +50,7 @@ export function Scene({ game }: { game: Game }) {
       <DigRange game={game} />
       <SmelterHologram game={game} />
       <StrutHologram game={game} />
+      <ScrapHighlight game={game} />
       <Cursor game={game} />
       <CameraRig game={game} />
       {enabled('post') && !quality.low && <PostFx />}
@@ -63,7 +64,7 @@ export function Scene({ game }: { game: Game }) {
  */
 function CameraRig({ game }: { game: Game }) {
   const { camera, gl } = useThree();
-  const state = useRef({ x: game.layout.depot.x, y: game.layout.depot.y + 1, dist: 16, keys: new Set<string>(), painting: false, panning: null as null | { x: number; y: number } });
+  const state = useRef({ x: game.layout.depot.x, y: game.layout.depot.y + 1, dist: 16, following: true, keys: new Set<string>(), painting: false, panning: null as null | { x: number; y: number } });
 
   useEffect(() => {
     view.camera = camera as THREE.PerspectiveCamera;
@@ -126,13 +127,14 @@ function CameraRig({ game }: { game: Game }) {
 
   useFrame((_, dt) => {
     const s = state.current;
-    if (game.intro.phase !== 'done') {
-      // Follow the base down its shaft.
+    // Follow the base down its shaft, and land on it when the intro ends (or is skipped).
+    if (game.intro.phase !== 'done' || s.following) {
       const d = game.layout.depot;
       s.x = d.x;
       s.y = d.y + game.intro.offset + 0.9;
       s.dist += (11 - s.dist) * Math.min(1, dt * 2);
       s.keys.clear();
+      s.following = game.intro.phase !== 'done';
     }
     const speed = s.dist * 0.9 * dt;
     if (s.keys.has('a') || s.keys.has('arrowleft')) s.x -= speed;
@@ -218,6 +220,20 @@ function StrutHologram({ game }: { game: Game }) {
     if (next?.key !== site?.key) setSite(next);
   });
   return site ? <group key={site.key} renderOrder={15}><StrutBody strut={site} material={material} /></group> : null;
+}
+
+/** With the Scrap tool, the strut under the cursor lights up red. */
+function ScrapHighlight({ game }: { game: Game }) {
+  const { material, tint } = useMemo(hologramMaterial, []);
+  const [target, setTarget] = useState<{ i: number; j0: number; j1: number; key: string } | null>(null);
+  useMemo(() => tint.value.set('#ff5a2a'), [tint]);
+  useFrame(() => {
+    const c = view.cursor;
+    const s = game.tool === 'scrap' && c ? game.strutAt(c.x, c.y) : undefined;
+    const next = s ? { i: s.i, j0: s.j0, j1: s.j1, key: `${s.id}:${s.j0}:${s.j1}` } : null;
+    if (next?.key !== target?.key) setTarget(next);
+  });
+  return target ? <group key={target.key} renderOrder={15}><StrutBody strut={target} material={material} /></group> : null;
 }
 
 /** Dashed ring marking how far from the base the drones will dig; brighter with the Dig tools. */

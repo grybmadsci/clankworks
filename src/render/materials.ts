@@ -237,6 +237,22 @@ export function backWallMaterial(gpu: GpuSim) {
 }
 
 /**
+ * Packed rock under and over strut plates, shaded like the terrain it sits on (by material id).
+ * Shared per material.
+ */
+const footingCache = new Map<number, THREE.MeshStandardNodeMaterial>();
+export function footingMaterial(mat: number) {
+  let m = footingCache.get(mat);
+  if (m) return m;
+  m = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+  m.flatShading = true;
+  const surf = rock(positionWorld, uint(mat));
+  m.colorNode = surf.xyz.mul(1.15);
+  footingCache.set(mat, m);
+  return m;
+}
+
+/**
  * See-through placement preview: rising scanlines, bright silhouette edges and a faint flicker,
  * drawn additively. Set `tint` to recolour it (cyan for a valid site, red for an invalid one).
  */

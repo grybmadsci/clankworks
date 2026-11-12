@@ -49,7 +49,17 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .log .warn { color: #ffb07a; }
 .log .emote { color: #9fdcff; font-style: italic; }
 .log .info { color: var(--muted); }
-.help { position: absolute; top: 52px; right: 14px; color: var(--muted); font-size: 11px; }
+.help { position: absolute; top: 232px; right: 14px; color: var(--muted); font-size: 11px; max-width: 150px; text-align: right; }
+/* Layer selector: top right, stacked */
+.layers { top: 56px; right: 12px; display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+.layers h3 { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 2px; }
+.layers h3 span { text-transform: none; letter-spacing: 0; color: #7a6a55; font-weight: 400; }
+.layers button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--edge); border-radius: 6px;
+  padding: 5px 10px; font: inherit; cursor: pointer; text-align: left;
+}
+.layers button:hover { border-color: var(--accent); }
+.layers button.active { background: #5a4220; border-color: var(--accent); }
 
 .bubbles { position: absolute; inset: 0; overflow: hidden; }
 .bubble {

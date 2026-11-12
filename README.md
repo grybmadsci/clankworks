@@ -38,7 +38,9 @@ Structural warnings come in two stages:
   jump there. You get 15 seconds to brace it with a strut. If the rock is still unsupported when
   the countdown ends, it collapses.
 
-Struts follow the rock. Dig out the floor under a strut's bottom plate (or the rock above its
+Struts bear on packed rock: a lump of the surrounding stone fills any gap between each plate and
+the floor or ceiling, so plates never hang in the air over uneven or partly dug rock. Struts
+follow the rock. Dig out the floor under a strut's bottom plate (or the rock above its
 top plate) and it stretches to the new floor or ceiling, up to its 4m limit. Ordering a dig
 that would take it past that warns you first, and the strut gets an "⚠ Dig will undermine
 strut" tag. If the dig goes ahead anyway, the strut stops supporting the ceiling, goes dark
@@ -53,10 +55,11 @@ The toolbar has three sections:
 | --- | --- | --- |
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
 | Orders | `3` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
+| Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
 | Buildings | `4` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
 | Buildings | `5` Smelter | Ore → plates (8 scrap). A hologram previews where it will stand: cyan if it fits, red if not |
 | Buildings | `B` Drone | Build a drone (3 plates + 2 goo), one per landing pad |
-| Layers | `T` cycles, or click | Normal, heat, oxygen and structural integrity views |
+| Layers (top right) | `T` cycles, or click | Normal, heat, oxygen and structural integrity views |
 | | Right-drag / WASD, wheel | Pan, zoom |
 
 The critters need 6–38 °C, oxygen, no toxic gas and dry feet. Breaching the toxic pocket under

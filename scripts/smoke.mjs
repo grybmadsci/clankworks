@@ -36,15 +36,20 @@ try {
     const start = g.intro.offset;
     const shaftCell = () => g.terrain.density[Math.floor((d.y + start / 2) / 0.25) * 512 + Math.floor(d.x / 0.25)];
     const before = shaftCell();
-    for (let n = 0; n < 30 * 14 && g.intro.phase !== 'done'; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 20)); }
+    for (let n = 0; n < 30 * 24 && g.intro.phase !== 'done'; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 20)); }
     return { start, before, after: shaftCell(), phase: g.intro.phase, toolbar: [...document.querySelectorAll('.tool-group h4')].map((h) => h.firstChild.textContent) };
   });
   console.log('intro', JSON.stringify(intro));
   check(intro.start > 25 && intro.before > 0.5 && intro.after < 0.5 && intro.phase === 'done',
     `base drilled ${intro.start.toFixed(0)}m down its own shaft and deployed`);
   await page.waitForTimeout(400);
-  const groups = await page.evaluate(() => [...document.querySelectorAll('.tool-group h4')].map((h) => h.firstChild.textContent));
-  check(groups.join(',') === 'Orders,Buildings,Layers', `toolbar split into ${groups.join(' / ')}`);
+  const groups = await page.evaluate(() => ({
+    toolbar: [...document.querySelectorAll('.tool-group h4')].map((h) => h.firstChild.textContent),
+    layers: [...document.querySelectorAll('.layers button')].map((b) => b.textContent),
+    stacked: (() => { const b = [...document.querySelectorAll('.layers button')].map((e) => e.getBoundingClientRect()); return b.every((r, n) => n === 0 || r.top > b[n - 1].top); })(),
+  }));
+  check(groups.toolbar.join(',') === 'Orders,Buildings' && groups.layers.length === 4 && groups.stacked,
+    `toolbar split into ${groups.toolbar.join(' / ')}, with ${groups.layers.length} layers stacked in their own panel`);
   console.log('quality:', await page.evaluate(() => document.querySelector('canvas')?.dataset.quality ?? 'high'));
   console.log('adapter:', await page.evaluate(async () => {
     const a = await navigator.gpu.requestAdapter();
@@ -193,6 +198,8 @@ try {
   console.log('after blast', JSON.stringify(warning));
   check(warning.pending > 0 && warning.cracking > 0 && warning.log.some((l) => /cave-in warning/i.test(l)),
     `blast left unsupported rock cracking with a warning (${warning.cracking} cells)`);
+  // The HUD re-renders a few times a second; give the banner a moment to appear.
+  await page.waitForFunction(() => document.querySelectorAll('.alerts button').length > 0, null, { timeout: 2000 }).catch(() => {});
   const alerts = await page.evaluate(() => ({ banner: document.querySelectorAll('.alerts button').length, tags: document.querySelectorAll('.bubble.collapse').length }));
   check(alerts.banner > 0 && alerts.tags > 0, `cave-in warnings shown as an alert banner and countdown tags (${alerts.banner} / ${alerts.tags})`);
   await shot('3-cracking');
@@ -321,6 +328,17 @@ try {
   check(telescope.placed === 8 && telescope.stretched === 12 && !telescope.brokenAfterStretch, `a strut stretches when the floor under it is dug out (${telescope.placed} → ${telescope.stretched} cells)`);
   check(telescope.warned && telescope.atRisk, 'a dig order that would undermine a strut warns first');
   check(telescope.broken && telescope.bitsCleared && telescope.tag, 'a strut dug out past its limit stops supporting and is flagged');
+
+  // The Scrap tool takes a strut down for 1 scrap back.
+  const scrapped = await page.evaluate(() => {
+    const g = window.__game, s = g.struts.find((o) => !o.broken);
+    const n = g.struts.length, scrap = g.resources.scrap;
+    g.tool = 'scrap';
+    g.useTool((s.i + 0.5) * 0.25, (s.j0 + s.j1 + 1) * 0.125, false);
+    g.tool = 'dig';
+    return { removed: n - g.struts.length, refund: g.resources.scrap - scrap, bits: g.terrain.strut[((s.j0 + s.j1) >> 1) * 512 + s.i] };
+  });
+  check(scrapped.removed === 1 && scrapped.refund === 1 && scrapped.bits === 0, 'Scrap tool removes a strut and refunds 1 scrap');
 
   // Struts are limited in height: the shaft above the base is far too tall to brace.
   const tall = await page.evaluate(() => {

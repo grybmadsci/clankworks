@@ -203,7 +203,9 @@ export function Base({ game }: { game: Game }) {
   };
   /** Seconds into deployment: -1 while drilling, large once deployed. */
   const deployed = () => (game.intro.phase === 'done' ? 99 : game.intro.phase === 'deploy' ? game.intro.t : -1);
-  const stage = (a: number, b: number) => clamp01((deployed() - a) / (b - a));
+  // Stage times below are laid out for a 3s deployment and stretched to DEPLOY_TIME.
+  const pace = DEPLOY_TIME / 3;
+  const stage = (a: number, b: number) => clamp01((deployed() - a * pace) / ((b - a) * pace));
   const timers = useRef({ smoke: 0, whistle: 4 });
 
   useFrame(({ clock }, dt) => {
@@ -213,7 +215,7 @@ export function Base({ game }: { game: Game }) {
     ref.root.current.position.y = d.y + intro.offset;
     const drill = ref.drill.current;
     drill.rotation.y += dt * (intro.phase === 'drill' ? 18 : 4);
-    grow(drill, intro.phase === 'drill' ? 1 : 1 - stage(0, 0.6 * DEPLOY_TIME / 3));
+    grow(drill, intro.phase === 'drill' ? 1 : 1 - stage(0, 0.6));
     grow(ref.wall.current, easeOutBack(stage(0.3, 1.1)));
     grow(ref.conveyor.current, easeOutBack(stage(0.9, 1.7)));
     grow(ref.shelf.current, easeOutBack(stage(1.2, 2.0)));

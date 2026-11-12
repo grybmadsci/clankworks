@@ -1,7 +1,8 @@
 import { useFrame } from '@react-three/fiber';
 import { type Ref, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
-import { CELL, DEPTH } from '../config';
+import { CELL, DEPTH, ISO, Mat, W } from '../config';
+import { footingMaterial } from './materials';
 import type { Blast, Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
 import { Base } from './Base';
 
@@ -24,7 +25,7 @@ export function Entities({ game }: { game: Game }) {
       <Terrarium game={game} />
       {game.bots.filter((b) => !b.dead).map((b) => <DroneModel key={b.id} bot={b} />)}
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
-      {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} />)}
+      {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} game={game} />)}
       {game.smelters.map((s) => <SmelterModel key={s.id} smelter={s} game={game} />)}
       {game.blasts.map((b) => <BlastModel key={b.id} blast={b} />)}
       {game.critters.map((c) => <CritterModel key={c.id} critter={c} />)}
@@ -272,7 +273,70 @@ function StrutLamps({ game }: { game: Game }) {
   return <>{Array.from({ length: 10 }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={3} decay={1.4} />)}</>;
 }
 
-function StrutModel({ strut }: { strut: Strut }) {
+/** A lumpy rock: an icosahedron with its vertices pushed in and out. */
+const footingGeometry = (() => {
+  const g = new THREE.IcosahedronGeometry(1, 1);
+  const rand = seeded(42);
+  const pos = g.attributes.position;
+  const bumps = new Map<string, number>();
+  for (let v = 0; v < pos.count; v++) {
+    const key = `${pos.getX(v).toFixed(3)},${pos.getY(v).toFixed(3)},${pos.getZ(v).toFixed(3)}`;
+    if (!bumps.has(key)) bumps.set(key, 0.78 + rand() * 0.4);
+    const k = bumps.get(key)!;
+    pos.setXYZ(v, pos.getX(v) * k, pos.getY(v) * k, pos.getZ(v) * k);
+  }
+  g.computeVertexNormals();
+  return g;
+})();
+
+/**
+ * How far from a plate edge at height `y` the rock surface is, looking `dir` (-1 down, +1 up),
+ * across the plate's width. The surface is the terrain's density isoline, which can sit well
+ * past the cell boundary the plate rests on once the rock there has been partly dug.
+ */
+function surfaceGap(game: Game, x: number, y: number, dir: number) {
+  let gap = 0;
+  for (const dx of [-0.12, 0, 0.12]) {
+    let d = 0;
+    while (d < 1.2 && game.terrain.sample(x + dx, y + dir * d) <= ISO) d += 0.02;
+    gap = Math.max(gap, d);
+  }
+  return gap;
+}
+
+/**
+ * Rock packed between a strut's plates and the surfaces they bear on, so the plates never hang
+ * in the air above an uneven or partly dug floor or ceiling. Re-measured as the rock changes.
+ */
+function StrutFootings({ strut, game }: { strut: Strut; game: Game }) {
+  const refs = [useRef<THREE.Mesh>(null!), useRef<THREE.Mesh>(null!)];
+  const x = (strut.i + 0.5) * CELL;
+  const ends = useMemo(() => {
+    const at = (j: number) => {
+      const m = game.terrain.material[j * W + strut.i];
+      return m === Mat.Air || m === Mat.Bedrock ? Mat.Dirt : m;
+    };
+    return [
+      { y: strut.j0 * CELL, dir: -1, mat: footingMaterial(at(Math.max(0, strut.j0 - 1))) },
+      { y: (strut.j1 + 1) * CELL, dir: 1, mat: footingMaterial(at(strut.j1 + 1)) },
+    ];
+  }, [game, strut]);
+  const next = useRef(0);
+  useFrame(({ clock }) => {
+    if (clock.elapsedTime < next.current) return;
+    next.current = clock.elapsedTime + 0.5;
+    ends.forEach((e, n) => {
+      // Bury the rock a little into the surface, and give it a minimum size so it reads as packing.
+      const h = surfaceGap(game, x, e.y, e.dir) + 0.12;
+      const mesh = refs[n].current;
+      mesh.scale.set(0.2, h / 2, 0.2);
+      mesh.position.set(x, e.y + e.dir * (h / 2 - 0.02), Z_STRUT);
+    });
+  });
+  return <>{ends.map((e, n) => <mesh key={n} ref={refs[n]} geometry={footingGeometry} material={e.mat} />)}</>;
+}
+
+function StrutModel({ strut, game }: { strut: Strut; game: Game }) {
   const flames = useRef<(THREE.MeshBasicMaterial | null)[]>([]);
   const phase = useMemo(() => Math.random() * 10, []);
   useFrame(({ clock }) => {
@@ -283,7 +347,12 @@ function StrutModel({ strut }: { strut: Strut }) {
       f.color.setRGB(3 * k, 1.5 * k, 0.4 * k);
     });
   });
-  return <StrutBody strut={strut} flames={flames.current} broken={strut.broken} />;
+  return (
+    <>
+      <StrutBody strut={strut} flames={flames.current} broken={strut.broken} />
+      <StrutFootings strut={strut} game={game} />
+    </>
+  );
 }
 
 const SMELTER_MATS = {

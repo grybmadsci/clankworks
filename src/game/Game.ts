@@ -15,7 +15,7 @@ import { alarm, chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
-export type Tool = 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast';
+export type Tool = 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast' | 'scrap';
 type Vec = { x: number; y: number };
 
 const BOT_RADIUS = 0.14;
@@ -28,8 +28,8 @@ const QUOTA = 30;
 /** Tallest gap a single strut can brace, in cells. */
 const MAX_STRUT_CELLS = 16;
 /** Opening sequence: drill speed (m/s) down from the surface, then how long deploying takes (s). */
-const DRILL_SPEED = 4;
-export const DEPLOY_TIME = 3;
+const DRILL_SPEED = 3;
+export const DEPLOY_TIME = 5;
 /** Collapses smaller than this just crumble to dust at once; anything that falls as a chunk is warned first. */
 const MIN_WARNED_COLLAPSE = 4;
 
@@ -539,6 +539,7 @@ export class Game {
       case 'strut': if (!drag) this.placeStrut(x, y); break;
       case 'smelter': if (!drag) this.placeSmelter(x, y); break;
       case 'blast': if (!drag) this.placeBlast(x, y); break;
+      case 'scrap': if (!drag) this.scrapStrut(x, y); break;
     }
   }
 
@@ -600,6 +601,28 @@ export class Game {
     if (t.strut[cellIndex(i, j)]) return { ...site, error: 'There is already a strut here.' };
     if (!this.canAfford(COST.strut)) return { ...site, error: 'Insufficient scrap for a strut (2).' };
     return site;
+  }
+
+  /** The strut under a world position (its column ±1 cell, plates included), if any. */
+  strutAt(x: number, y: number) {
+    const i = toCell(x);
+    return this.struts.find((s) => Math.abs(s.i - i) <= 1 && y >= s.j0 * CELL - 0.2 && y <= (s.j1 + 1) * CELL + 0.2);
+  }
+
+  /** Take a strut down for half its scrap back. Whatever it held up is re-checked. */
+  scrapStrut(x: number, y: number) {
+    const s = this.strutAt(x, y);
+    if (!s) return this.warn('No strut there to scrap.');
+    const t = this.terrain;
+    if (!s.broken) for (let j = s.j0; j <= s.j1; j++) t.strut[cellIndex(s.i, j)] = 0;
+    this.struts = this.struts.filter((o) => o !== s);
+    this.resources.scrap += 1;
+    const r = t.structuralDirty, i0 = s.i - 2, i1 = s.i + 2, j0 = s.j0 - 2, j1 = s.j1 + 2;
+    t.structuralDirty = r ? { i0: Math.min(r.i0, i0), j0: Math.min(r.j0, j0), i1: Math.max(r.i1, i1), j1: Math.max(r.j1, j1) } : { i0, j0, i1, j1 };
+    this.pendingCheckAt = 0;
+    this.entityVersion++;
+    this.info('Strut scrapped (+1 scrap).');
+    this.gpu?.burst((s.i + 0.5) * CELL, (s.j0 + s.j1 + 1) * CELL / 2, 40, ParticleKind.Spark, 2.5, 0.3);
   }
 
   placeStrut(x: number, y: number) {
