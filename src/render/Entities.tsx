@@ -4,13 +4,14 @@ import * as THREE from 'three/webgpu';
 import { CELL, DEPTH, ISO } from '../config';
 import { enabled } from '../debug';
 import { brickMaterial, groutMaterial, rustMaterial } from './materials';
-import { SMELT } from '../game/Game';
+import { cargoTotal } from '../game/Game';
+import { OUTPOST, RECIPES } from '../game/tech';
 import { ParticleKind } from '../gpu/GpuSim';
-import type { Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
+import type { BaseSite, Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
 import { Base } from './Base';
 
 export const Z_ACTORS = -DEPTH * 0.45;
-const DEBRIS_COLORS = ['#000', '#7a5236', '#6f6c6a', '#9a6440', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450'];
+const DEBRIS_COLORS = ['#000', '#7a5236', '#6f6c6a', '#9a6440', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450', '#7a3f2c', '#3c4250'];
 
 /** Re-render when the game's entity lists change (checked once per frame). */
 function useEntityVersion(game: Game) {
@@ -29,6 +30,7 @@ export function Entities({ game }: { game: Game }) {
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
       {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} game={game} />)}
       {game.smelters.map((s) => <SmelterModel key={s.id} smelter={s} game={game} />)}
+      {game.bases.filter((b) => b.kind === 'outpost').map((b) => <OutpostModel key={b.id} base={b} game={game} />)}
       {game.critters.map((c) => <CritterModel key={c.id} critter={c} />)}
       <HeadLamps game={game} />
       <StrutLamps game={game} />
@@ -94,7 +96,7 @@ function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
       else if (level > 0.25) m.color.setRGB(glow, 0.8 * glow, 0.1 * glow);
       else m.color.setRGB(glow, 0.12 * glow, 0.08 * glow);
     });
-    const load = Math.min(1, (bot.cargo.ore + bot.cargo.scrap) / 6);
+    const load = Math.min(1, cargoTotal(bot) / 6);
     pod.current.scale.set(1, 0.4 + load * 0.6, 1);
     // Mining laser from the emitter under the nose to the cell being cut.
     const dp = bot.drillPoint;
@@ -475,7 +477,7 @@ function SmelterModel({ smelter, game }: { smelter: Smelter; game: Game }) {
   const smoke = useRef(0);
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime, active = smelter.crafting;
-    const f = smelter.smeltTimer / SMELT.time;
+    const f = smelter.smeltTimer / RECIPES[smelter.recipe].time;
     const heat = active ? 1 : Math.max(0, (smelter.hotUntil - game.time) / 1.5) * 0.6;
     const flick = 0.85 + Math.sin(t * 17) * 0.08 + Math.random() * 0.12;
     parts.mouth.current.color.setRGB(0.3 + 3 * heat * flick, 0.08 + 1.2 * heat * flick, 0.02 + 0.25 * heat);
@@ -536,6 +538,76 @@ function Carl({ game }: { game: Game }) {
     <group position={[c.x, c.y + 0.06, -DEPTH * 0.5]} rotation={[0.25, 0, 0.18]}>
       <mesh><cylinderGeometry args={[0.22, 0.22, 0.09, 20]} /><meshStandardMaterial color="#5a5e63" metalness={0.5} roughness={0.5} /></mesh>
       <mesh position={[0.08, 0.05, 0.08]}><sphereGeometry args={[0.025]} /><meshBasicMaterial ref={led} /></mesh>
+    </group>
+  );
+}
+
+const OUTPOST_MATS = {
+  tank: rustMaterial('#4a4440', 0.45),
+  frame: rustMaterial('#2c2724', 0.35),
+  brass: new THREE.MeshStandardMaterial({ color: '#b8934a', metalness: 0.55, roughness: 0.5 }),
+};
+
+/**
+ * An outpost: a rusty pressure tank on a skid with a deck on legs above it, two brass landing pads,
+ * a stack and a beacon. Origin at its base, centred. Real outposts pass `rings`/`beacon` to light;
+ * the placement hologram passes one `material`.
+ */
+export function OutpostBody({ material, rings, beacon }: { material?: THREE.Material; rings?: Ref<THREE.Group>; beacon?: Ref<THREE.MeshBasicMaterial> }) {
+  const m = (own: THREE.Material) => material ?? own;
+  const z = -DEPTH * 0.6;
+  const deckY = OUTPOST.height;
+  return (
+    <>
+      <mesh position={[0, 0.05, z]} material={m(OUTPOST_MATS.frame)}><boxGeometry args={[OUTPOST.width - 0.2, 0.1, 0.7]} /></mesh>
+      <mesh position={[0, 0.42, z]} material={m(OUTPOST_MATS.tank)}><cylinderGeometry args={[0.3, 0.3, 0.62, 18]} /></mesh>
+      <mesh position={[0, 0.74, z]} material={m(OUTPOST_MATS.tank)}><sphereGeometry args={[0.3, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+      {[0.2, 0.62].map((y) => <mesh key={y} position={[0, y, z]} rotation={[Math.PI / 2, 0, 0]} material={m(OUTPOST_MATS.brass)}><torusGeometry args={[0.305, 0.012, 6, 24]} /></mesh>)}
+      {/* Deck on four legs, carrying the two pads */}
+      {[-0.75, 0.75].flatMap((x) => [z - 0.25, z + 0.25].map((lz) => (
+        <mesh key={`${x}${lz}`} position={[x, deckY / 2, lz]} material={m(OUTPOST_MATS.frame)}><cylinderGeometry args={[0.025, 0.03, deckY, 6]} /></mesh>
+      )))}
+      <mesh position={[0, deckY - 0.02, z]} material={m(OUTPOST_MATS.frame)}><boxGeometry args={[1.6, 0.04, 0.66]} /></mesh>
+      {[-0.35, 0.35].map((x) => (
+        <mesh key={x} position={[x, deckY + 0.012, Z_ACTORS]} material={m(OUTPOST_MATS.brass)}><cylinderGeometry args={[0.17, 0.17, 0.025, 24]} /></mesh>
+      ))}
+      <group ref={rings}>
+        {[-0.35, 0.35].map((x) => (
+          <mesh key={x} position={[x, deckY + 0.03, Z_ACTORS]} rotation={[Math.PI / 2, 0, 0]} material={material}>
+            <torusGeometry args={[0.15, 0.012, 6, 24]} />{material ? null : <meshBasicMaterial color="black" />}
+          </mesh>
+        ))}
+      </group>
+      {/* Stack and beacon */}
+      <mesh position={[0.7, deckY + 0.3, z - 0.2]} rotation={[0, 0, 0.04]} material={m(OUTPOST_MATS.frame)}><cylinderGeometry args={[0.05, 0.06, 0.6, 10]} /></mesh>
+      <mesh position={[-0.7, deckY + 0.25, z - 0.2]} material={m(OUTPOST_MATS.frame)}><cylinderGeometry args={[0.012, 0.016, 0.5, 6]} /></mesh>
+      <mesh position={[-0.7, deckY + 0.52, z - 0.2]} material={material}><sphereGeometry args={[0.035, 10, 8]} />{material ? null : <meshBasicMaterial ref={beacon} />}</mesh>
+    </>
+  );
+}
+
+/** A built outpost: pad rings show docked (green) or out (amber) drones; the beacon blinks. */
+function OutpostModel({ base, game }: { base: BaseSite; game: Game }) {
+  const rings = useRef<THREE.Group>(null!);
+  const beacon = useRef<THREE.MeshBasicMaterial>(null!);
+  const light = useRef<THREE.PointLight>(null!);
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime;
+    const on = Math.sin(t * 3) > 0.5;
+    beacon.current.color.setRGB(on ? 3 : 0.3, on ? 1.4 : 0.1, 0);
+    light.current.intensity = 1.8 * (0.9 + Math.sin(t * 11) * 0.05);
+    rings.current.children.forEach((c, n) => {
+      const bot = game.bots.find((b) => !b.dead && b.pad === `${base.id}:${n}`);
+      const mat = (c as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      if (bot?.state === 'docked') mat.color.setRGB(0.3, 2.2, 0.6);
+      else if (bot) mat.color.setRGB(Math.sin(t * 3 + n) > 0 ? 2.4 : 0.3, Math.sin(t * 3 + n) > 0 ? 1.2 : 0.15, 0);
+      else mat.color.setRGB(0.12, 0.07, 0.05);
+    });
+  });
+  return (
+    <group position={[base.x, base.y, 0]}>
+      <OutpostBody rings={rings} beacon={beacon} />
+      <pointLight ref={light} position={[0, 1.4, 0.4]} color="#ffcf99" distance={6} decay={1.4} />
     </group>
   );
 }

@@ -14,6 +14,9 @@ const ICONS: Record<string, { d: string; fill?: string }> = {
   // Resources (scrap is a nut; 'scrap' above is the Scrap tool's wrench)
   ore: { d: 'M10 4.5 L12 11 L20 11 M12 11 L9 19.5', fill: 'M6 9 L10 4.5 L16 5.5 L20 11 L17 18.5 L9 19.5 L4 14.5 Z' },
   nut: { d: 'M12 3 L19.8 7.5 V16.5 L12 21 L4.2 16.5 V7.5 Z M15 12 A3 3 0 1 1 9 12 A3 3 0 0 1 15 12 Z' },
+  bar: { d: 'M3 17.5 L6.5 9.5 H17.5 L21 17.5 Z M6.5 9.5 L8.5 13.5 H15.5 L17.5 9.5 M8.5 13.5 L7 17.5 M15.5 13.5 L17 17.5' },
+  outpost: { d: 'M4 20 V11 H20 V20 Z M9 11 V7 H15 V11 M12 7 V3 M10 3 H14 M7 15 H10 M14 15 H17' },
+  research: { d: 'M9 3 H15 M10 3 V9 L4.5 19 A1.5 1.5 0 0 0 6 21 H18 A1.5 1.5 0 0 0 19.5 19 L14 9 V3 M7.5 15 H16.5' },
   plates: { d: 'M3 15.5 L12 19.5 L21 15.5 M3 12 L12 16 L21 12 L12 8 Z' },
   square: { d: 'M5 5 H19 V19 H5 Z' },
   circle: { d: 'M19 12 A7 7 0 1 1 5 12 A7 7 0 0 1 19 12 Z' },

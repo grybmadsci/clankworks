@@ -17,14 +17,18 @@ const {
 const noise = (p: Node) => noise2({ p });
 
 /** Base albedo per material id: air, dirt, granite, copper, ice, bedrock, rubble, junk. */
-const MATERIAL_COLORS = ['#000000', '#7a5236', '#6f6c6a', '#8a5a3a', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450']
+const MATERIAL_COLORS = ['#000000', '#7a5236', '#6f6c6a', '#8a5a3a', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450', '#7a3f2c', '#5a6478']
   .map((c) => new THREE.Color(c));
 /** Particle colors: the materials, then spark, steam, flame (HDR values feed the bloom pass). */
-const PARTICLE_COLORS = [...MATERIAL_COLORS, new THREE.Color(4, 2.2, 0.7), new THREE.Color(0.75, 0.78, 0.8), new THREE.Color(4, 1.4, 0.3)];
+/** Particle colours by kind: rock dust uses the material id, then sparks, steam and flame at 16-18. */
+const PARTICLE_COLORS = [
+  ...MATERIAL_COLORS, ...Array.from({ length: 16 - MATERIAL_COLORS.length }, () => new THREE.Color('#666666')),
+  new THREE.Color(4, 2.2, 0.7), new THREE.Color(0.75, 0.78, 0.8), new THREE.Color(4, 1.4, 0.3),
+];
 
 export const overlayMode = uniform(0, 'int');
 /** Materials shown by the material layer, one bit per material id. */
-export const materialMask = uniform(0xfe, 'uint');
+export const materialMask = uniform(0x3fe, 'uint');
 /** High-contrast pastels for the material layer, by material id (also used by the HUD key). */
 export const MATERIAL_KEY = [
   { id: 1, name: 'Dirt', color: '#f2d79a' },
@@ -34,8 +38,10 @@ export const MATERIAL_KEY = [
   { id: 5, name: 'Bedrock', color: '#c9c9d6' },
   { id: 6, name: 'Rubble', color: '#e2a8ff' },
   { id: 7, name: 'Junk', color: '#b4f59a' },
+  { id: 8, name: 'Iron ore', color: '#ff7a8a' },
+  { id: 9, name: 'Titanium ore', color: '#f5f2a0' },
 ];
-const PASTELS = Array.from({ length: 8 }, (_, id) => new THREE.Color(MATERIAL_KEY.find((m) => m.id === id)?.color ?? '#000000'));
+const PASTELS = Array.from({ length: 10 }, (_, id) => new THREE.Color(MATERIAL_KEY.find((m) => m.id === id)?.color ?? '#000000'));
 /** Game clock (seconds), which crack start times in digMark are measured against. */
 export const gameTime = uniform(0);
 const surfaceY = (H - SKY_ROWS - 2) * CELL;
@@ -49,7 +55,7 @@ function cellAt(p: Node) {
 
 /** Mean albedo per material for the low tier (linear; matches rockSurface's averages). */
 const LOW_COLORS = [[0, 0, 0], [0.2, 0.12, 0.065], [0.16, 0.155, 0.15], [0.2, 0.1, 0.05], [0.5, 0.7, 0.8],
-  [0.035, 0.033, 0.04], [0.22, 0.18, 0.14], [0.14, 0.15, 0.11]].map(([r, g, b]) => new THREE.Color(r, g, b));
+  [0.035, 0.033, 0.04], [0.22, 0.18, 0.14], [0.14, 0.15, 0.11], [0.2, 0.06, 0.03], [0.07, 0.08, 0.1]].map(([r, g, b]) => new THREE.Color(r, g, b));
 
 /** Rock albedo (xyz) and bump height (w). The low tier swaps the 3D shading for two octaves of 2D noise. */
 function rock(p: Node, mat: Node) {
@@ -261,7 +267,7 @@ export function backWallMaterial(gpu: GpuSim) {
  * base colour. Rusty areas go rough and lose their shine. `tint` is the corrosion colour pair
  * (dark, light), e.g. orange-brown rust or green verdigris on copper.
  */
-export function rustMaterial(base: string, amount = 0.5, tint: [string, string] = ['#5a2410', '#9a4a1c']) {
+export function rustMaterial(base: string, amount = 0.5, tint: [string, string] = ['#3a1a0e', '#6a3418']) {
   const { color: tslColor } = TSL as any;
   const m = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld;
@@ -332,7 +338,7 @@ export function particleMaterial(gpu: GpuSim) {
   const pos = gpu.pPos.ro().element(instanceIndex);
   const vel = gpu.pVel.ro().element(instanceIndex);
   const kind = int(vel.w);
-  const big = kind.greaterThanEqual(9);
+  const big = kind.greaterThanEqual(17);
   const size = select(pos.w.greaterThan(0), select(big, float(0.09), float(0.045)).mul(clamp(pos.w.mul(2), 0, 1)), float(0));
   m.positionNode = positionLocal.mul(size).add(pos.xyz);
   m.colorNode = uniformArray(PARTICLE_COLORS, 'color').element(kind);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
 import { ALERTS, COST, TUTORIAL, type AlertKind, type Game, type Overlay, type Tool } from '../game/Game';
+import { OUTPOST, TECHS, type Cost } from '../game/tech';
 import { MATERIAL_KEY } from '../render/materials';
 import { inspect, type Inspection } from '../game/inspect';
 import { Icon, cursorFor, iconSvg } from './icons';
@@ -19,6 +20,7 @@ const ORDERS: ToolDef[] = [
 const BUILDINGS: ToolDef[] = [
   { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support up to 4m; stretches when its ends are dug out; braces cracking rock (2 scrap)' },
   { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates (8 scrap). Shows a hologram where it would go' },
+  { id: 'outpost', key: '5', label: 'Outpost', hint: `A satellite base with two landing pads and its own 11m dig range. Needs 2m of flat ground, at least ${OUTPOST.minDistance}m from any other base.` },
 ];
 const TOOLS = [...ORDERS, ...BUILDINGS];
 const LAYERS = [
@@ -37,12 +39,16 @@ export function Hud({ game }: { game: Game }) {
   const menu = useRef(menuState);
   const setMenu = (m: null | 'main' | 'settings') => { menu.current = m; game.paused = m !== null; setMenuState(m); };
   useEffect(() => { applySettings(game, loadSettings()); }, [game]);
+  const [tech, setTechState] = useState(false);
+  const techRef = useRef(false);
+  const setTech = (v: boolean) => { techRef.current = v; setTechState(v); };
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 200);
     const key = (e: KeyboardEvent) => {
       unlockAudio();
       // Esc: close a dialog, else drop back to the plain cursor, else open the menu.
       if (e.key === 'Escape') {
+        if (techRef.current) { setTech(false); force((n) => n + 1); return; }
         if (menu.current) setMenu(menu.current === 'settings' ? 'main' : null);
         else if (game.tool !== 'select' && game.intro.phase === 'done') game.tool = 'select';
         else setMenu('main');
@@ -57,6 +63,7 @@ export function Hud({ game }: { game: Game }) {
       const tool = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
+      if (e.key === 'r') setTech(!techRef.current);
       if (e.key === 'q') game.brushSquare = !game.brushSquare;
       if (e.key === 't') game.overlay = ((game.overlay + 1) % LAYERS.length) as Overlay;
       force((n) => n + 1);
@@ -72,10 +79,8 @@ export function Hud({ game }: { game: Game }) {
     <div className="hud">
       <header className="topbar" onMouseEnter={() => game.tutorialNote('hover:topbar')}>
         <div className="title">CLANKWORKS <span>Rustbucket Logistics</span></div>
-        <Res icon="ore" label="Ore" value={fmt(r.ore)} />
-        <Res icon="nut" label="Scrap" value={fmt(r.scrap)} />
-        <Res icon="plates" label="Plates" value={fmt(r.plates)} />
-        <Res icon="drone" label="Drones" value={`${alive.length}`} />
+        {RESOURCES.map((res) => <Res key={res.key} res={res.key} label={res.short} value={fmt(r[res.key])} />)}
+        <Res res="drone" label="Drones" value={`${alive.length}/${game.droneCapacity}`} />
         <div className="quota">
           <div>Quota {game.platesMade}/{game.quota} plates</div>
           <div className="bar"><div style={{ width: `${Math.min(100, (game.platesMade / game.quota) * 100)}%` }} /></div>
@@ -106,6 +111,9 @@ export function Hud({ game }: { game: Game }) {
           </ToolGroup>
           <ToolGroup title="Buildings">
             {BUILDINGS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
+            <button className={tech ? 'active' : ''} data-tip="Research upgrades: more landing pads, stronger lasers, faster rotors, bigger batteries" onClick={() => setTech(!tech)}>
+              <Icon name="research" /><span>Research</span><kbd>R</kbd>
+            </button>
             <button className="build" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}
               onMouseEnter={(e) => costCard.show(e.currentTarget, 'drone', 'Drone', 'A mining drone. It takes the next free landing pad on the base; there are four.')} onMouseLeave={() => costCard.hide()}>
               <Icon name="drone" /><span>Drone</span><kbd>B</kbd>
@@ -153,6 +161,7 @@ export function Hud({ game }: { game: Game }) {
         {game.log.slice(-8).map((l) => <div key={l.id} className={l.kind}>{l.text}</div>)}
       </aside>
       {game.strutConfirm && <StrutConfirm game={game} onDone={() => force((n) => n + 1)} />}
+      {tech && <TechPanel game={game} onClose={() => setTech(false)} />}
       {menuState === 'main' && <MainMenu onResume={() => setMenu(null)} onSettings={() => setMenu('settings')} />}
       {menuState === 'settings' && <Settings game={game} onBack={() => setMenu('main')} />}
 
@@ -329,6 +338,61 @@ function Settings({ game, onBack }: { game: Game; onBack: () => void }) {
   );
 }
 
+/** Cost chips (icon + amount), red when the stockpile is short. */
+function Chips({ game, cost }: { game: Game; cost: Cost }) {
+  return (
+    <>
+      {Object.entries(cost).map(([res, n]) => {
+        const short = game.resources[res as keyof Game['resources']] < (n ?? 0);
+        return (
+          <b key={res} className={short ? 'short' : ''} style={{ color: short ? undefined : RESOURCE_COLOR[res] }} title={RESOURCE_NAME[res]}>
+            <Icon name={RESOURCE_ICON[res]} size={14} />{n}
+          </b>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * The research tree: one column per branch, each a short chain of projects. A project can be
+ * researched once the one above it is done and you have its materials.
+ */
+function TechPanel({ game, onClose }: { game: Game; onClose: () => void }) {
+  const [, force] = useState(0);
+  const branches = [...new Set(TECHS.map((t) => t.branch))];
+  return (
+    <div className="tech panel">
+      <div className="tech-head"><h3>Research</h3><button className="quiet" onClick={onClose}>Close <kbd>R</kbd></button></div>
+      <div className="tech-tree">
+        {branches.map((branch) => (
+          <section key={branch}>
+            <h4>{branch}</h4>
+            {TECHS.filter((t) => t.branch === branch).map((t, n) => {
+              const done = game.researched.has(t.id);
+              const ready = !t.requires || game.researched.has(t.requires);
+              const affordable = game.canAfford(t.cost);
+              return (
+                <div key={t.id} className={`node ${done ? 'done' : ready ? 'ready' : 'locked'}`}>
+                  {n > 0 && <i className="link" />}
+                  <strong>{t.name}</strong>
+                  <span>{t.effect}</span>
+                  <div className="cost">{done ? <em>✓ Researched</em> : <Chips game={game} cost={t.cost} />}</div>
+                  {!done && (
+                    <button disabled={!ready || !affordable} onClick={() => { game.research(t.id); force((k) => k + 1); }}>
+                      {ready ? 'Research' : 'Needs the one above'}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ToolGroup({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <section className="tool-group">
@@ -344,6 +408,7 @@ const PRICES: Partial<Record<Tool | 'drone', { cost: Record<string, number>; ref
   smelter: { cost: COST.smelter },
   drone: { cost: COST.bot },
   scrap: { cost: { scrap: 1 }, refund: true },
+  outpost: { cost: OUTPOST.cost as Record<string, number> },
 };
 
 /**
@@ -426,13 +491,24 @@ function Inspector({ game }: { game: Game }) {
   return <div ref={card} className="inspector" />;
 }
 
-/** Colour for each resource's icon, wherever it appears. */
-export const RESOURCE_COLOR: Record<string, string> = { ore: '#e08a4f', nut: '#a9b2bc', scrap: '#a9b2bc', plates: '#f0b84a', drone: '#7fd8ff' };
+/** Every stockpiled resource, in top-bar order: name, short label, icon and colour. */
+const RESOURCES = [
+  { key: 'ore', name: 'Copper ore', short: 'Cu ore', icon: 'ore', color: '#e08a4f' },
+  { key: 'ironOre', name: 'Iron ore', short: 'Fe ore', icon: 'ore', color: '#c4584a' },
+  { key: 'tiOre', name: 'Titanium ore', short: 'Ti ore', icon: 'ore', color: '#9fb4d8' },
+  { key: 'plates', name: 'Copper plates', short: 'Plates', icon: 'plates', color: '#f0b84a' },
+  { key: 'ironBars', name: 'Iron bars', short: 'Fe bars', icon: 'bar', color: '#c9ced6' },
+  { key: 'tiBars', name: 'Titanium bars', short: 'Ti bars', icon: 'bar', color: '#a9e1ff' },
+  { key: 'scrap', name: 'Scrap', short: 'Scrap', icon: 'nut', color: '#a9b2bc' },
+] as const;
+/** Colour, icon and name for each resource key (and the drone count). */
+export const RESOURCE_COLOR: Record<string, string> = { ...Object.fromEntries(RESOURCES.map((r) => [r.key, r.color])), drone: '#7fd8ff' };
+const RESOURCE_NAME: Record<string, string> = Object.fromEntries(RESOURCES.map((r) => [r.key, r.name]));
 /** Icon for each resource key. */
-const RESOURCE_ICON: Record<string, string> = { ore: 'ore', scrap: 'nut', plates: 'plates' };
+const RESOURCE_ICON: Record<string, string> = { ...Object.fromEntries(RESOURCES.map((r) => [r.key, r.icon])), drone: 'drone' };
 
 const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
-const RES_ICON: Record<string, string> = { ore: 'ore', scrap: 'nut', plates: 'plates' };
+const RES_ICON: Record<string, string> = { ore: 'ore', ironOre: 'ore', tiOre: 'ore', plates: 'plates', ironBars: 'bar', tiBars: 'bar', scrap: 'nut' };
 
 /**
  * The Info card's contents: title and facts, and for machines a progress ring for the current job
@@ -458,8 +534,12 @@ function inspectorHtml(info: Inspection) {
   return html + info.lines.map((l) => `<div>${esc(l)}</div>`).join('');
 }
 
-function Res({ icon, label, value }: { icon: string; label: string; value: string }) {
-  return <div className="res" style={{ color: RESOURCE_COLOR[icon] }}><Icon name={icon} size={15} /><span>{label}</span><b>{value}</b></div>;
+function Res({ res, label, value }: { res: string; label: string; value: string }) {
+  return (
+    <div className="res" style={{ color: RESOURCE_COLOR[res] }} title={RESOURCE_NAME[res]}>
+      <Icon name={RESOURCE_ICON[res]} size={15} /><span>{label}</span><b>{value}</b>
+    </div>
+  );
 }
 
 /** Floating emote speech bubbles, projected from world space every animation frame. */

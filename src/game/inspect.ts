@@ -1,6 +1,7 @@
 import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, EXPLORED_BIT, H, ISO, MATERIALS, Mat, REACH_BIT, STRESS_MAX, STRESS_SHIFT, W, cellIndex } from '../config';
-import { DOCK_SLOTS, HUB } from './base';
-import { SMELT, type Bot, type Game } from './Game';
+import { DIG_RADIUS, HUB } from './base';
+import { cargoTotal, type Bot, type Game } from './Game';
+import { OUTPOST, RECIPES } from './tech';
 
 /** Where the cursor ray crosses depth z (the scene's things sit at different depths). */
 export type RayAt = (z: number) => { x: number; y: number };
@@ -21,6 +22,7 @@ export interface Inspection {
 const Z_ACTORS = -DEPTH * 0.45, Z_CRITTER = -DEPTH * 0.35, Z_STRUT = -DEPTH * 0.72, Z_HUB = -DEPTH * 0.62, Z_DEBRIS = -DEPTH * 0.5;
 
 const pct = (v: number) => `${Math.round(v)}%`;
+const CARGO_NAME: Record<string, string> = { ore: 'copper ore', ironOre: 'iron ore', tiOre: 'titanium ore', scrap: 'scrap' };
 const near = (a: { x: number; y: number }, b: { x: number; y: number }, r: number) => Math.hypot(a.x - b.x, a.y - b.y) <= r;
 
 function droneStatus(b: Bot) {
@@ -29,7 +31,7 @@ function droneStatus(b: Bot) {
   switch (b.state) {
     case 'toDig': return 'Flying to a dig order';
     case 'digging': return 'Mining';
-    case 'toDepot': return b.cargo.ore + b.cargo.scrap > 0.5 ? 'Returning to unload' : 'Returning to base';
+    case 'toDepot': return cargoTotal(b) > 0.5 ? 'Returning to unload' : 'Returning to base';
     case 'tantrum': return 'Having a tantrum';
     case 'salute': return 'Saluting Carl';
     default: return 'Looking for work';
@@ -49,23 +51,26 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
       lines: [
         droneStatus(b),
         `Battery ${pct(b.battery)}`,
-        `Cargo ${(b.cargo.ore).toFixed(1)} ore, ${(b.cargo.scrap).toFixed(1)} scrap`,
+        `Cargo ${cargoTotal(b).toFixed(1)} / 6${Object.entries(b.cargo).filter(([, n]) => (n ?? 0) > 0.05).map(([r, n]) => ` · ${n!.toFixed(1)} ${CARGO_NAME[r] ?? r}`).join('')}`,
         `Hull ${pct(b.hp)}${b.heat > 20 ? `, overheating ${pct(b.heat)}` : ''}`,
       ],
     };
   }
   for (const s of game.smelters) {
     if (Math.abs(pa.x - s.x) > 0.45 || pa.y < s.y || pa.y > s.y + 1.1) continue;
-    const f = s.crafting ? s.smeltTimer / SMELT.time : 0;
+    // The batch in progress, or the one it would start next.
+    const next = game.nextRecipe();
+    const recipe = RECIPES[s.crafting ? s.recipe : Math.max(0, next)];
+    const f = s.crafting ? s.smeltTimer / recipe.time : 0;
     return {
       kind: 'smelter',
       title: 'Smelter',
       lines: [`Integrity ${pct(s.hp)} · ${game.platesMade} plates made so far`],
       progress: {
         value: f,
-        label: s.crafting ? `Smelting… ${Math.max(0, SMELT.time - s.smeltTimer).toFixed(1)}s left` : game.resources.ore >= SMELT.input.ore ? 'Loading ore' : 'Idle: waiting for ore',
+        label: s.crafting ? `${recipe.name}… ${Math.max(0, recipe.time - s.smeltTimer).toFixed(1)}s left` : next >= 0 ? 'Loading ore' : 'Idle: waiting for ore',
       },
-      recipe: { input: SMELT.input, output: SMELT.output, seconds: SMELT.time },
+      recipe: { input: recipe.input as Record<string, number>, output: recipe.output as Record<string, number>, seconds: recipe.time },
     };
   }
   const pc = at(Z_CRITTER);
@@ -75,14 +80,20 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
   }
 
   const d = game.layout.depot, ph = at(Z_HUB);
+  const dockedAt = (id: string) => game.bots.filter((b) => !b.dead && b.state === 'docked' && b.pad.startsWith(`${id}:`)).length;
   if (Math.abs(ph.x - d.x) < HUB.w / 2 + 0.15 && ph.y > d.y && ph.y < d.y + HUB.h + 0.3) {
-    const docked = game.bots.filter((b) => !b.dead && b.state === 'docked').length;
-    const r = game.resources;
+    const main = game.bases[0];
     return {
       kind: 'base',
       title: 'Base (boiler house)',
-      lines: [`${docked} of ${DOCK_SLOTS} drones docked`, `Stores: ${r.ore.toFixed(1)} ore, ${Math.floor(r.scrap)} scrap, ${Math.floor(r.plates)} plates`, `Dig range ${game.digRadius}m`],
+      lines: [`${dockedAt('main')} drones docked · ${game.padsAt(main)} of 4 pads in use`, `Drone capacity ${game.droneCapacity} across ${game.bases.length} base${game.bases.length > 1 ? 's' : ''}`, `Dig range ${DIG_RADIUS}m`],
     };
+  }
+  for (const b of game.bases) {
+    if (b.kind !== 'outpost') continue;
+    const po = at(Z_ACTORS);
+    if (Math.abs(po.x - b.x) > OUTPOST.width / 2 || po.y < b.y || po.y > b.y + OUTPOST.height + 0.4) continue;
+    return { kind: 'outpost', title: 'Outpost', lines: [`${dockedAt(b.id)} of ${OUTPOST.pads} pads in use`, `Dig range ${DIG_RADIUS}m around it`, `${Math.round(Math.hypot(b.x - d.x, b.y - d.y))}m from the main base`] };
   }
   const pd = at(Z_DEBRIS);
   if (near(game.layout.carl, pd, 0.3)) return { kind: 'carl', title: 'Carl', lines: ['Obsolete predecessor model', 'Still blinking, bless him'] };
@@ -125,7 +136,11 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
   const name = def.name[0].toUpperCase() + def.name.slice(1);
   const lines: string[] = [];
   if (m === Mat.Bedrock) lines.push('Cannot be dug');
-  else lines.push(`${def.hardness <= 1 ? 'Quick' : def.hardness <= 3 ? 'Slow' : 'Very slow'} to dig${def.yields.ore ? ', yields ore' : def.yields.scrap && def.yields.scrap >= 0.5 ? ', yields scrap' : ''}`);
+  else {
+    const gives = Object.entries(def.yields).filter(([, n]) => (n ?? 0) >= 0.5).map(([r]) => CARGO_NAME[r] ?? r);
+    lines.push(`${def.hardness <= 1 ? 'Quick' : def.hardness <= 3 ? 'Slow' : 'Very slow'} to dig${gives.length ? `, yields ${gives.join(', ')}` : ''}`);
+    if (m === Mat.Titanium && !game.canCutTitanium) lines.push('Needs Arc lasers (research) to cut');
+  }
   lines.push(`Holds a ${(def.maxSpan * CELL).toFixed(1)}m span · ${temp}`);
   if (marks & DIG_BIT) lines.push(marks & REACH_BIT ? 'Dig order: drones can reach it' : 'Dig order: no access yet');
   const stress = ((marks >> STRESS_SHIFT) & STRESS_MAX) / STRESS_MAX;

@@ -186,9 +186,10 @@ function Stockpile({ game }: { game: Game }) {
   }, []);
   useFrame(() => {
     const r = game.resources;
-    bins.ore.count = Math.min(STOCK_MAX.ore, Math.floor(r.ore));
+    // Ore of every kind in one bin; plates and bars stacked together in another.
+    bins.ore.count = Math.min(STOCK_MAX.ore, Math.floor(r.ore + r.ironOre + r.tiOre));
     bins.scrap.count = Math.min(STOCK_MAX.scrap, Math.floor(r.scrap));
-    bins.plates.count = Math.min(STOCK_MAX.plates, Math.floor(r.plates));
+    bins.plates.count = Math.min(STOCK_MAX.plates, Math.floor(r.plates + r.ironBars + r.tiBars));
   });
   return (
     <>
@@ -334,11 +335,15 @@ export function Base({ game }: { game: Game }) {
       l.visible = f < 0.95;
     });
     // Pad and cradle rings: green while a drone is docked there, slow amber blink while it's out.
-    const docked = new Set(game.bots.filter((b) => !b.dead && b.state === 'docked').map((b) => b.slot));
-    const out = new Set(game.bots.filter((b) => !b.dead && b.state !== 'docked').map((b) => b.slot));
+    const padNo = (pad: string) => (pad.startsWith('main:') ? Number(pad.slice(5)) : -1);
+    const docked = new Set(game.bots.filter((b) => !b.dead && b.state === 'docked').map((b) => padNo(b.pad)));
+    const out = new Set(game.bots.filter((b) => !b.dead && b.state !== 'docked').map((b) => padNo(b.pad)));
+    const usable = game.padsAt(game.bases[0]);
     ref.pads.current.children.forEach((c, n) => {
       const m = (c as THREE.Mesh).material as THREE.MeshBasicMaterial;
-      if (docked.has(n)) m.color.setRGB(0.3, 2.2, 0.6);
+      // Pads not yet in service (research more) glow a dim red.
+      if (n >= usable) m.color.setRGB(0.35, 0.04, 0.03);
+      else if (docked.has(n)) m.color.setRGB(0.3, 2.2, 0.6);
       else if (out.has(n)) m.color.setRGB(Math.sin(t * 3 + n) > 0 ? 2.4 : 0.3, Math.sin(t * 3 + n) > 0 ? 1.2 : 0.15, 0);
       else m.color.setRGB(0.12, 0.07, 0.05);
     });

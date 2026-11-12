@@ -133,6 +133,24 @@ fn rockSurface(p: vec3f, mat: u32) -> vec4f {
     let metal = select(vec3f(0.36, 0.12, 0.04), vec3f(0.12, 0.3, 0.26), w.z > 0.85);
     col = mix(vec3f(0.13, 0.14, 0.1) * (1.0 + mid * 0.25), metal, bit);
     h += bit * 0.008;
+  } else if (mat == 8u) {
+    // Iron ore: banded rust-red hematite with dark, glinting magnetite grains.
+    let band = sin(p.y * 9.0 + broad * 6.0 + mid * 3.0) * 0.5 + 0.5;
+    col = mix(vec3f(0.16, 0.05, 0.03), vec3f(0.34, 0.09, 0.04), band) * (1.0 + mid * 0.2 + fine * 0.1);
+    let w = worley3(p * 16.0);
+    let grain = (1.0 - smoothstep(0.12, 0.2, w.x)) * step(0.55, w.z);
+    col = mix(col, vec3f(0.04, 0.04, 0.05), grain);
+    h += grain * 0.004 + band * 0.003;
+  } else if (mat == 9u) {
+    // Titanium ore: charcoal blue-grey host shot through with bright golden rutile needles.
+    col = vec3f(0.08, 0.09, 0.12) * (1.0 + mid * 0.3 + fine * 0.15);
+    let q = p + vec3f(fbm3(p * 2.0, 2)) * 0.15;
+    let w = worley3(vec3f(q.x * 30.0, q.y * 7.0, q.z * 30.0));
+    let needle = (1.0 - smoothstep(0.0, 0.05, w.y - w.x)) * step(0.5, w.z);
+    col = mix(col, vec3f(0.75, 0.62, 0.32), needle * 0.8);
+    let s = worley3(p * 40.0);
+    col += vec3f(0.5, 0.55, 0.6) * (1.0 - smoothstep(0.03, 0.08, s.x)) * step(0.85, s.z);
+    h += needle * 0.003;
   } else {
     // Dirt: compacted soil with organic mottling, darker seams along the bedding, and pebbles.
     col = vec3f(0.2, 0.12, 0.065) * (1.0 + mid * 0.22 + broad * 0.12 + fine * 0.08);

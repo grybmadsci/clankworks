@@ -177,14 +177,14 @@ fn thermalStep(src: ptr<storage, array<f32>, read>, dst: ptr<storage, array<f32>
   let i = cell.x;
   let j = cell.y;
   let idx = u32(j * W + i);
-  // Conductivity by material: air, dirt, granite, copper, ice, bedrock, rubble, junk.
-  var cond = array<f32, 8>(0.04, 0.10, 0.20, 0.24, 0.16, 0.20, 0.08, 0.12);
+  // Conductivity by material: air, dirt, granite, copper, ice, bedrock, rubble, junk, iron, titanium.
+  var cond = array<f32, 10>(0.04, 0.10, 0.20, 0.24, 0.16, 0.20, 0.08, 0.12, 0.22, 0.14);
   var offs = array<vec2i, 4>(vec2i(-1, 0), vec2i(1, 0), vec2i(0, -1), vec2i(0, 1));
 
   let T = (*src)[idx];
   let fl = (*fluid)[idx];
   let open = (*solid)[idx] <= 0.5;
-  let kc = select(cond[min((*mat)[idx], 7u)], 0.03 + 0.2 * min(fl.x + fl.y, 1.0), open);
+  let kc = select(cond[min((*mat)[idx], 9u)], 0.03 + 0.2 * min(fl.x + fl.y, 1.0), open);
   var v = T;
   for (var n = 0; n < 4; n++) {
     let ni = i + offs[n].x;
@@ -192,7 +192,7 @@ fn thermalStep(src: ptr<storage, array<f32>, read>, dst: ptr<storage, array<f32>
     if (ni < 0 || ni >= W || nj < 0 || nj >= H) { continue; }
     let k = u32(nj * W + ni);
     let nf = (*fluid)[k];
-    let kn = select(cond[min((*mat)[k], 7u)], 0.03 + 0.2 * min(nf.x + nf.y, 1.0), (*solid)[k] <= 0.5);
+    let kn = select(cond[min((*mat)[k], 9u)], 0.03 + 0.2 * min(nf.x + nf.y, 1.0), (*solid)[k] <= 0.5);
     v += min(kc, kn) * ((*src)[k] - T);
   }
   v = mix(v, 1150.0, clamp(fl.y * 0.3, 0.0, 1.0));
@@ -380,7 +380,7 @@ fn particleSpawn(pos: ptr<storage, array<vec4f>, read_write>, vel: ptr<storage, 
       let spd = c.x * (0.3 + 0.7 * phash(h + 1.3));
       let r = c.z * sqrt(phash(h + 2.7));
       var v = vec3f(cos(ang) * spd, sin(ang) * spd, (phash(h + 3.1) - 0.5) * spd * 0.6);
-      if (c.y >= 9.0) { v.y = abs(v.y) * 0.4 + 0.4; }
+      if (c.y >= 17.0) { v.y = abs(v.y) * 0.4 + 0.4; }
       let z = -${f(DEPTH * 0.5)} + (phash(h + 4.2) - 0.5) * ${f(DEPTH * 0.8)};
       (*pos)[idx] = vec4f(a.x + cos(ang) * r, a.y + sin(ang) * r, z, 0.6 + phash(h + 5.9) * 1.4);
       (*vel)[idx] = vec4f(v, c.y);
@@ -398,7 +398,7 @@ fn particleStep(pos: ptr<storage, array<vec4f>, read_write>, vel: ptr<storage, a
   var p = (*pos)[idx];
   if (p.w <= 0.0) { return; }
   var v = (*vel)[idx];
-  let buoyant = v.w >= 9.0;
+  let buoyant = v.w >= 17.0;
   if (buoyant) {
     v.y += 1.2 * dt;
     v.x *= 0.98;

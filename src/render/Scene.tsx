@@ -9,7 +9,7 @@ import { CELL, H, SKY_ROWS, W } from '../config';
 import { enabled } from '../debug';
 import { unlockAudio } from '../game/audio';
 import type { Game } from '../game/Game';
-import { Entities, SmelterBody, StrutBody, Z_ACTORS } from './Entities';
+import { Entities, OutpostBody, SmelterBody, StrutBody, Z_ACTORS } from './Entities';
 import { gameTime, hologramMaterial, materialMask, overlayMode } from './materials';
 import { quality } from './quality';
 import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
@@ -56,6 +56,7 @@ export function Scene({ game }: { game: Game }) {
       <DigRange game={game} />
       <SmelterHologram game={game} />
       <StrutHologram game={game} />
+      <OutpostHologram game={game} />
       <ScrapHighlight game={game} />
       <Cursor game={game} />
       <CameraRig game={game} />
@@ -285,6 +286,22 @@ function StrutHologram({ game }: { game: Game }) {
   return site ? <group key={site.key} renderOrder={15}><StrutBody strut={site} material={material} /></group> : null;
 }
 
+/** With the Outpost tool, a hologram of the outpost where it would stand: cyan if allowed, red if not. */
+function OutpostHologram({ game }: { game: Game }) {
+  const group = useRef<THREE.Group>(null!);
+  const { material, tint } = useMemo(hologramMaterial, []);
+  useFrame(() => {
+    const c = view.cursor;
+    const show = game.tool === 'outpost' && !!c;
+    group.current.visible = show;
+    if (!show) return;
+    const site = game.outpostSite(c.x, c.y);
+    group.current.position.set(site.x, site.y, 0);
+    tint.value.set(site.error ? '#ff4a3a' : '#5fe3ff');
+  });
+  return <group ref={group} visible={false} renderOrder={15}><OutpostBody material={material} /></group>;
+}
+
 /** With the Scrap tool, the strut under the cursor lights up red. */
 function ScrapHighlight({ game }: { game: Game }) {
   const { material, tint } = useMemo(hologramMaterial, []);
@@ -301,6 +318,13 @@ function ScrapHighlight({ game }: { game: Game }) {
 
 /** Dashed ring marking how far from the base the drones will dig; brighter with the Dig tools. */
 function DigRange({ game }: { game: Game }) {
+  // One ring per base: rebuild the set when a base is added.
+  const [count, setCount] = useState(game.bases.length);
+  useFrame(() => { if (game.bases.length !== count) setCount(game.bases.length); });
+  return <>{game.bases.slice(0, count).map((b) => <DigRing key={b.id} game={game} x={b.x} y={b.y + 1} />)}</>;
+}
+
+function DigRing({ game, x, y }: { game: Game; x: number; y: number }) {
   const { mesh, opacity } = useMemo(() => {
     const { atan, positionLocal, step, time, uniform } = TSL as any;
     const opacity = uniform(0.2);
@@ -311,11 +335,11 @@ function DigRange({ game }: { game: Game }) {
     m.opacityNode = dash.mul(opacity);
     const r = game.digRadius;
     const mesh = new THREE.Mesh(new THREE.RingGeometry(r - 0.05, r, 360), m);
-    mesh.position.set(game.digCenter.x, game.digCenter.y, 0.06);
+    mesh.position.set(x, y, 0.06);
     mesh.renderOrder = 19;
     return { mesh, opacity };
-  }, [game]);
-  useFrame(() => { opacity.value = game.tool === 'dig' || game.tool === 'cancel' ? 0.75 : 0.18; });
+  }, [game, x, y]);
+  useFrame(() => { opacity.value = game.tool === 'dig' || game.tool === 'cancel' || game.tool === 'outpost' ? 0.75 : 0.18; });
   return <primitive object={mesh} />;
 }
 

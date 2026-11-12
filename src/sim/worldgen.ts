@@ -16,7 +16,7 @@ type Feature =
   | { kind: 'ellipse'; ci: number; cj: number; rx: number; ry: number; shell?: Mat; fill?: number }
   /** Flatten a floor: solid rock below `floorJ`, open air for a few rows above it. */
   | { kind: 'floor'; i0: number; i1: number; j0: number; floorJ: number; openI0: number; openI1: number }
-  | { kind: 'ore'; i0: number; i1: number; j0: number; j1: number; threshold: number };
+  | { kind: 'ore'; i0: number; i1: number; j0: number; j1: number; threshold: number; mat: Mat };
 
 export interface WorldLayout {
   seed: number;
@@ -29,6 +29,8 @@ export interface WorldLayout {
   terrarium: { x: number; y: number; w: number; h: number };
   strutCols: number[];
   emitters: EmitterDef[];
+  /** Centres of the iron and titanium deposits (world units), for hints and tests. */
+  deposits: { mat: Mat; x: number; y: number }[];
   /** Height (world units) of the ground surface above the base, where the intro drill starts. */
   surfaceY: number;
 }
@@ -70,7 +72,14 @@ export class WorldGen {
     this.add({ kind: 'floor', i0: i0 - 17, i1: i0 + 17, j0: startJ - 9, floorJ, openI0: i0 - 16, openI1: i0 + 16 });
     // Carl's alcove opens off the cavern's left end, under its own granite roof.
     ellipse(i0 - 23, startJ - 2, 4, 3, Mat.Granite);
-    this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45 });
+    this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45, mat: Mat.Copper });
+    // One iron vein at the edge of the starting dig range, so the first outpost can be paid for.
+    const deposits: WorldLayout['deposits'] = [];
+    const vein = (mat: Mat, ci: number, cj: number, w: number, h: number, threshold: number) => {
+      this.add({ kind: 'ore', i0: Math.round(ci - w), i1: Math.round(ci + w), j0: Math.round(cj - h), j1: Math.round(cj + h), threshold, mat });
+      deposits.push({ mat, x: wx(ci), y: (cj + 0.5) * CELL });
+    };
+    vein(Mat.Iron, i0 + 30, startJ - 17, 6, 5, 0.42);
     // The critters' cave, joined to Carl's alcove by a narrow tunnel. Kept narrow enough (18 cells
     // under a granite roof that holds 26) that the start area raises no structural warnings.
     ellipse(i0 - 42, terrJ, 9, 5, Mat.Granite, OXYGEN);
@@ -92,9 +101,18 @@ export class WorldGen {
         if (!nearStart(ci, cj, keepOut)) return [ci, cj];
       }
     };
+    // Higher-tier metal lies further out: copper anywhere, iron from 12m, titanium from 28m and deep.
     for (let n = 0; n < 16; n++) {
       const [ci, cj] = spot(40, surfaceRow - 30, 70);
-      this.add({ kind: 'ore', i0: Math.round(ci - 8), i1: Math.round(ci + 8), j0: Math.round(cj - 10), j1: Math.round(cj + 10), threshold: 0.45 });
+      this.add({ kind: 'ore', i0: Math.round(ci - 8), i1: Math.round(ci + 8), j0: Math.round(cj - 10), j1: Math.round(cj + 10), threshold: 0.45, mat: Mat.Copper });
+    }
+    for (let n = 0; n < 14; n++) {
+      const [ci, cj] = spot(60, surfaceRow - 30, 48);
+      vein(Mat.Iron, ci, cj, 7, 9, 0.45);
+    }
+    for (let n = 0; n < 10; n++) {
+      const [ci, cj] = spot(30, startJ - 40, 112);
+      vein(Mat.Titanium, ci, cj, 6, 7, 0.5);
     }
     for (let n = 0; n < 110; n++) {
       const [ci, cj] = spot(30, surfaceRow - 16, 48);
@@ -124,6 +142,7 @@ export class WorldGen {
       terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 2.8, h: 2.2 },
       strutCols: [i0 - 8, i0 + 8],
       emitters,
+      deposits,
       surfaceY: (surfaceRow + Math.round((this.nA(i0 * 0.05, 3.7) - 0.5) * 5) + 1) * CELL,
     };
   }
@@ -188,8 +207,8 @@ export class WorldGen {
         } else if (f.kind === 'floor') {
           if (j < f.floorJ) { t.density[k] = 1; t.material[k] = Mat.Granite; fluid.fill(0, k * 4, k * 4 + 4); }
           else if (i >= f.openI0 && i <= f.openI1) { t.density[k] = 0; t.material[k] = Mat.Air; }
-        } else if (t.density[k] > 0.5 && nC(i * 0.3, j * 0.3) > f.threshold) {
-          t.material[k] = Mat.Copper;
+        } else if (t.density[k] > 0.5 && t.material[k] !== Mat.Ice && nC(i * 0.3 + f.mat * 17, j * 0.3) > f.threshold) {
+          t.material[k] = f.mat;
         }
       }
     }

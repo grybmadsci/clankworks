@@ -85,9 +85,9 @@ function canStep(t: Terrain, cx: number, cy: number, dx: number, dy: number) {
 
 const floodQueue = new Int32Array(GW * GH);
 
-/** Mark (1) every node reachable from a world position, using the same moves as findPath. */
-export function floodNodes(t: Terrain, sx: number, sy: number, out: Uint8Array) {
-  out.fill(0);
+/** Mark (1) every node reachable from a world position, using the same moves as findPath (keeping earlier marks unless `reset`). */
+export function floodNodes(t: Terrain, sx: number, sy: number, out: Uint8Array, reset = true) {
+  if (reset) out.fill(0);
   const start = startNode(t, sx, sy);
   if (start < 0) return;
   let head = 0, tail = 0;

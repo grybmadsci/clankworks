@@ -52,7 +52,13 @@ export const enum Mat {
   Bedrock = 5,
   Rubble = 6,
   Junk = 7,
+  Iron = 8,
+  Titanium = 9,
 }
+export const MAT_COUNT = 10;
+
+/** Stockpiled resources: three ores, what the smelter makes of them, and scrap. */
+export type Resource = 'ore' | 'ironOre' | 'tiOre' | 'plates' | 'ironBars' | 'tiBars' | 'scrap';
 
 export interface MaterialDef {
   name: string;
@@ -61,7 +67,7 @@ export interface MaterialDef {
   /** Max horizontal span (cells) a ceiling of this material can hold without support. */
   maxSpan: number;
   /** Resource yield per unit of density removed. */
-  yields: { ore?: number; scrap?: number };
+  yields: Partial<Record<Resource, number>>;
 }
 
 export const MATERIALS: MaterialDef[] = [
@@ -73,6 +79,8 @@ export const MATERIALS: MaterialDef[] = [
   { name: 'bedrock', hardness: Infinity, maxSpan: 999, yields: {} },
   { name: 'rubble', hardness: 0.4, maxSpan: 4, yields: { scrap: 0.05 } },
   { name: 'fossilized junk', hardness: 0.9, maxSpan: 10, yields: { scrap: 1 } },
+  { name: 'iron ore', hardness: 4.0, maxSpan: 20, yields: { ironOre: 1 } },
+  { name: 'titanium ore', hardness: 7.0, maxSpan: 30, yields: { tiOre: 1 } },
 ];
 
 /** Emitter types understood by the GPU fluid/thermal kernels. */

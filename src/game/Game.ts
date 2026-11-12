@@ -2,7 +2,7 @@ import RAPIER from '@dimforge/rapier2d-compat';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
   CELL, CELLS, CHUNK, CH, COLLAPSE_DELAY, CRACK_SHIFT, CW, DIG_BIT, EXPLORED_BIT, Emit, H, ISO, MATERIALS, MAX_ACTIVE, MAX_EMITTERS,
-  Mat, REACH_BIT, SKY_ROWS, STRESS_MASK, STRESS_MAX, STRESS_SHIFT, STRESS_WARN, W, cellCenter, cellIndex, chunkId, toCell,
+  Mat, REACH_BIT, type Resource, SKY_ROWS, STRESS_MASK, STRESS_MAX, STRESS_SHIFT, STRESS_WARN, W, cellCenter, cellIndex, chunkId, toCell,
 } from '../config';
 import { GpuSim, ParticleKind } from '../gpu/GpuSim';
 import { chunkPolylines } from '../sim/contours';
@@ -13,9 +13,10 @@ import { EmitterDef, WorldGen, WorldLayout } from '../sim/worldgen';
 import { ChunkStreamer, chunkRows, origin } from './chunks';
 import { alarm, chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, HUB, digCenter, dockSlot } from './base';
+import { OUTPOST, RECIPES, TECHS, type Cost } from './tech';
 import { EMOTES, EmoteId } from './emotes';
 
-export type Tool = 'select' | 'info' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'scrap';
+export type Tool = 'select' | 'info' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'outpost' | 'scrap';
 export type Overlay = 0 | 1 | 2 | 3 | 4;
 type Vec = { x: number; y: number };
 
@@ -54,15 +55,15 @@ const BOT_NAMES = ['Rivet', 'Sprocket', 'Gasket', 'Ratchet', 'Clunk', 'Widget', 
 export interface Bot {
   id: number;
   name: string;
-  /** Landing pad index (see dockSlot). */
-  slot: number;
+  /** Landing pad, as 'baseId:n' (see padPos). */
+  pad: string;
   /** Charge, 0-100. Drones head home to recharge when it runs low. */
   battery: number;
   lowBattery: boolean;
   body: RAPIER.RigidBody;
   hp: number;
   heat: number;
-  cargo: { ore: number; scrap: number };
+  cargo: Partial<Record<Resource, number>>;
   state: 'docked' | 'idle' | 'toDig' | 'digging' | 'toDepot' | 'salute' | 'tantrum';
   target: number;
   path: Vec[];
@@ -101,10 +102,13 @@ export interface Strut { id: number; i: number; j0: number; j1: number; broken: 
  * A smelter. While `crafting`, `smeltTimer` counts up to SMELT.time and the batch's ore has
  * already been taken; `hotUntil` keeps it glowing a little after a batch.
  */
-export interface Smelter { id: number; x: number; y: number; hp: number; smeltTimer: number; hotUntil: number; crafting: boolean }
+export interface Smelter { id: number; x: number; y: number; hp: number; smeltTimer: number; hotUntil: number; crafting: boolean; recipe: number }
 
-/** The smelter's recipe: one ore in, one copper plate out, every 2.5 seconds. */
-export const SMELT = { input: { ore: 1 }, output: { plates: 1 }, time: 2.5 };
+/** A base: the main one the shift starts at, or an outpost. Each has landing pads and a dig range. */
+export interface BaseSite { id: string; kind: 'main' | 'outpost'; x: number; y: number }
+
+/** Total cargo a drone is carrying. */
+export const cargoTotal = (b: Bot) => Object.values(b.cargo).reduce((a, n) => a + (n ?? 0), 0);
 export interface Critter { id: number; name: string; x: number; y: number; vx: number; health: number; happy: boolean; complaint: string; hop: number; dead: boolean }
 export interface Bubble { id: number; text: string; bot?: Bot; x: number; y: number; ttl: number }
 export interface LogEntry { id: number; time: number; text: string; kind: 'emote' | 'info' | 'warn' }
@@ -196,7 +200,7 @@ export const TUTORIAL: TutorialStep[] = [
     text: 'Switch how the world is drawn: heat, oxygen, structural stress, or the Material layer, which colour-codes rock so ore is easy to spot.',
     items: [
       { label: 'Show the Material layer', done: (g) => g.overlay === 4 },
-      { label: 'Click a material in its key to hide or show it', done: (g) => g.materialMask !== 0b11111110 },
+      { label: 'Click a material in its key to hide or show it', done: (g) => g.materialMask !== 0b1111111110 },
       { label: 'Back to the Normal view', done: (g, t) => t.checked[0] && g.overlay === 0 },
     ],
   },
@@ -237,7 +241,11 @@ export class Game {
 
   time = 0;
   frames = 0;
-  resources = { ore: 0, scrap: 14, plates: 0 };
+  resources: Record<Resource, number> = { ore: 0, ironOre: 0, tiOre: 0, plates: 0, ironBars: 0, tiBars: 0, scrap: 14 };
+  /** Research done (TECHS ids). */
+  researched = new Set<string>();
+  /** The main base first, then any outposts. */
+  bases: BaseSite[] = [];
   /** Ore drones have brought home over the whole shift. */
   oreDelivered = 0;
   /**
@@ -270,7 +278,7 @@ export class Game {
   /** 0 normal, 1 heat, 2 oxygen, 3 structural integrity, 4 materials. */
   overlay: Overlay = 0;
   /** Materials the material layer shows, one bit per material id (all solids by default). */
-  materialMask = 0b11111110;
+  materialMask = 0b1111111110;
   /** What the camera shows (world units), set by the renderer; drives chunk streaming. */
   view = { x: 0, y: 0, halfW: 12, halfH: 8 };
   readonly chunks: ChunkStreamer;
@@ -333,6 +341,7 @@ export class Game {
     });
     const layout = this.layout;
     this.view = { x: layout.depot.x, y: layout.depot.y + 1, halfW: 12, halfH: 8 };
+    this.bases = [{ id: 'main', kind: 'main', x: layout.depot.x, y: layout.depot.y }];
     this.intro.offset = layout.surfaceY - layout.depot.y;
     this.drillY = layout.surfaceY + 0.5;
     for (const id of this.wantedChunks()) this.chunks.loadNow(id);
@@ -384,8 +393,7 @@ export class Game {
         if (!seen.has(id)) { seen.add(id); out.push(id); }
       }
     };
-    const c = this.digCenter;
-    add(c.x, c.y, DIG_RADIUS + 2);
+    for (const b of this.bases) { const c = digCenter(b); add(c.x, c.y, DIG_RADIUS + 2); }
     if (this.intro.phase !== 'done') {
       // The whole drill shaft, so it can be carved as the base descends.
       const d = this.layout.depot, top = this.layout.surfaceY + 1;
@@ -476,7 +484,6 @@ export class Game {
     if (i1 < i0) return;
     for (let j = j0; j <= j1; j++) for (let k = j * W + i0; k <= j * W + i1; k++) marks[k] &= ~STRESS_MASK;
     const unstable: Unstable[] = [];
-    const c = this.digCenter;
     for (const ceil of ceilings(t, { i0, j0, i1, j1 })) {
       const ratio = ceil.span / ceil.maxSpan;
       if (ratio < 0.25) continue;
@@ -491,7 +498,7 @@ export class Game {
         }
       }
       const x = cellCenter(Math.round(mid)), y = cellCenter(ceil.rowOf.get(ceil.cols[Math.floor(ceil.cols.length / 2)])!);
-      if (ratio >= STRESS_WARN && ratio <= 1 && dist({ x, y }, c) <= DIG_RADIUS + 3) {
+      if (ratio >= STRESS_WARN && ratio <= 1 && this.bases.some((b) => dist({ x, y }, digCenter(b)) <= DIG_RADIUS + 3)) {
         unstable.push({ key: `${Math.round(x / 2)}:${Math.round(y / 2)}`, x, y, ratio });
       }
     }
@@ -729,12 +736,12 @@ export class Game {
   }
 
   get quota() { return QUOTA; }
-  canAfford(cost: Partial<Record<keyof Game['resources'], number>>) {
-    return Object.entries(cost).every(([k, v]) => this.resources[k as keyof Game['resources']] >= (v ?? 0));
+  canAfford(cost: Cost) {
+    return Object.entries(cost).every(([k, v]) => this.resources[k as Resource] >= (v ?? 0));
   }
-  private pay(cost: Partial<Record<keyof Game['resources'], number>>) {
+  private pay(cost: Cost) {
     if (!this.canAfford(cost)) return false;
-    for (const [k, v] of Object.entries(cost)) this.resources[k as keyof Game['resources']] -= v ?? 0;
+    for (const [k, v] of Object.entries(cost)) this.resources[k as Resource] -= v ?? 0;
     return true;
   }
 
@@ -785,6 +792,7 @@ export class Game {
       case 'cancel': this.designate(x, y, 0.9, false); break;
       case 'strut': if (!drag) this.placeStrut(x, y); break;
       case 'smelter': if (!drag) this.placeSmelter(x, y); break;
+      case 'outpost': if (!drag) this.placeOutpost(x, y); break;
       case 'scrap': if (!drag) this.scrapStrut(x, y); break;
     }
   }
@@ -792,7 +800,88 @@ export class Game {
   /** Centre of the drones' working range. */
   get digCenter() { return digCenter(this.layout.depot); }
   get digRadius() { return DIG_RADIUS; }
-  inDigRange(x: number, y: number) { return dist({ x, y }, this.digCenter) <= DIG_RADIUS; }
+  /** Dig orders work within DIG_RADIUS of any base. */
+  inDigRange(x: number, y: number) { return this.bases.some((b) => dist({ x, y }, digCenter(b)) <= DIG_RADIUS); }
+
+  // ---------------------------------------------------------------- research and upgrades
+
+  /** Research a project: needs its predecessor and its cost. Returns false (with a hint) if not. */
+  research(id: string) {
+    const tech = TECHS.find((t) => t.id === id);
+    if (!tech || this.researched.has(id)) return false;
+    if (tech.requires && !this.researched.has(tech.requires)) { this.warn(`Research ${TECHS.find((t) => t.id === tech.requires)!.name} first.`, 'hints'); return false; }
+    if (!this.pay(tech.cost)) { this.warn(`Not enough materials for ${tech.name}.`, 'hints'); return false; }
+    this.researched.add(id);
+    this.info(`Research complete: ${tech.name}. ${tech.effect}.`);
+    chirp(1, 4);
+    this.entityVersion++;
+    return true;
+  }
+
+  /** Drone-related multipliers from research. */
+  get laserBoost() { return this.researched.has('laser2') ? 2 : this.researched.has('laser1') ? 1.5 : 1; }
+  get speedBoost() { return this.researched.has('rotor2') ? 1.5 : this.researched.has('rotor1') ? 1.25 : 1; }
+  get batteryBoost() { return this.researched.has('cell2') ? 2 : this.researched.has('cell1') ? 1.5 : 1; }
+  get canCutTitanium() { return this.researched.has('laser2'); }
+
+  // ---------------------------------------------------------------- bases and landing pads
+
+  /** Landing pads in use at a base: the main base starts with 2 of its 4, outposts have 2. */
+  padsAt(b: BaseSite) {
+    if (b.kind === 'outpost') return OUTPOST.pads;
+    return 2 + (this.researched.has('pads3') ? 1 : 0) + (this.researched.has('pads4') ? 1 : 0);
+  }
+
+  /** Every usable landing pad, main base first. */
+  get pads() { return this.bases.flatMap((b) => Array.from({ length: this.padsAt(b) }, (_, n) => `${b.id}:${n}`)); }
+  get droneCapacity() { return this.pads.length; }
+
+  /** Where a pad is: on the boiler at the main base, on the deck at an outpost. */
+  padPos(pad: string) {
+    const [id, n] = pad.split(':');
+    const b = this.bases.find((o) => o.id === id) ?? this.bases[0];
+    if (b.kind === 'main') return dockSlot(this.layout.depot, Number(n));
+    return { x: b.x - 0.35 + Number(n) * 0.7, y: b.y + OUTPOST.height + 0.1 };
+  }
+
+  /**
+   * Where an outpost would stand for a click at (x, y): dropped to the floor, centred on the
+   * clicked column. `error` explains why it can't go there.
+   */
+  outpostSite(x: number, y: number): { x: number; y: number; error?: string } {
+    const t = this.terrain;
+    const i = toCell(x);
+    let j = toCell(y);
+    if (!t.isOpen(i, j)) return { x, y, error: 'Outposts must be placed in open space.' };
+    while (j > 0 && t.isOpen(i, j - 1)) j--;
+    const site = { x: cellCenter(i), y: j * CELL };
+    const nearest = Math.min(...this.bases.map((b) => dist(b, site)));
+    if (nearest < OUTPOST.minDistance) return { ...site, error: `Too close to another base (${nearest.toFixed(0)}m): outposts need ${OUTPOST.minDistance}m of space.` };
+    const half = Math.round(OUTPOST.width / CELL / 2);
+    for (let di = -half; di < half; di++) {
+      if (!t.isSolid(i + di, j - 1) || !t.isOpen(i + di, j)) return { ...site, error: 'Outposts need flat ground: the floor under it must be level.' };
+      for (let dj = 0; dj < 6; dj++) {
+        const k = cellIndex(i + di, j + dj);
+        if (!t.isOpen(i + di, j + dj)) return { ...site, error: 'Not enough room for an outpost (needs 2m × 1.5m).' };
+        if (t.occupied[k] || t.strut[k]) return { ...site, error: 'Something is already built there.' };
+      }
+    }
+    if (!this.canAfford(OUTPOST.cost)) return { ...site, error: 'An outpost needs 10 copper plates and 8 iron bars.' };
+    return site;
+  }
+
+  placeOutpost(x: number, y: number) {
+    const site = this.outpostSite(x, y);
+    if (site.error || !this.pay(OUTPOST.cost)) return this.warn(site.error ?? 'An outpost needs 10 copper plates and 8 iron bars.', 'hints');
+    const b: BaseSite = { id: `outpost${nextId++}`, kind: 'outpost', x: site.x, y: site.y };
+    this.bases.push(b);
+    this.occupy(site.x - OUTPOST.width / 2 + 0.1, site.y, site.x + OUTPOST.width / 2 - 0.1, site.y + OUTPOST.height, 1);
+    this.reveal(site.x, site.y + 1, 7);
+    this.reachAt = 0;
+    this.entityVersion++;
+    this.info(`Outpost online: two more landing pads, and ${DIG_RADIUS}m of dig range around it.`);
+    chirp(1, 4);
+  }
 
   designate(x: number, y: number, radius: number, on: boolean) {
     const r = radius / CELL;
@@ -828,7 +917,7 @@ export class Game {
     }
     if (outOfRange && !changed && this.time >= this.rangeWarnAt) {
       this.rangeWarnAt = this.time + 3;
-      this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`, 'hints');
+      this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of a base.`, 'hints');
     }
   }
 
@@ -936,7 +1025,7 @@ export class Game {
   placeSmelter(x: number, y: number) {
     const site = this.smelterSite(x, y);
     if (site.error || !this.pay(COST.smelter)) return this.warn(site.error ?? 'Insufficient scrap for a smelter (8).', 'hints');
-    this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0, crafting: false });
+    this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0, crafting: false, recipe: 0 });
     this.occupy(site.x - 0.45, site.y, site.x + 0.45, site.y + 0.95, 1);
     this.entityVersion++;
     this.info('Smelter online. Ore in, plates out.');
@@ -945,7 +1034,7 @@ export class Game {
 
   buildBot() {
     if (this.intro.phase !== 'done') return;
-    if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.', 'hints');
+    if (this.bots.filter((b) => !b.dead).length >= this.droneCapacity) return this.warn('Every landing pad is taken. Research more pads, or build an outpost.', 'hints');
     if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates.', 'hints');
     const bot = this.spawnBot(true);
     this.emote(bot, 'strikeTheEarth');
@@ -955,10 +1044,9 @@ export class Game {
 
   /** Assemble a drone on the first free landing pad. */
   private spawnBot(announce: boolean) {
-    const used = new Set(this.bots.filter((b) => !b.dead).map((b) => b.slot));
-    let slot = 0;
-    while (used.has(slot)) slot++;
-    const { x, y } = dockSlot(this.layout.depot, slot);
+    const used = new Set(this.bots.filter((b) => !b.dead).map((b) => b.pad));
+    const pad = this.pads.find((p) => !used.has(p)) ?? 'main:0';
+    const { x, y } = this.padPos(pad);
     // Rotors cancel gravity; only impulses (tantrum kicks, falling rock) knock drones around.
     const body = this.physics.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y).lockRotations().setLinearDamping(0.6).setCcdEnabled(true).setGravityScale(0),
@@ -969,7 +1057,7 @@ export class Game {
     );
     const bot: Bot = {
       id: nextId++, name: BOT_NAMES[this.bots.length % BOT_NAMES.length] + (this.bots.length >= BOT_NAMES.length ? ' II' : ''),
-      slot, battery: 100, lowBattery: false, body, hp: 100, heat: 0, cargo: { ore: 0, scrap: 0 }, state: 'docked', target: -1, path: [], replanAt: 0,
+      pad, battery: 100, lowBattery: false, body, hp: 100, heat: 0, cargo: {}, state: 'docked', target: -1, path: [], replanAt: 0,
       stuck: 0, progressPos: { x, y }, progressAt: this.time, stateTimer: 0, emoteAt: {}, blacklist: new Map(),
       drillPoint: null, drillFx: 0, facing: 1, dead: false,
     };
@@ -1025,6 +1113,7 @@ export class Game {
       for (const b of this.bots) if (!b.dead) { const p = b.body.translation(); this.reveal(p.x, p.y, 3.5); }
       const d = this.layout.depot;
       if (this.intro.phase === 'done') this.reveal(d.x, d.y + 1, 9);
+      for (const b of this.bases) if (b.kind === 'outpost') this.reveal(b.x, b.y + 1, 7);
       else this.reveal(d.x, d.y + this.intro.offset + 0.5, 3.5);
     }
     this.updateStressMap();
@@ -1317,20 +1406,20 @@ export class Game {
 
   private updateSmelters(dt: number) {
     for (const s of [...this.smelters]) {
-      // Start a batch when there's ore, then cook it for SMELT.time.
-      if (!s.crafting && this.resources.ore >= SMELT.input.ore) {
-        this.resources.ore -= SMELT.input.ore;
-        s.crafting = true;
-        s.smeltTimer = 0;
+      // Start a batch of whichever ore is most plentiful, then cook it for its recipe's time.
+      if (!s.crafting) {
+        const r = this.nextRecipe();
+        if (r >= 0 && this.pay(RECIPES[r].input)) { s.crafting = true; s.smeltTimer = 0; s.recipe = r; }
       }
       if (s.crafting) {
+        const recipe = RECIPES[s.recipe];
         s.smeltTimer += dt;
         s.hotUntil = this.time + 1.5;
-        if (s.smeltTimer >= SMELT.time) {
+        if (s.smeltTimer >= recipe.time) {
           s.crafting = false;
           s.smeltTimer = 0;
-          this.resources.plates += SMELT.output.plates;
-          this.platesMade += SMELT.output.plates;
+          for (const [res, n] of Object.entries(recipe.output) as [Resource, number][]) this.resources[res] += n;
+          this.platesMade += recipe.output.plates ?? 0;
           this.gpu?.burst(s.x + 0.3, s.y + 0.25, 10, ParticleKind.Spark, 1.2, 0.05);
         }
       }
@@ -1342,6 +1431,16 @@ export class Game {
       this.info('QUOTA MET. Management is mildly pleased. Please continue indefinitely.');
       this.emote(this.randomBot(), 'cogAndStone');
     }
+  }
+
+  /** The recipe a free smelter would start next: the one whose ore is most plentiful (-1 if none). */
+  nextRecipe() {
+    let best = -1, most = 0;
+    RECIPES.forEach((r, n) => {
+      const [res, need] = Object.entries(r.input)[0] as [Resource, number];
+      if (this.resources[res] >= need && this.resources[res] > most) { most = this.resources[res]; best = n; }
+    });
+    return best;
   }
 
   private destroySmelter(s: Smelter, cause: string) {
@@ -1440,7 +1539,9 @@ export class Game {
     this.reachAt = this.time + 0.5;
     const t = this.terrain, marks = t.digMark, d = this.layout.depot;
     floodNodes(t, d.x, d.y + 0.6, this.access);
-    const live = (k: number) => (marks[k] & DIG_BIT) !== 0 && t.density[k] > ISO;
+    for (const b of this.bases) if (b.kind === 'outpost') floodNodes(t, b.x, b.y + OUTPOST.height + 0.5, this.access, false);
+    // Titanium only counts once the lasers can cut it.
+    const live = (k: number) => (marks[k] & DIG_BIT) !== 0 && t.density[k] > ISO && (t.material[k] !== Mat.Titanium || this.canCutTitanium);
     const reached = new Set<number>();
     const queue: number[] = [];
     for (const k of this.marked) {
@@ -1493,7 +1594,7 @@ export class Game {
         bot.battery = Math.min(100, bot.battery + BATTERY.charge * dt);
         if (bot.battery >= BATTERY.launch) bot.lowBattery = false;
       } else {
-        bot.battery = Math.max(0, bot.battery - (BATTERY.fly + (bot.state === 'digging' ? BATTERY.laser : 0)) * dt);
+        bot.battery = Math.max(0, bot.battery - ((BATTERY.fly + (bot.state === 'digging' ? BATTERY.laser : 0)) / this.batteryBoost) * dt);
         if (bot.battery < BATTERY.low && !bot.lowBattery) {
           bot.lowBattery = true;
           this.info(`${bot.name} is low on battery and heading home to recharge.`, 'drones');
@@ -1537,7 +1638,7 @@ export class Game {
     }
   }
 
-  private slotOf(bot: Bot) { return dockSlot(this.layout.depot, bot.slot); }
+  private slotOf(bot: Bot) { return this.padPos(bot.pad); }
 
   /** Sitting on the pad, rotors idle. Launch straight up when there is reachable work. */
   private botDocked(bot: Bot, dt: number) {
@@ -1553,7 +1654,7 @@ export class Game {
 
   /** Airborne with nothing claimed: take the next job, or fly home. */
   private botIdle(bot: Bot) {
-    const load = bot.cargo.ore + bot.cargo.scrap;
+    const load = cargoTotal(bot);
     if (load >= CARGO_CAP || bot.lowBattery) return this.goDepot(bot);
     if (this.time < bot.replanAt) return;
     bot.replanAt = this.time + 0.6 + Math.random() * 0.4;
@@ -1590,6 +1691,7 @@ export class Game {
       const owner = this.claims.get(k);
       if (owner !== undefined && owner !== bot.id) continue;
       if (!(t.digMark[k] & REACH_BIT) || (bot.blacklist.get(k) ?? 0) > this.time || this.heldForStrut(k)) continue;
+      if (t.material[k] === Mat.Titanium && !this.canCutTitanium) continue;
       const i = k % W, j = (k / W) | 0;
       if (!this.exposed(i, j)) continue;
       out.push({ k, d: Math.hypot(cellCenter(i) - p.x, cellCenter(j) - p.y) });
@@ -1689,7 +1791,7 @@ export class Game {
       // Continue on the next designated cell within reach, if any.
       const next = this.exposedTargets(p, bot).find((n) => dist(p, { x: cellCenter(n % W), y: cellCenter((n / W) | 0) }) <= DRILL_REACH && this.laserClear(p, n));
       this.releaseClaim(bot);
-      if (next === undefined || bot.cargo.ore + bot.cargo.scrap >= CARGO_CAP) { bot.state = 'idle'; return; }
+      if (next === undefined || cargoTotal(bot) >= CARGO_CAP) { bot.state = 'idle'; return; }
       this.claim(bot, next);
       k = next;
     }
@@ -1706,11 +1808,10 @@ export class Game {
     const hardness = t.hardness(k);
     // The laser's soft edge only ever touches rock that is ordered dug.
     const target = k;
-    const yields: Yield = t.carve(x, y, 0.3, (dt * DRILL_RATE) / hardness, {}, (c) => c === target || (t.digMark[c] & DIG_BIT) !== 0);
+    const yields: Yield = t.carve(x, y, 0.3, (dt * DRILL_RATE * this.laserBoost) / hardness, {}, (c) => c === target || (t.digMark[c] & DIG_BIT) !== 0);
     for (const [m, amount] of Object.entries(yields)) {
       const def = MATERIALS[Number(m)];
-      bot.cargo.ore += (def.yields.ore ?? 0) * amount;
-      bot.cargo.scrap += (def.yields.scrap ?? 0) * amount;
+      for (const [res, per] of Object.entries(def.yields) as [Resource, number][]) bot.cargo[res] = (bot.cargo[res] ?? 0) + per * amount;
     }
     if (y < this.deepestY - 4) {
       this.deepestY = y;
@@ -1724,18 +1825,17 @@ export class Game {
       this.gpu.burst(x, y, 4, m === Mat.Air ? Mat.Dirt : m, 2, 0.08);
       if (hardness > 1.4) this.gpu.burst(x, y, 2, ParticleKind.Spark, 3.5, 0.05);
     }
-    if (bot.cargo.ore + bot.cargo.scrap >= CARGO_CAP && t.density[k] <= ISO + 0.2) this.goDepot(bot);
+    if (cargoTotal(bot) >= CARGO_CAP && t.density[k] <= ISO + 0.2) this.goDepot(bot);
   }
 
   private unload(bot: Bot) {
-    const ore = Math.floor(bot.cargo.ore * 10) / 10;
-    this.resources.ore += bot.cargo.ore;
-    this.oreDelivered += bot.cargo.ore;
-    this.resources.scrap += bot.cargo.scrap;
+    const ore = Math.floor(((bot.cargo.ore ?? 0) + (bot.cargo.ironOre ?? 0) + (bot.cargo.tiOre ?? 0)) * 10) / 10;
+    for (const [res, n] of Object.entries(bot.cargo) as [Resource, number][]) this.resources[res] += n;
+    this.oreDelivered += bot.cargo.ore ?? 0;
     if (ore >= 1) this.oreDeliveries.push(this.time);
     this.oreDeliveries = this.oreDeliveries.filter((t) => this.time - t < 60);
     if (ore >= 3 && this.time > this.cogCooldown) { this.cogCooldown = this.time + 25; this.emote(bot, 'cogAndStone'); }
-    bot.cargo = { ore: 0, scrap: 0 };
+    bot.cargo = {};
     bot.state = 'docked';
     bot.replanAt = this.time + 0.5;
   }
@@ -1771,7 +1871,7 @@ export class Game {
       const dx = target.x - p.x, dy = target.y - p.y;
       const d = Math.hypot(dx, dy) || 1;
       // A flat battery leaves just enough to limp home.
-      const top = bot.battery > 0 ? BOT_SPEED : BOT_SPEED * 0.35;
+      const top = (bot.battery > 0 ? BOT_SPEED : BOT_SPEED * 0.35) * this.speedBoost;
       const speed = arrive ? Math.min(top, d * 3) : top;
       desired = { x: (dx / d) * speed, y: (dy / d) * speed };
       if (Math.abs(dx) > 0.05) bot.facing = Math.sign(dx);

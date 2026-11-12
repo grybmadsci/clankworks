@@ -219,8 +219,8 @@ try {
   check(build.flat === 'ok' && /flat ground/i.test(build.bumpy), 'smelters need flat ground');
   check(build.around && build.around.through === 0 && build.past && build.past.through > 0, 'drones route around buildings, and straight past them when there is no way around');
 
-  // A third drone for the mining tests below.
-  await page.evaluate(() => { const g = window.__game; g.resources.plates += 3; g.buildBot(); });
+  // A third drone for the mining tests below: the base starts with two pads, so research a third.
+  await page.evaluate(() => { const g = window.__game; g.resources.plates += 9; g.research('pads3'); g.buildBot(); });
 
   // Dig orders outside the drones' range are refused.
   const range = await page.evaluate(() => {
@@ -302,7 +302,7 @@ try {
     return {
       density: stripDensity(g),
       resources: g.resources,
-      cargo: g.bots.reduce((s, b) => s + b.cargo.ore + b.cargo.scrap, 0),
+      cargo: g.bots.reduce((s, b) => s + Object.values(b.cargo).reduce((a, n) => a + n, 0), 0),
       states: g.bots.map((b) => b.state),
       critters: g.critters.map((c) => `${c.name}:${c.happy ? 'happy' : c.complaint}`),
     };
@@ -587,7 +587,7 @@ try {
   await page.waitForTimeout(250);
   const card = await page.evaluate(() => { const c = document.querySelector('.cost-card'); return c ? { bar: c.querySelector('.cost-bar').textContent, icons: c.querySelectorAll('.cost-bar svg').length } : null; });
   await page.mouse.move(640, 300);
-  check(resIcons === 4 && card && /8/.test(card.bar) && card.icons === 1, `resources have icons, and building cards lead with their cost (${card?.bar})`);
+  check(resIcons === 8 && card && /8/.test(card.bar) && card.icons === 1, `resources have icons, and building cards lead with their cost (${card?.bar})`);
 
   // Esc from the plain cursor opens the main menu and pauses; Settings can switch alerts off.
   await page.evaluate(() => { window.__game.tool = 'select'; });
@@ -611,10 +611,50 @@ try {
   check(paused.menu && paused.frozen, 'Esc from the plain cursor opens the main menu and pauses the game');
   check(silenced.hints === false && !silenced.logged && silenced.saved === false && !resumed.menu && !resumed.paused, 'Settings switch an alert category off (and Esc backs out of the dialogs)');
 
+  // Expansion: ores by distance, research, smelting every ore, and outposts.
+  const expand = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain;
+    const far = (m) => g.layout.deposits.filter((p) => p.mat === m).map((p) => Math.hypot(p.x - d.x, p.y - d.y));
+    const iron = far(8), ti = far(9);
+    // Research: faster lasers; titanium can't be cut until Arc lasers.
+    const boost0 = g.laserBoost;
+    g.resources.plates += 8; g.research('laser1');
+    const boost1 = g.laserBoost, cut1 = g.canCutTitanium;
+    g.resources.ironBars += 6; g.research('laser2');
+    const cut2 = g.canCutTitanium;
+    // Smelting: the free smelter picks whichever ore is most plentiful.
+    g.resources.ironOre += 3;
+    const bars0 = g.resources.ironBars;
+    for (let n = 0; n < 30 * 6; n++) g.update(1 / 30);
+    const bars = g.resources.ironBars - bars0;
+    // Outposts: too close to the base, then on a prepared flat site 22m out.
+    g.resources.plates += 10; g.resources.ironBars += 8;
+    const near = g.outpostSite(d.x + 1.5, d.y + 1.5).error ?? 'ok';
+    const ox = d.x + 22, oy = d.y;
+    window.__view.goto(ox, oy + 1);
+    for (let n = 0; n < 40; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    const ci = Math.floor(ox / 0.25), cj = Math.floor(oy / 0.25);
+    for (let j = cj - 3; j <= cj + 10; j++) for (let i = ci - 8; i <= ci + 8; i++) { const k = j * 512 + i; const open = j >= cj && j < cj + 8; t.density[k] = open ? 0 : 1; t.material[k] = open ? 0 : 2; }
+    t.markDirty(ci - 9, cj - 4, ci + 9, cj + 11, false);
+    const cap0 = g.droneCapacity;
+    const site = g.outpostSite(ox, oy + 0.5).error ?? 'ok';
+    g.placeOutpost(ox, oy + 0.5);
+    const out = { bases: g.bases.length, cap: g.droneCapacity - cap0, range: g.inDigRange(ox + 6, oy), rangeBefore: Math.hypot(6 + 22, 0) };
+    window.__view.goto(d.x, d.y + 1);
+    for (let n = 0; n < 20; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    return { iron: [Math.min(...iron), iron.length], ti: [Math.min(...ti), ti.length], boost0, boost1, cut1, cut2, bars, near, site, ...out };
+  });
+  console.log('expansion', JSON.stringify(expand));
+  check(expand.iron[0] <= 11 && expand.ti[0] >= 28 && expand.ti[1] >= 5, `higher-tier ore lies further out (nearest iron ${expand.iron[0].toFixed(0)}m, nearest titanium ${expand.ti[0].toFixed(0)}m)`);
+  check(expand.boost0 === 1 && expand.boost1 === 1.5 && !expand.cut1 && expand.cut2, 'research upgrades the lasers, and Arc lasers unlock titanium');
+  check(expand.bars >= 1, `the smelter turns iron ore into iron bars (${expand.bars} made)`);
+  check(/too close/i.test(expand.near) && expand.site === 'ok' && expand.bases === 2 && expand.cap === 2 && expand.range,
+    'outposts are refused near a base, and add pads and dig range where there is room');
+
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {
     const g = window.__game;
-    g.resources.scrap += 10; g.resources.plates += 3;
+    g.resources.scrap += 10; g.resources.plates += 3; g.resources.ironBars += 5; g.research('pads4');
     g.tool = 'dig';
     const d = g.layout.depot;
     const v = { x: d.x - 2.5, y: d.y + 1.2, z: 0 };
@@ -648,7 +688,7 @@ try {
   const key = await page.evaluate(() => [...document.querySelectorAll('.legend button')].map((b) => b.textContent));
   await page.getByRole('button', { name: 'Granite' }).click();
   const mask = await page.evaluate(() => window.__game.materialMask);
-  check(key.length === 7 && ((mask >> 2) & 1) === 0 && ((mask >> 1) & 1) === 1, `material layer key lists ${key.length} materials and toggles them (mask ${mask.toString(2)})`);
+  check(key.length === 9 && ((mask >> 2) & 1) === 0 && ((mask >> 1) & 1) === 1, `material layer key lists ${key.length} materials and toggles them (mask ${mask.toString(2)})`);
   await shot('7-materials');
   await page.getByRole('button', { name: 'Granite' }).click();
   await page.evaluate(() => { window.__game.overlay = 0; });

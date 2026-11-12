@@ -11,9 +11,10 @@ const STEP = 1 / 120;
 const FREE = 0xffffffff;
 
 export const enum ParticleKind {
-  Spark = 8,
-  Steam = 9,
-  Flame = 10,
+  // Above the material ids (bursts of rock dust use the material id as their kind).
+  Spark = 16,
+  Steam = 17,
+  Flame = 18,
 }
 
 // TSL node types are very loose in @types/three; keep the GPU boundary untyped.

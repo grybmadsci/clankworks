@@ -32,8 +32,20 @@ objectives follow: order a dig on copper ore and deliver 5 ore, build a smelter 
 plates, then save 3 plates and build a second drone. Objectives draw no pointer lines and can't
 be skipped. You start with one drone and no plates.
 
-Mining drones wait on the four brass landing pads on top of the base's boiler, so the fleet tops
-out at four. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
+Mining drones wait on the brass landing pads on top of the base's boiler. Only two of its four
+pads are in service at first; research brings the other two online.
+
+**Ores and expansion.** Copper ore lies around the starting cavern. Iron ore starts at the edge of
+the starting dig range and becomes common further out; titanium ore only appears 28m or more from
+the start, and deeper. The smelter cooks whichever ore you have most of: copper into plates
+(2.5 s), iron into iron bars (4 s), titanium into titanium bars (6 s). To reach further, build an
+**outpost** (10 copper plates + 8 iron bars): a satellite base with two more landing pads and its
+own 11m dig range. It needs 2m of flat ground and must be at least 20m from any other base.
+
+**Research** (`R`) has four short branches: Fleet (third and fourth landing pads), Lasers (mine
+50% faster, then twice as fast and able to cut titanium), Rotors (fly 25%, then 50% faster) and
+Batteries (last 50% longer, then twice as long). Each starts with a copper-plate project and
+continues with one that needs iron or titanium. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
 red. Flying drains it, and the mining laser drains it faster. Below 25% a drone drops its job
 and flies home to recharge on its pad, and it won't launch again until it's back above 70%. A
 drone that runs flat limps home slowly. When you designate rock, they launch, cut it with their lasers, and fly home to
@@ -88,8 +100,10 @@ The toolbar has three sections:
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc or square: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor. `Q` (or the Brush toggle above the toolbar) switches between a round and a square brush |
 | Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
 | Buildings | `3` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
-| Buildings | `4` Smelter | Ore → plates (8 scrap): one ore per batch, 2.5 s each (24 plates a minute). The Info tool shows the batch's progress and the recipe. It needs flat, level ground and can't overlap the base, a strut or another building. A hologram previews where it will stand: cyan if it fits, red if not |
-| Buildings | `B` Drone | Build a drone (3 plates), one per landing pad |
+| Buildings | `4` Smelter | Ore → plates or bars (8 scrap): one ore per batch, picking whichever ore you have most of. The Info tool shows the batch's progress and the recipe. It needs flat, level ground and can't overlap the base, a strut or another building. A hologram previews where it will stand: cyan if it fits, red if not |
+| Buildings | `5` Outpost | A satellite base (10 plates + 8 iron bars) with two pads and its own dig range, 20m or more from other bases |
+| Buildings | `R` Research | Open the tech tree |
+| Buildings | `B` Drone | Build a drone (3 plates), one per landing pad in service |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 
