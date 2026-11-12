@@ -27,6 +27,8 @@ export const TECHS: Tech[] = [
   { id: 'rotor2', branch: 'Rotors', name: 'Titanium rotors', effect: 'Drones fly 50% faster', cost: { tiBars: 4 }, requires: 'rotor1' },
   { id: 'cell1', branch: 'Batteries', name: 'Bigger cells', effect: 'Drone batteries last 50% longer', cost: { plates: 6 } },
   { id: 'cell2', branch: 'Batteries', name: 'Iron-core cells', effect: 'Drone batteries last twice as long', cost: { ironBars: 5 }, requires: 'cell1' },
+  { id: 'girder1', branch: 'Girders', name: 'Riveted girders', effect: 'Girders span up to 6m', cost: { plates: 8 } },
+  { id: 'girder2', branch: 'Girders', name: 'Lattice girders', effect: 'Girders span up to 8m', cost: { ironBars: 6 }, requires: 'girder1' },
 ];
 
 /** An outpost: a satellite base with two landing pads and its own dig range. */
@@ -38,4 +40,26 @@ export const OUTPOST = {
   width: 2,
   height: 0.85,
   pads: 2,
+};
+
+/** A girder: a horizontal steel beam through the whole depth of the slice, one cell thick. */
+export const GIRDER = {
+  /** Copper plates per metre (rounded up). */
+  platesPerMetre: 1,
+  /** Longest span (m) before research, then with each Girders project. */
+  maxLength: [4, 6, 8],
+};
+
+/** A vehicle depot: one per base, building one mining vehicle at a time. */
+export const DEPOT = { cost: { scrap: 6, plates: 4 } as Cost, width: 1.5, height: 1.1 };
+
+/** The wheeled mining vehicle: a drill on the front, a bucket on the back. */
+export const VEHICLE = {
+  cost: { plates: 8 } as Cost,
+  /** What the bucket holds, in cells of rock. */
+  bucket: 24,
+  /** Drilling speed (density per second at hardness 1). */
+  drillRate: 4,
+  /** Top wheel speed (rad/s). */
+  wheelSpeed: 14,
 };

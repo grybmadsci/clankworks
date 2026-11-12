@@ -83,10 +83,23 @@ export function chainSegments(segs: number[]): Polyline[] {
   return lines;
 }
 
-/** Ramer-Douglas-Peucker simplification. */
+/**
+ * Ramer-Douglas-Peucker simplification. A closed loop (a cave wholly inside the chunk) is split at
+ * its point farthest from the start first: with both ends on the same point, RDP would measure
+ * every distance from a zero-length chord and collapse the loop to nothing.
+ */
 export function simplify(line: Polyline, epsilon: number): Polyline {
   const count = line.length / 2;
   if (count <= 2) return line;
+  if (count > 3 && Math.abs(line[0] - line[line.length - 2]) < 1e-5 && Math.abs(line[1] - line[line.length - 1]) < 1e-5) {
+    let far = 1, farD = -1;
+    for (let p = 1; p < count - 1; p++) {
+      const d = Math.hypot(line[p * 2] - line[0], line[p * 2 + 1] - line[1]);
+      if (d > farD) { farD = d; far = p; }
+    }
+    const a = simplify(line.slice(0, far * 2 + 2), epsilon), b = simplify(line.slice(far * 2), epsilon);
+    return [...a, ...b.slice(2)];
+  }
   const keep = new Uint8Array(count);
   keep[0] = keep[count - 1] = 1;
   const stack: [number, number][] = [[0, count - 1]];

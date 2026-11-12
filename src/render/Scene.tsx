@@ -9,7 +9,7 @@ import { CELL, H, SKY_ROWS, W } from '../config';
 import { enabled } from '../debug';
 import { unlockAudio } from '../game/audio';
 import type { Game } from '../game/Game';
-import { Entities, OutpostBody, SmelterBody, StrutBody, Z_ACTORS } from './Entities';
+import { DepotBody, Entities, GirderBody, OutpostBody, SmelterBody, StrutBody, Z_ACTORS } from './Entities';
 import { gameTime, hologramMaterial, materialMask, overlayMode } from './materials';
 import { quality } from './quality';
 import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
@@ -57,6 +57,8 @@ export function Scene({ game }: { game: Game }) {
       <SmelterHologram game={game} />
       <StrutHologram game={game} />
       <OutpostHologram game={game} />
+      <DepotHologram game={game} />
+      <GirderHologram game={game} />
       <ScrapHighlight game={game} />
       <Cursor game={game} />
       <CameraRig game={game} />
@@ -122,10 +124,16 @@ function CameraRig({ game }: { game: Game }) {
         game.useTool(p.x, p.y, true);
       }
     };
-    const up = () => { s.painting = false; s.panning = null; };
+    const up = (e: PointerEvent) => {
+      if (s.painting) game.toolUp(toWorld(e)?.x);
+      s.painting = false; s.panning = null;
+    };
     const wheel = (e: WheelEvent) => { e.preventDefault(); s.dist = Math.min(42, Math.max(6, s.dist * (1 + Math.sign(e.deltaY) * 0.1))); };
     const key = (e: KeyboardEvent) => {
       if (e.type === 'keydown') s.keys.add(e.key.toLowerCase()); else s.keys.delete(e.key.toLowerCase());
+      // The same keys drive a vehicle, when the player is driving one.
+      const k = (...names: string[]) => names.some((n) => s.keys.has(n)) ? 1 : 0;
+      game.drive = { throttle: k('d', 'arrowright') - k('a', 'arrowleft'), tilt: k('w', 'arrowup') - k('s', 'arrowdown'), drill: !!k(' ') };
     };
     const menu = (e: Event) => e.preventDefault();
     el.addEventListener('pointerdown', down);
@@ -157,11 +165,20 @@ function CameraRig({ game }: { game: Game }) {
       s.keys.clear();
       s.following = game.intro.phase !== 'done';
     }
-    const speed = s.dist * 0.9 * dt;
-    if (s.keys.has('a') || s.keys.has('arrowleft')) s.x -= speed;
-    if (s.keys.has('d') || s.keys.has('arrowright')) s.x += speed;
-    if (s.keys.has('w') || s.keys.has('arrowup')) s.y += speed;
-    if (s.keys.has('s') || s.keys.has('arrowdown')) s.y -= speed;
+    const k = (...names: string[]) => names.some((n) => s.keys.has(n)) ? 1 : 0;
+    const v = game.driving;
+    if (v) {
+      // Driving: the keys steer the vehicle (see `key`) and the camera keeps it in view.
+      const p = v.body.translation();
+      s.x += (p.x - s.x) * Math.min(1, dt * 3);
+      s.y += (p.y + 0.6 - s.y) * Math.min(1, dt * 3);
+    } else {
+      const speed = s.dist * 0.9 * dt;
+      s.x -= k('a', 'arrowleft') * speed;
+      s.x += k('d', 'arrowright') * speed;
+      s.y += k('w', 'arrowup') * speed;
+      s.y -= k('s', 'arrowdown') * speed;
+    }
     s.x = Math.min(WORLD_W, Math.max(0, s.x));
     s.y = Math.min(WORLD_H - SKY_ROWS * CELL * 0.5, Math.max(0, s.y));
     const shake = game.shake * 0.15;
@@ -302,18 +319,74 @@ function OutpostHologram({ game }: { game: Game }) {
   return <group ref={group} visible={false} renderOrder={15}><OutpostBody material={material} /></group>;
 }
 
-/** With the Scrap tool, the strut under the cursor lights up red. */
+/** With the Depot tool, a hologram of the depot where it would stand: cyan if allowed, red if not. */
+function DepotHologram({ game }: { game: Game }) {
+  const group = useRef<THREE.Group>(null!);
+  const { material, tint } = useMemo(hologramMaterial, []);
+  useFrame(() => {
+    const c = view.cursor;
+    const show = game.tool === 'depot' && !!c;
+    group.current.visible = show;
+    if (!show) return;
+    const site = game.depotSite(c.x, c.y);
+    group.current.position.set(site.x, site.y, 0);
+    tint.value.set(site.error ? '#ff4a3a' : '#5fe3ff');
+  });
+  return <group ref={group} visible={false} renderOrder={15}><DepotBody material={material} /></group>;
+}
+
+/**
+ * With the Girder tool, a hologram of the girder: while dragging, the span the drag would build
+ * (clipped to rock and the length limit); before that, a short stub at the cursor.
+ */
+function GirderHologram({ game }: { game: Game }) {
+  const { material, tint } = useMemo(hologramMaterial, []);
+  const [site, setSite] = useState<{ x: number; y: number; length: number; key: string } | null>(null);
+  useFrame(() => {
+    const c = view.cursor, drag = game.girderDrag;
+    let next = null;
+    if (game.tool === 'girder' && (drag || c)) {
+      const g = drag ? game.girderSite(drag.x0, drag.y0, drag.x1) : game.girderSite(c!.x, c!.y, c!.x + 0.25);
+      const length = (g.i1 - g.i0 + 1) * 0.25;
+      next = { x: g.i0 * 0.25 + length / 2, y: (g.j + 0.5) * 0.25, length, key: `${g.i0}:${g.i1}:${g.j}` };
+      // Before the drag starts, only being in rock (or a building) counts as an error.
+      const bad = drag ? !!g.error : /open space/.test(g.error ?? '');
+      tint.value.set(bad ? '#ff4a3a' : '#5fe3ff');
+    }
+    if (next?.key !== site?.key) setSite(next);
+  });
+  return site ? <group key={site.key} position={[site.x, site.y, 0]} renderOrder={15}><GirderBody length={site.length} material={material} /></group> : null;
+}
+
+/** With the Scrap tool, the vehicle, girder or strut under the cursor lights up red. */
 function ScrapHighlight({ game }: { game: Game }) {
   const { material, tint } = useMemo(hologramMaterial, []);
-  const [target, setTarget] = useState<{ i: number; j0: number; j1: number; key: string } | null>(null);
+  const [target, setTarget] = useState<{ kind: 'strut' | 'girder' | 'vehicle'; i: number; j0: number; j1: number; key: string } | null>(null);
+  const box = useRef<THREE.Mesh>(null!);
   useMemo(() => tint.value.set('#ff5a2a'), [tint]);
   useFrame(() => {
     const c = view.cursor;
-    const s = game.tool === 'scrap' && c ? game.strutAt(c.x, c.y) : undefined;
-    const next = s ? { i: s.i, j0: s.j0, j1: s.j1, key: `${s.id}:${s.j0}:${s.j1}` } : null;
+    let next: typeof target = null;
+    if (game.tool === 'scrap' && c) {
+      const v = game.vehicleAt(c.x, c.y), g = v ? undefined : game.girderAt(c.x, c.y), s = v || g ? undefined : game.strutAt(c.x, c.y);
+      if (v) next = { kind: 'vehicle', i: 0, j0: 0, j1: 0, key: `v${v.id}` };
+      else if (g) next = { kind: 'girder', i: g.i0, j0: g.j, j1: g.i1, key: `g${g.id}` };
+      else if (s) next = { kind: 'strut', i: s.i, j0: s.j0, j1: s.j1, key: `${s.id}:${s.j0}:${s.j1}` };
+      if (v && box.current) {
+        const p = v.body.translation();
+        box.current.position.set(p.x, p.y + 0.05, Z_ACTORS);
+        box.current.rotation.z = v.body.rotation();
+      }
+    }
     if (next?.key !== target?.key) setTarget(next);
   });
-  return target ? <group key={target.key} renderOrder={15}><StrutBody strut={target} material={material} /></group> : null;
+  if (!target) return null;
+  if (target.kind === 'vehicle') return <mesh ref={box} material={material} renderOrder={15}><boxGeometry args={[1.25, 0.5, 0.55]} /></mesh>;
+  if (target.kind === 'girder') {
+    const length = (target.j1 - target.i + 1) * 0.25;
+    return <group key={target.key} position={[target.i * 0.25 + length / 2, (target.j0 + 0.5) * 0.25, 0]} renderOrder={15}><GirderBody length={length} material={material} /></group>;
+  }
+  return <group key={target.key} renderOrder={15}><StrutBody strut={target} material={material} /></group>;
 }
 
 /** Dashed ring marking how far from the base the drones will dig; brighter with the Dig tools. */
@@ -339,7 +412,7 @@ function DigRing({ game, x, y }: { game: Game; x: number; y: number }) {
     mesh.renderOrder = 19;
     return { mesh, opacity };
   }, [game, x, y]);
-  useFrame(() => { opacity.value = game.tool === 'dig' || game.tool === 'cancel' || game.tool === 'outpost' ? 0.75 : 0.18; });
+  useFrame(() => { opacity.value = game.tool === 'dig' || game.tool === 'cancel' || game.tool === 'outpost' || game.tool === 'depot' ? 0.75 : 0.18; });
   return <primitive object={mesh} />;
 }
 

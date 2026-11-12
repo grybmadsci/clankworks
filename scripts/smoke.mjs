@@ -651,6 +651,93 @@ try {
   check(/too close/i.test(expand.near) && expand.site === 'ok' && expand.bases === 2 && expand.cap === 2 && expand.range,
     'outposts are refused near a base, and add pads and dig range where there is room');
 
+  // Girders, a vehicle depot and its vehicle, in a prepared room under the base: a floor with a
+  // pit (bridged by a girder) and a copper face at the far end.
+  const room = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain;
+    const ox = d.x + 4, oy = d.y - 4;
+    window.__view.goto(ox, oy + 1);
+    for (let n = 0; n < 30; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    const ci = Math.floor(ox / 0.25), cj = Math.floor(oy / 0.25), c = (i) => (i + 0.5) * 0.25;
+    for (let j = cj - 4; j <= cj + 10; j++) for (let i = ci - 14; i <= ci + 14; i++) {
+      const k = j * 512 + i;
+      const open = (j >= cj && j < cj + 8 && i >= ci - 12 && i <= ci + 12) || (j >= cj - 3 && j < cj && i >= ci - 6 && i <= ci - 3);
+      const copper = j >= cj && j < cj + 5 && i >= ci + 8 && i <= ci + 12;
+      t.density[k] = open && !copper ? 0 : 1; t.material[k] = copper ? 3 : open ? 0 : 2;
+      t.strut[k] = 0; t.occupied[k] = 0;
+    }
+    // Earlier tests' struts may stand here; the room replaces them.
+    g.struts = g.struts.filter((s) => s.i < ci - 14 || s.i > ci + 14 || s.j1 < cj - 4 || s.j0 > cj + 10);
+    // A pocket out of every base's range, to try a depot in.
+    const pj = cj - 40;
+    for (let j = pj - 1; j <= pj + 6; j++) for (let i = ci - 5; i <= ci + 5; i++) { const k = j * 512 + i, open = j >= pj && j < pj + 6 && Math.abs(i - ci) < 5; t.density[k] = open ? 0 : 1; t.material[k] = open ? 0 : 2; }
+    t.markDirty(ci - 15, pj - 2, ci + 15, cj + 11, false);
+    g.reveal(ox, oy + 1, 6);
+    g.update(1 / 30);
+    g.entityVersion++;
+    g.resources.plates += 30; g.resources.scrap += 10;
+    const pitOpen = !!g.route(c(ci), c(cj + 2), c(ci - 4), c(cj - 2.5), 0.3);
+    const air = g.girderSite(c(ci), c(cj + 4), c(ci + 3)).error ?? 'ok';
+    const long = g.girderSite(c(ci - 12), c(cj + 4), c(ci + 12));
+    const plates0 = g.resources.plates;
+    g.placeGirder(c(ci - 6), c(cj - 1), c(ci + 2));
+    const gd = g.girders.at(-1);
+    const girder = { span: [gd.i0 - ci, gd.i1 - ci, gd.j - cj], paid: plates0 - g.resources.plates, floor: t.isFloor(ci - 5, cj - 1), pitShut: !g.route(c(ci), c(cj + 2), c(ci - 4), c(cj - 2.5), 0.3) };
+    g.resources.plates += 8; g.research('girder1');
+    const noRange = g.depotSite(c(ci), c(pj + 1)).error ?? 'ok';
+    g.placeDepot(c(ci - 9), c(cj + 1));
+    const second = g.depotSite(c(ci + 4), c(cj + 1)).error ?? 'ok';
+    g.buildVehicle(); g.buildVehicle();
+    for (let n = 0; n < 30; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 15)); }
+    const v = g.vehicles[0];
+    return { ci, cj, pitOpen, air, longLen: (long.i1 - long.i0 + 1) * 0.25, girder, max: g.girderMax, noRange, second, depots: g.depots.length, vehicles: g.vehicles.length, driving: g.driving === v, y0: v.body.translation().y, floor: cj * 0.25 };
+  });
+  console.log('room', JSON.stringify(room));
+  check(/each end/i.test(room.air) && room.longLen === 4 && room.girder.span.join() === '-6,-3,-1' && room.girder.paid === 1 && room.girder.floor,
+    `girders need both ends held, stop at 4m and at rock (dragged ${room.longLen}m), cost a plate a metre and make a floor`);
+  check(room.pitOpen && room.girder.pitShut, 'drones can\'t fly through a girder');
+  check(room.max === 6, 'research lengthens girders');
+  check(/dig range/.test(room.noRange) && /already has/.test(room.second) && room.depots === 1, 'one vehicle depot per base, within its dig range');
+  check(room.vehicles === 1 && room.driving && Math.abs(room.y0 - room.floor - 0.26) < 0.08, `the depot builds one vehicle at a time, which sits on the floor (${(room.y0 - room.floor).toFixed(2)}m up) and is driven`);
+  const drive = async (keys, seconds) => { for (const k of keys) await page.keyboard.down(k); await fastForward(seconds); for (const k of keys) await page.keyboard.up(k); };
+  const vstate = () => page.evaluate(() => { const g = window.__game, v = g.vehicles[0], p = v.body.translation(); return { x: p.x, y: p.y, a: v.body.rotation(), bucket: { ...v.bucket }, ore: g.resources.ore }; });
+  await drive(['d'], 2.5);
+  const across = await vstate();
+  await drive(['d', ' '], 3);
+  const drilled = await vstate();
+  await shot('8-vehicle');
+  await drive(['a'], 4);
+  await fastForward(1.5);
+  const home = await vstate();
+  console.log('drive', JSON.stringify({ across, drilled, home }));
+  check(across.x > (room.ci - 3 + 1) * 0.25 + 0.4 && Math.abs(across.y - room.floor - 0.26) < 0.1, 'the vehicle drives across the girder over the pit');
+  check((drilled.bucket[3] ?? 0) > 2 && Math.abs(drilled.a) < 0.7, `the drill cuts copper into the bucket (${(drilled.bucket[3] ?? 0).toFixed(1)} cells) without the vehicle rearing over`);
+  check(Object.keys(home.bucket).length === 0 && home.ore - drilled.ore > 2, `parking at the depot empties the bucket into the stockpile (+${(home.ore - drilled.ore).toFixed(1)} ore)`);
+  const wrecked = await page.evaluate(async () => {
+    const g = window.__game, v = g.vehicles[0], t = g.terrain;
+    const solid = () => { let n = 0; for (let k = 0; k < t.density.length; k++) if (t.density[k] > 0.5) n++; return n; };
+    v.bucket = { 1: 5 };
+    const s0 = solid();
+    g.dumpBucket();
+    const dumped = { empty: Object.keys(v.bucket).length === 0, cells: solid() - s0 };
+    v.bucket = { 1: 4, 3: 3 };
+    const p = v.body.translation(), plates = g.resources.plates, s1 = solid();
+    g.tool = 'scrap'; g.scrapAt(p.x, p.y);
+    const scrapped = { refund: g.resources.plates - plates, vehicles: g.vehicles.length, driving: g.driving, spilled: solid() - s1 };
+    const gd = g.girders.at(-1), pl = g.resources.plates;
+    g.scrapAt((gd.i0 + 0.5) * 0.25, (gd.j + 0.5) * 0.25);
+    const girderBack = { left: g.girders.length, refund: g.resources.plates - pl };
+    g.tool = 'select';
+    window.__view.goto(g.layout.depot.x, g.layout.depot.y + 1);
+    for (let n = 0; n < 20; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 20)); }
+    return { dumped, scrapped, girderBack };
+  });
+  console.log('scrap', JSON.stringify(wrecked));
+  check(wrecked.dumped.empty && wrecked.dumped.cells === 5, 'E dumps the bucket onto the ground');
+  check(wrecked.scrapped.refund === 8 && wrecked.scrapped.vehicles === 0 && wrecked.scrapped.driving === null && wrecked.scrapped.spilled === 7,
+    'scrapping a vehicle refunds its full cost and spills its bucket');
+  check(wrecked.girderBack.left === 0 && wrecked.girderBack.refund === 0, 'girders can be scrapped (half of a 1-plate girder rounds to nothing)');
+
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {
     const g = window.__game;

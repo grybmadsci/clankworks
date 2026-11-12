@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
-import { ALERTS, COST, TUTORIAL, type AlertKind, type Game, type Overlay, type Tool } from '../game/Game';
-import { OUTPOST, TECHS, type Cost } from '../game/tech';
+import { ALERTS, COST, TUTORIAL, bucketTotal, type AlertKind, type Game, type Overlay, type Tool } from '../game/Game';
+import { DEPOT, GIRDER, OUTPOST, TECHS, VEHICLE, type Cost } from '../game/tech';
 import { MATERIAL_KEY } from '../render/materials';
 import { inspect, type Inspection } from '../game/inspect';
 import { Icon, cursorFor, iconSvg } from './icons';
@@ -15,11 +15,13 @@ const ORDERS: ToolDef[] = [
   { id: 'info', key: 'I', label: 'Info', hint: 'Hover anything in the world to see what it is' },
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
-  { id: 'scrap', key: 'X', label: 'Scrap', hint: 'Take down a strut for 1 scrap back. Whatever it was holding up may come down' },
+  { id: 'scrap', key: 'X', label: 'Scrap', hint: 'Take down a strut (1 scrap back) or a girder (half its plates back), or scrap a vehicle for its full cost; its bucket spills onto the ground' },
 ];
 const BUILDINGS: ToolDef[] = [
   { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support up to 4m; stretches when its ends are dug out; braces cracking rock (2 scrap)' },
+  { id: 'girder', key: '6', label: 'Girder', hint: `Click and drag sideways: a flat steel floor to build and drive on, through the whole depth of the cave. Up to 4m (research for longer); each end must rest on rock. ${GIRDER.platesPerMetre} copper plate per metre` },
   { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates (8 scrap). Shows a hologram where it would go' },
+  { id: 'depot', key: '7', label: 'Depot', hint: 'A vehicle depot: builds one mining vehicle at a time, which unloads its bucket here. One per base, within its dig range, on flat ground' },
   { id: 'outpost', key: '5', label: 'Outpost', hint: `A satellite base with two landing pads and its own 11m dig range. Needs 2m of flat ground, at least ${OUTPOST.minDistance}m from any other base.` },
 ];
 const TOOLS = [...ORDERS, ...BUILDINGS];
@@ -50,6 +52,7 @@ export function Hud({ game }: { game: Game }) {
       if (e.key === 'Escape') {
         if (techRef.current) { setTech(false); force((n) => n + 1); return; }
         if (menu.current) setMenu(menu.current === 'settings' ? 'main' : null);
+        else if (game.driving) game.driving = null;
         else if (game.tool !== 'select' && game.intro.phase === 'done') game.tool = 'select';
         else setMenu('main');
         force((n) => n + 1);
@@ -63,6 +66,11 @@ export function Hud({ game }: { game: Game }) {
       const tool = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
+      if (e.key === 'v') game.buildVehicle();
+      if (game.driving && e.key === 'e') game.dumpBucket();
+      if (game.driving && e.key === 'f') game.turnVehicle();
+      // Space drills while driving; keep it from pressing the focused button.
+      if (game.driving && e.key === ' ') e.preventDefault();
       if (e.key === 'r') setTech(!techRef.current);
       if (e.key === 'q') game.brushSquare = !game.brushSquare;
       if (e.key === 't') game.overlay = ((game.overlay + 1) % LAYERS.length) as Overlay;
@@ -118,6 +126,10 @@ export function Hud({ game }: { game: Game }) {
               onMouseEnter={(e) => costCard.show(e.currentTarget, 'drone', 'Drone', 'A mining drone. It takes the next free landing pad on the base; there are four.')} onMouseLeave={() => costCard.hide()}>
               <Icon name="drone" /><span>Drone</span><kbd>B</kbd>
             </button>
+            <button className="build" onClick={() => { unlockAudio(); game.buildVehicle(); force((n) => n + 1); }}
+              onMouseEnter={(e) => costCard.show(e.currentTarget, 'vehicle', 'Mining vehicle', 'Built at a vehicle depot (one each) and driven by you: a drill on the front, a bucket on the back that empties at the depot. If every depot has its vehicle out, this takes the wheel of one.')} onMouseLeave={() => costCard.hide()}>
+              <Icon name="vehicle" /><span>Vehicle</span><kbd>V</kbd>
+            </button>
           </ToolGroup>
         </nav>
       )}
@@ -143,7 +155,7 @@ export function Hud({ game }: { game: Game }) {
               })}
             </div>
           )}
-          <p className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom</p>
+          <p className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom · Click a vehicle to drive it</p>
         </aside>
       )}
 
@@ -160,6 +172,18 @@ export function Hud({ game }: { game: Game }) {
       <aside className="panel log">
         {game.log.slice(-8).map((l) => <div key={l.id} className={l.kind}>{l.text}</div>)}
       </aside>
+      {game.driving && (
+        <aside className="panel driving">
+          <h3>Driving {game.driving.name}</h3>
+          <div className="bucket">
+            <span>Bucket</span>
+            <div className="bar"><div style={{ width: `${Math.min(100, (bucketTotal(game.driving) / VEHICLE.bucket) * 100)}%` }} /></div>
+            <b>{bucketTotal(game.driving).toFixed(0)}/{VEHICLE.bucket}</b>
+          </div>
+          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill · <kbd>E</kbd> dump bucket · <kbd>F</kbd> turn around · <kbd>Esc</kbd> get out</p>
+          <p className="sub">The bucket empties into the stockpiles when you park at the depot.</p>
+        </aside>
+      )}
       {game.strutConfirm && <StrutConfirm game={game} onDone={() => force((n) => n + 1)} />}
       {tech && <TechPanel game={game} onClose={() => setTech(false)} />}
       {menuState === 'main' && <MainMenu onResume={() => setMenu(null)} onSettings={() => setMenu('settings')} />}
@@ -169,6 +193,7 @@ export function Hud({ game }: { game: Game }) {
 
       <Bubbles game={game} />
       <Inspector game={game} />
+      <GirderLabel game={game} />
       <CostCard game={game} />
     </div>
   );
@@ -403,12 +428,15 @@ function ToolGroup({ title, hint, children }: { title: string; hint?: string; ch
 }
 
 /** What each priced tool costs (or refunds, for Scrap). */
-const PRICES: Partial<Record<Tool | 'drone', { cost: Record<string, number>; refund?: boolean }>> = {
+const PRICES: Partial<Record<Tool | 'drone' | 'vehicle', { cost: Record<string, number>; refund?: boolean }>> = {
   strut: { cost: COST.strut },
   smelter: { cost: COST.smelter },
   drone: { cost: COST.bot },
   scrap: { cost: { scrap: 1 }, refund: true },
   outpost: { cost: OUTPOST.cost as Record<string, number> },
+  girder: { cost: { plates: GIRDER.platesPerMetre } },
+  depot: { cost: DEPOT.cost as Record<string, number> },
+  vehicle: { cost: VEHICLE.cost as Record<string, number> },
 };
 
 /**
@@ -421,13 +449,13 @@ function CostCard({ game }: { game: Game }) {
   costCard.show = (el, id, title, hint) => setCard({ rect: el.getBoundingClientRect(), id, title, hint });
   costCard.hide = () => setCard(null);
   if (!card) return null;
-  const price = PRICES[card.id as Tool | 'drone'];
+  const price = PRICES[card.id as Tool | 'drone' | 'vehicle'];
   if (!price) return null;
   const r = game.resources as Record<string, number>;
   return (
     <div className="cost-card" style={{ left: card.rect.left, top: card.rect.top - 8 }}>
       <div className="cost-bar">
-        <span>{price.refund ? 'Refund' : 'Cost'}</span>
+        <span>{price.refund ? 'Refund' : card.id === 'girder' ? 'Per metre' : 'Cost'}</span>
         {Object.entries(price.cost).map(([res, n]) => {
           const short = !price.refund && (r[res] ?? 0) < n;
           return (
@@ -468,7 +496,7 @@ function Inspector({ game }: { game: Game }) {
       if (canvas && tool !== game.tool) {
         tool = game.tool;
         // Strut and Smelter show holograms; the rest get an icon cursor.
-        canvas.style.cursor = tool === 'strut' || tool === 'smelter' ? 'crosshair' : cursorFor(tool, tool === 'cancel' ? '#ff9a85' : tool === 'scrap' ? '#ffb38a' : '#ffe2a8');
+        canvas.style.cursor = tool === 'strut' || tool === 'smelter' || tool === 'girder' || tool === 'depot' ? 'crosshair' : cursorFor(tool, tool === 'cancel' ? '#ff9a85' : tool === 'scrap' ? '#ffb38a' : '#ffe2a8');
       }
       const el = card.current, ray = view.ray;
       if (!el) return;
@@ -489,6 +517,31 @@ function Inspector({ game }: { game: Game }) {
     return () => cancelAnimationFrame(raf);
   }, [game]);
   return <div ref={card} className="inspector" />;
+}
+
+/** While a girder is dragged out: its length and price beside the pointer (or why it can't go there). */
+function GirderLabel({ game }: { game: Game }) {
+  const el = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const box = el.current, drag = game.girderDrag;
+      if (!box) return;
+      if (!drag || game.tool !== 'girder') { box.style.display = 'none'; return; }
+      const site = game.girderSite(drag.x0, drag.y0, drag.x1);
+      const length = (site.i1 - site.i0 + 1) * 0.25;
+      box.style.display = 'block';
+      box.style.transform = `translate(${view.mouse.x + 18}px, ${view.mouse.y + 14}px)`;
+      box.className = `inspector girder-label${site.error ? ' bad' : ''}`;
+      box.innerHTML = `<h4>${length.toFixed(2).replace(/\.?0+$/, '')}m of ${game.girderMax}m</h4>` +
+        `<div><b style="color:${RESOURCE_COLOR.plates}">${iconSvg('plates', 14)}${site.cost}</b> copper plates</div>` +
+        (site.error ? `<div class="err">${esc(site.error)}</div>` : '');
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [game]);
+  return <div ref={el} className="inspector girder-label" />;
 }
 
 /** Every stockpiled resource, in top-bar order: name, short label, icon and colour. */

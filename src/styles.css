@@ -257,13 +257,13 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .inspector .recipe span { margin-left: auto; color: var(--muted); font-size: 11px; }
 
 /* Research tree */
-.tech { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 760px; max-width: calc(100% - 24px); z-index: 25; pointer-events: auto; background: #17120d; border-color: var(--accent); padding: 14px 16px; }
+.tech { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 900px; max-width: calc(100% - 24px); z-index: 25; pointer-events: auto; background: #17120d; border-color: var(--accent); padding: 14px 16px; }
 .tech-head { display: flex; align-items: center; justify-content: space-between; }
 .tech-head h3 { margin: 0; font-size: 14px; color: var(--accent); }
 .tech button { font: inherit; cursor: pointer; padding: 4px 10px; border-radius: 6px; color: var(--text); background: #5a4220; border: 1px solid var(--accent); }
 .tech button.quiet { background: transparent; border-color: var(--edge); color: var(--muted); }
 .tech button:disabled { opacity: 0.45; cursor: default; }
-.tech-tree { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 10px; }
+.tech-tree { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 10px; }
 .tech-tree h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #b89a6a; }
 .tech-tree .node { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 8px; margin-top: 16px; border: 1px solid var(--edge); border-radius: 6px; background: rgba(0, 0, 0, 0.25); }
 .tech-tree section .node:first-of-type { margin-top: 0; }
@@ -280,3 +280,19 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .tech-tree .node em { font-style: normal; color: #8fd65a; }
 .topbar { gap: 14px; }
 .topbar .res span { font-size: 11px; }
+
+/* Driving a vehicle: controls and how full the bucket is */
+.driving { left: 12px; bottom: 140px; width: 440px; max-width: calc(100% - 24px); border-color: #4aa8c8; font-size: 12px; }
+.driving h3 { color: #7fd8ff; }
+.driving p { margin: 6px 0 0; color: #d8c8ae; line-height: 1.6; }
+.driving p.sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.driving kbd { margin: 0 2px 0 0; }
+.driving .bucket { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.driving .bucket .bar { flex: 1; height: 8px; background: #2b241d; border-radius: 4px; overflow: hidden; }
+.driving .bucket .bar div { height: 100%; background: #c98a2b; transition: width 0.2s; }
+.driving .bucket b { color: var(--text); min-width: 40px; text-align: right; }
+
+/* Length and price of a girder being dragged out */
+.girder-label .err { color: #ff9a85; margin-top: 2px; }
+.girder-label.bad { border-color: #a04030; }
+.girder-label b { display: inline-flex; align-items: center; gap: 3px; }

@@ -21,6 +21,11 @@ export class Terrain {
    * them where they can't; new buildings can't overlap them.
    */
   readonly occupied = new Uint8Array(CELLS);
+  /**
+   * Girder cells: steel beams through the whole depth of the slice. Air as far as rock and fluids
+   * are concerned, but a floor to build and drive on, and a wall to drones.
+   */
+  readonly girder = new Uint8Array(CELLS);
   /** 1 for chunks whose real data is resident, by chunkId. */
   readonly loaded = new Uint8Array(CW * CH);
 
@@ -71,6 +76,16 @@ export class Terrain {
 
   isOpen(i: number, j: number) {
     return this.inBounds(i, j) && this.density[cellIndex(i, j)] <= ISO;
+  }
+
+  /** Something to stand on: rock or a girder. */
+  isFloor(i: number, j: number) {
+    return this.isSolid(i, j) || (this.inBounds(i, j) && this.girder[cellIndex(i, j)] === 1);
+  }
+
+  /** Open and free of girders: room to stand, build or fall through. */
+  isClear(i: number, j: number) {
+    return this.isOpen(i, j) && this.girder[cellIndex(i, j)] === 0;
   }
 
   /** Structural solidity: rock or strut. */
@@ -164,7 +179,7 @@ export class Terrain {
   stamp(i: number, j: number, mat: number) {
     if (!this.inBounds(i, j)) return false;
     const k = cellIndex(i, j);
-    if (this.density[k] > ISO || this.strut[k]) return false;
+    if (this.density[k] > ISO || this.strut[k] || this.girder[k]) return false;
     this.density[k] = 1;
     this.material[k] = mat;
     return true;

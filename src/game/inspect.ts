@@ -1,7 +1,7 @@
 import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, EXPLORED_BIT, H, ISO, MATERIALS, Mat, REACH_BIT, STRESS_MAX, STRESS_SHIFT, W, cellIndex } from '../config';
 import { DIG_RADIUS, HUB } from './base';
-import { cargoTotal, type Bot, type Game } from './Game';
-import { OUTPOST, RECIPES } from './tech';
+import { bucketTotal, cargoTotal, type Bot, type Game } from './Game';
+import { DEPOT, OUTPOST, RECIPES, VEHICLE } from './tech';
 
 /** Where the cursor ray crosses depth z (the scene's things sit at different depths). */
 export type RayAt = (z: number) => { x: number; y: number };
@@ -56,6 +56,20 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
       ],
     };
   }
+  for (const v of game.vehicles) {
+    if (!near(v.body.translation(), pa, 0.5)) continue;
+    const load = bucketTotal(v);
+    const held = Object.entries(v.bucket).filter(([, n]) => n >= 0.1).map(([m, n]) => `${n.toFixed(1)} ${MATERIALS[Number(m)].name}`);
+    return {
+      kind: 'vehicle',
+      title: `Mining vehicle ${v.name}`,
+      lines: [
+        v === game.driving ? (v.drilling ? 'Drilling' : v.unloading ? 'Unloading at the depot' : 'You are driving') : 'Parked: click it with Select to drive',
+        `Bucket ${load.toFixed(1)} / ${VEHICLE.bucket} cells${held.length ? ` · ${held.join(', ')}` : ''}`,
+        'Empties into the stockpiles at its depot',
+      ],
+    };
+  }
   for (const s of game.smelters) {
     if (Math.abs(pa.x - s.x) > 0.45 || pa.y < s.y || pa.y > s.y + 1.1) continue;
     // The batch in progress, or the one it would start next.
@@ -95,6 +109,20 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
     if (Math.abs(po.x - b.x) > OUTPOST.width / 2 || po.y < b.y || po.y > b.y + OUTPOST.height + 0.4) continue;
     return { kind: 'outpost', title: 'Outpost', lines: [`${dockedAt(b.id)} of ${OUTPOST.pads} pads in use`, `Dig range ${DIG_RADIUS}m around it`, `${Math.round(Math.hypot(b.x - d.x, b.y - d.y))}m from the main base`] };
   }
+  for (const dp of game.depots) {
+    if (Math.abs(pa.x - dp.x) > DEPOT.width / 2 || pa.y < dp.y || pa.y > dp.y + DEPOT.height + 0.2) continue;
+    const v = game.vehicles.find((o) => o.depotId === dp.id);
+    const base = game.bases.find((b) => b.id === dp.baseId);
+    return {
+      kind: 'depot',
+      title: 'Vehicle depot',
+      lines: [
+        v ? `Its vehicle: ${v.name}` : `No vehicle out: press Vehicle (V) to build one (${VEHICLE.cost.plates} plates)`,
+        `Serves the ${base?.kind === 'outpost' ? 'outpost' : 'main base'} (one depot per base)`,
+        'Vehicles unload here',
+      ],
+    };
+  }
   const pd = at(Z_DEBRIS);
   if (near(game.layout.carl, pd, 0.3)) return { kind: 'carl', title: 'Carl', lines: ['Obsolete predecessor model', 'Still blinking, bless him'] };
   for (const deb of game.debris) {
@@ -112,6 +140,12 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
         s.broken ? 'Not supporting: dug out past its reach' : s.atRisk ? 'At risk: pending digs would undermine it' : 'Supporting the ceiling',
       ],
     };
+  }
+
+  const pg = at(0);
+  const g = game.girderAt(pg.x, pg.y);
+  if (g && Math.floor(pg.y / CELL) === g.j) {
+    return { kind: 'girder', title: 'Steel girder', lines: [`${((g.i1 - g.i0 + 1) * CELL).toFixed(2).replace(/\.?0+$/, '')}m long`, 'A floor to build and drive on; drones fly around it'] };
   }
 
   // The rock (or open cave) on the cutaway face.

@@ -23,7 +23,7 @@ export function nodeOpen(t: Terrain, gx: number, gy: number) {
     const i = gx + di, j = gy + dj;
     if (i >= W || j >= H) continue;
     const k = cellIndex(i, j);
-    if (t.density[k] > ISO || (avoidBuildings && t.occupied[k])) return false;
+    if (t.density[k] > ISO || t.girder[k] || (avoidBuildings && t.occupied[k])) return false;
   }
   return true;
 }
