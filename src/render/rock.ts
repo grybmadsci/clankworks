@@ -154,3 +154,20 @@ fn boundaryWarp(p: vec3f) -> vec2f {
   return vec2f(fbm3(vec3f(p.xy * 3.0, 0.5), 3), fbm3(vec3f(p.xy * 3.0 + 11.3, 2.5), 3));
 }
 `, [fbm3]);
+
+/**
+ * Crack lines for rock that is about to collapse: Voronoi-edge fractures that widen with
+ * `progress` (0 to 1), joined by hairline cracks as the deadline nears. Returns 0 when not cracking.
+ */
+export const crackMask = wgslFn(/* wgsl */ `
+fn crackMask(p: vec3f, progress: f32) -> f32 {
+  if (progress <= 0.0) { return 0.0; }
+  let q = p + vec3f(fbm3(p * 1.5, 2), fbm3(p * 1.5 + 4.0, 2), 0.0) * 0.25;
+  let a = worley3(q * 3.0);
+  let b = worley3(q * 8.0 + 5.0);
+  let width = mix(0.006, 0.07, progress);
+  let major = 1.0 - smoothstep(0.0, width, a.y - a.x);
+  let minor = (1.0 - smoothstep(0.0, width * 0.5, b.y - b.x)) * smoothstep(0.3, 0.8, progress);
+  return max(major, minor * 0.8);
+}
+`, [fbm3, worley3]);

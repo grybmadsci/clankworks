@@ -57,14 +57,31 @@ try {
   check(gpu.maxRockT > 200, `magma conducts heat into surrounding rock (max rock ${gpu.maxRockT.toFixed(0)}°C)`);
   check(gpu.meshVerts > 50000, `GPU mesher compacted ${gpu.meshVerts} terrain vertices`);
 
-  // Designate a strip of rock beside the base and let the bots work.
+  const docked = await page.evaluate(() => window.__game.bots.map((b) => b.state));
+  check(docked.length === 3 && docked.every((s) => s === 'docked'), `drones start docked at the base (${docked.join(',')})`);
+
+  // Dig orders outside the drones' range are refused.
+  const range = await page.evaluate(() => {
+    const g = window.__game;
+    const c = g.digCenter;
+    const count = () => g.terrain.digMark.reduce((n, v) => n + (v & 1), 0);
+    const n0 = count();
+    g.designate(c.x + g.digRadius + 2, c.y - 2, 0.7, true);
+    return { added: count() - n0, warned: /out of drone range/i.test(g.log.at(-1).text) };
+  });
+  check(range.added === 0 && range.warned, 'dig orders beyond the range ring are refused');
+
+  // Designate a strip of rock beside the base and let the drones work.
   const before = await page.evaluate(() => {
     const g = window.__game;
     const d = g.layout.depot;
     for (let x = 0; x < 2.4; x += 0.3) g.designate(d.x + 4.2 + x, d.y + 0.6, 0.7, true);
     return { density: g.terrain.density.reduce((a, b) => a + b, 0), resources: { ...g.resources } };
   });
-  await fastForward(30);
+  await fastForward(4);
+  const launched = await page.evaluate(() => window.__game.bots.filter((b) => b.state !== 'docked').length);
+  check(launched > 0, `drones launched from the base for the dig orders (${launched} airborne)`);
+  await fastForward(26);
   const after = await page.evaluate(() => {
     const g = window.__game;
     return {
@@ -96,20 +113,50 @@ try {
   });
   check(blast === 2, 'blast charges placed');
   await fastForward(3.5);
+  const warning = await page.evaluate(() => {
+    const g = window.__game;
+    return {
+      pending: g.pendingCollapses.length,
+      cracking: g.terrain.digMark.filter((v) => v >> 8).length,
+      debris: g.debris.length,
+      log: g.log.slice(-10).map((l) => l.text),
+    };
+  });
+  console.log('after blast', JSON.stringify(warning));
+  check(warning.pending > 0 && warning.cracking > 0 && warning.log.some((l) => /cave-in warning/i.test(l)),
+    `blast left unsupported rock cracking with a warning (${warning.cracking} cells)`);
+  await shot('3-cracking');
+  await fastForward(7);
   const cave = await page.evaluate(() => {
     const g = window.__game;
     return { debris: g.debris.length, log: g.log.slice(-10).map((l) => l.text) };
   });
-  console.log('after blast', JSON.stringify(cave));
-  check(cave.debris > 0 || cave.log.some((l) => /cave-in/i.test(l)), 'blast triggered a structural collapse');
+  check(cave.debris > 0 || cave.log.some((l) => /came loose/i.test(l)), 'unbraced rock collapsed when the warning ran out');
   await shot('3-cavein');
   // Settled rubble re-triggers structural checks, so collapses can chain; they must converge.
   let remaining = -1;
-  for (let n = 0; n < 12 && remaining !== 0; n++) {
+  for (let n = 0; n < 20 && remaining !== 0; n++) {
     await fastForward(2);
-    remaining = await page.evaluate(() => window.__game.debris.length);
+    remaining = await page.evaluate(() => window.__game.debris.length + window.__game.pendingCollapses.length);
   }
-  check(remaining === 0, `collapse chain converged and rubble merged back into terrain (${remaining} bodies left)`);
+  check(remaining === 0, `collapse chain converged and rubble merged back into terrain (${remaining} bodies/warnings left)`);
+
+  // A strut placed during the warning saves the ceiling. Hollow out a room in soft rock whose
+  // roof spans too far, then brace the middle as soon as it starts cracking.
+  const braced = await page.evaluate(async () => {
+    const g = window.__game, d = g.layout.depot;
+    const cx = d.x + 4.5, cy = d.y - 2.2;
+    for (let x = -1.6; x <= 1.6; x += 0.2) for (let y = 0; y <= 0.8; y += 0.2) g.terrain.carve(cx + x, cy + y, 0.3, 4);
+    for (let n = 0; n < 30 && !g.pendingCollapses.length; n++) g.update(1 / 30);
+    const warned = g.pendingCollapses.length;
+    g.resources.scrap += 2;
+    g.placeStrut(cx, cy + 0.3);
+    for (let n = 0; n < 30 * 8; n++) { g.update(1 / 30); if (n % 10 === 0) await new Promise((r) => setTimeout(r, 30)); }
+    return { warned, pending: g.pendingCollapses.length, debris: g.debris.length, log: g.log.slice(-4).map((l) => l.text) };
+  });
+  console.log('braced', JSON.stringify(braced));
+  check(braced.warned > 0 && braced.pending === 0 && braced.debris === 0 && braced.log.some((l) => /cracking has stopped/i.test(l)),
+    'a strut placed during the warning stopped the cave-in');
 
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {
@@ -133,7 +180,7 @@ try {
   await page.waitForTimeout(300);
   const uiAfter = await page.evaluate(() => ({ struts: window.__game.struts.length, bots: window.__game.bots.length, tool: window.__game.tool }));
   check(uiAfter.tool === 'strut' && uiAfter.struts === ui.struts + 1, `toolbar + canvas click placed a strut (${ui.struts} → ${uiAfter.struts})`);
-  check(uiAfter.bots === ui.bots + 1, 'B hotkey built a new scrapbot');
+  check(uiAfter.bots === ui.bots + 1, 'B hotkey built a new drone');
   await fastForward(1);
   await shot('4-ui');
 

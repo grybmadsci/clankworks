@@ -15,7 +15,6 @@ export interface WorldLayout {
   depot: { x: number; y: number };
   carl: { x: number; y: number };
   terrarium: { x: number; y: number; w: number; h: number };
-  botSpawns: { x: number; y: number }[];
   surfaceRow: number;
 }
 
@@ -148,7 +147,6 @@ export function generateWorld(seed = 1337): WorldLayout {
     depot: { x: wx(64), y: depotJ * CELL },
     carl: { x: wx(47), y: carlJ * CELL },
     terrarium: { x: wx(22), y: floorBelow(22, terrJ) * CELL, w: 3.2, h: 2.2 },
-    botSpawns: [{ x: wx(60), y: depotJ * CELL + 0.4 }, { x: wx(64), y: depotJ * CELL + 0.8 }, { x: wx(68), y: depotJ * CELL + 0.4 }],
     surfaceRow,
   };
 }

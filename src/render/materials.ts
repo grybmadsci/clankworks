@@ -1,11 +1,11 @@
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
-import { CELL, DEPTH, H, SKY_ROWS, W } from '../config';
+import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, H, SKY_ROWS, W } from '../config';
 import { enabled } from '../debug';
 import { GpuSim } from '../gpu/GpuSim';
 import { noise2 } from '../gpu/kernels';
 import { quality } from './quality';
-import { boundaryWarp, rockSurface } from './rock';
+import { boundaryWarp, crackMask, rockSurface } from './rock';
 
 type Node = any;
 // TSL's TypeScript typings don't model swizzles on storage elements; keep the node graph untyped.
@@ -23,6 +23,8 @@ const MATERIAL_COLORS = ['#000000', '#7a5236', '#6f6c6a', '#8a5a3a', '#9fc8dc', 
 const PARTICLE_COLORS = [...MATERIAL_COLORS, new THREE.Color(4, 2.2, 0.7), new THREE.Color(0.75, 0.78, 0.8), new THREE.Color(4, 1.4, 0.3)];
 
 export const overlayMode = uniform(0, 'int');
+/** Game clock (seconds), which crack start times in digMark are measured against. */
+export const gameTime = uniform(0);
 const surfaceY = (H - SKY_ROWS - 2) * CELL;
 
 /** Storage-buffer index of the cell under a world position. */
@@ -63,6 +65,13 @@ function bumpNormal(height: Node) {
   return normalize(n.mul(abs(det)).sub(grad));
 }
 
+/** 0 → 1 over the warning period of a cell that is cracking ahead of a cave-in; 0 when sound. */
+function crackProgress(mark: Node) {
+  const start = mark.shiftRight(uint(CRACK_SHIFT));
+  const elapsed = gameTime.mul(10).sub(float(start).sub(1)).div(COLLAPSE_DELAY * 10);
+  return select(start.greaterThan(uint(0)), clamp(elapsed, 0, 1), float(0));
+}
+
 export function terrainMaterial(gpu: GpuSim) {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
   m.flatShading = true;
@@ -70,14 +79,21 @@ export function terrainMaterial(gpu: GpuSim) {
   m.positionNode = slot.xyz;
   const code = varying(slot.w).add(0.5).floor();
   if (!enabled('meshfx')) { m.colorNode = vec3(0.5, 0.4, 0.3); return m; }
+  // Cracking rock trembles harder as its deadline approaches. Shared vertices sit in the same
+  // cell, so neighbouring polygons move together and the surface never tears.
+  const vpr = crackProgress(gpu.digMark.ro().element(cellAt(slot.xyz)));
+  m.positionNode = slot.xyz.add(vec3(sin(time.mul(61).add(slot.x.mul(13))), sin(time.mul(47).add(slot.y.mul(17))), 0).mul(vpr.mul(vpr).mul(0.02)));
 
   const p = positionWorld;
   const isWall = code.greaterThanEqual(16);
   const own = select(isWall, code.sub(16), code);
   // Look the material up through a noisy offset so boundaries between rock types meander
   // instead of following the cell grid. Offsets that land in open air keep the cell's own material.
-  const warped = gpu.mat.ro().element(cellAt(p.xy.add(warpOffset(p).mul(CELL * 1.4))));
+  const k = cellAt(p);
+  const kw = cellAt(p.xy.add(warpOffset(p).mul(CELL * 1.4)));
+  const warped = gpu.mat.ro().element(kw);
   const mid = select(warped.equal(0), uint(own), warped);
+  const mark = gpu.digMark.ro().element(select(warped.equal(0), k, kw));
   const surf = rock(p, mid);
   let col: Node = surf.xyz;
 
@@ -87,17 +103,26 @@ export function terrainMaterial(gpu: GpuSim) {
   // Deeper is darker.
   col = col.mul(mix(0.55, 1, smoothstep(0, surfaceY, p.y)));
 
-  const k = cellAt(p);
-  const dig = gpu.digMark.ro().element(k);
   const stripes = smoothstep(0.45, 0.55, abs(p.x.add(p.y).mul(3).fract().sub(0.5)).mul(2));
-  col = select(dig.greaterThan(0).and(isWall.not()), mix(col, vec3(0.95, 0.75, 0.15), stripes.mul(0.55)), col);
+  col = select(mark.bitAnd(uint(DIG_BIT)).greaterThan(uint(0)).and(isWall.not()), mix(col, vec3(0.95, 0.75, 0.15), stripes.mul(0.55)), col);
+
+  // Rock about to cave in pales with dust, then splits along dark fractures that glow faintly.
+  const pr = crackProgress(mark);
+  const crack = quality.low
+    ? select(pr.greaterThan(0), smoothstep(mix(0.02, 0.12, pr), 0, abs(noise(p.xy.mul(3)))), float(0))
+    : crackMask({ p, progress: pr });
+  col = mix(col, col.mul(1.6).add(0.03), pr.mul(0.35));
+  col = col.mul(crack.mul(-0.85).add(1));
   m.colorNode = col;
-  if (!quality.low) m.normalNode = bumpNormal(surf.w);
+  if (!quality.low) m.normalNode = bumpNormal(surf.w.sub(crack.mul(0.012)));
   // Ice and copper flecks catch the light a little.
   m.roughnessNode = select(mid.equal(4), float(0.35), select(mid.equal(3), float(0.6), float(0.92)));
 
   const T = gpu.temp[0].ro().element(k);
-  m.emissiveNode = vec3(1.0, 0.3, 0.06).mul(smoothstep(160, 900, T).mul(2.2));
+  const pulse = sin(time.mul(pr.mul(12).add(3))).mul(0.45).add(0.55).mul(pr);
+  m.emissiveNode = vec3(1.0, 0.3, 0.06).mul(smoothstep(160, 900, T).mul(2.2))
+    .add(vec3(1.0, 0.32, 0.05).mul(crack.mul(pulse).mul(0.9)))
+    .add(vec3(0.3, 0.04, 0).mul(pulse.mul(0.25)));
   return m;
 }
 

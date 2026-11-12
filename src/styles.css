@@ -60,6 +60,11 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
   content: ''; position: absolute; left: 50%; bottom: -6px; margin-left: -6px;
   border: 6px solid transparent; border-bottom: 0; border-top-color: #fff7e6;
 }
+.bubble.collapse {
+  background: #2a0c06; color: #ffb36b; border: 1px solid #ff6a2b; animation: collapse-pulse 0.6s ease-in-out infinite alternate;
+}
+.bubble.collapse::after { display: none; }
+@keyframes collapse-pulse { from { box-shadow: 0 0 2px #ff6a2b; } to { box-shadow: 0 0 12px #ff6a2b; } }
 @media (max-width: 760px) {
   .critters { display: none; }
   .log { width: auto; left: 12px; bottom: 100px; }

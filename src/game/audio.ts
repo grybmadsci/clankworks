@@ -43,3 +43,26 @@ export function rumble(strength = 1) {
   osc.start(now);
   osc.stop(now + 0.85);
 }
+
+/** Groaning rock: a detuned low sawtooth bending downward, for cracking ceilings. */
+export function creak(strength = 1) {
+  if (!ctx || ctx.state !== 'running') return;
+  const now = ctx.currentTime;
+  const len = 0.35 + Math.random() * 0.4;
+  const osc = ctx.createOscillator();
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+  osc.type = 'sawtooth';
+  const f = 90 + Math.random() * 70;
+  osc.frequency.setValueAtTime(f, now);
+  osc.frequency.linearRampToValueAtTime(f * (0.7 + Math.random() * 0.2), now + len);
+  filter.type = 'bandpass';
+  filter.frequency.value = 380;
+  filter.Q.value = 3;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(Math.min(0.12, 0.04 * strength), now + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + len);
+  osc.connect(filter).connect(gain).connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + len + 0.05);
+}

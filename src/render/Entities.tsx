@@ -3,6 +3,7 @@ import { useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { CELL, DEPTH } from '../config';
 import type { Blast, Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
+import { Base } from './Base';
 
 const Z_ACTORS = -DEPTH * 0.45;
 const DEBRIS_COLORS = ['#000', '#7a5236', '#6f6c6a', '#9a6440', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450'];
@@ -18,10 +19,10 @@ export function Entities({ game }: { game: Game }) {
   useEntityVersion(game);
   return (
     <>
-      <Depot game={game} />
+      <Base game={game} />
       <Carl game={game} />
       <Terrarium game={game} />
-      {game.bots.filter((b) => !b.dead).map((b) => <BotModel key={b.id} bot={b} />)}
+      {game.bots.filter((b) => !b.dead).map((b) => <DroneModel key={b.id} bot={b} />)}
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
       {game.struts.map((s) => <StrutModel key={s.id} strut={s} />)}
       {game.smelters.map((s) => <SmelterModel key={s.id} smelter={s} game={game} />)}
@@ -34,75 +35,104 @@ export function Entities({ game }: { game: Game }) {
 
 const rust = '#c98a2b';
 
-/** A clunky Wall-E-ish scrapbot: treads, boxy body, binocular head, wobbly antenna. */
-function BotModel({ bot }: { bot: Bot }) {
+const ROTORS: [number, number][] = [[0.11, 0.09], [-0.11, 0.09], [0.11, -0.09], [-0.11, -0.09]];
+
+/**
+ * A small mining quad-copter: four rotors on crossed arms, a cyclops sensor eye, a cargo pod
+ * that fills with ore, and an under-slung mining laser. It banks into its flight direction.
+ */
+function DroneModel({ bot }: { bot: Bot }) {
   const root = useRef<THREE.Group>(null!);
-  const body = useRef<THREE.Group>(null!);
-  const head = useRef<THREE.Group>(null!);
-  const arm = useRef<THREE.Group>(null!);
-  const glow = useRef<THREE.MeshStandardMaterial>(null!);
-  const flame = useRef<THREE.Mesh>(null!);
-  const phase = useMemo(() => Math.random() * 10, []);
-  useFrame(({ clock }) => {
+  const frame = useRef<THREE.Group>(null!);
+  const rotors = useRef<(THREE.Group | null)[]>([]);
+  const blurs = useRef<(THREE.MeshBasicMaterial | null)[]>([]);
+  const shell = useRef<THREE.MeshStandardMaterial>(null!);
+  const led = useRef<THREE.MeshBasicMaterial>(null!);
+  const pod = useRef<THREE.Mesh>(null!);
+  const beam = useRef<THREE.Mesh>(null!);
+  const spot = useRef<THREE.Mesh>(null!);
+  const state = useMemo(() => ({ phase: Math.random() * 10, spin: 0, angle: 0 }), []);
+  useFrame(({ clock }, dt) => {
     if (bot.dead) return;
-    const t = clock.elapsedTime + phase;
+    const t = clock.elapsedTime + state.phase;
     const p = bot.body.translation();
     const v = bot.body.linvel();
-    root.current.position.set(p.x, p.y - 0.05 + Math.sin(t * 5) * 0.015, Z_ACTORS);
-    // Fake Z tilt from 2D velocity sells the volume of a 2D body.
-    body.current.rotation.set(-v.y * 0.05, bot.facing * 0.5 + v.x * 0.06, -v.x * 0.07);
-    const saluting = bot.state === 'salute';
-    const tantrum = bot.state === 'tantrum';
-    head.current.rotation.set(saluting ? 0.5 : Math.sin(t * 1.3) * 0.15, tantrum ? Math.sin(t * 30) * 0.5 : 0, tantrum ? Math.sin(t * 25) * 0.3 : 0);
-    if (bot.drillPoint) {
-      const ang = Math.atan2(bot.drillPoint.y - p.y, (bot.drillPoint.x - p.x) * bot.facing);
-      arm.current.rotation.set(0, 0, ang);
-      arm.current.children[1].rotation.x = t * 40;
-    } else {
-      arm.current.rotation.set(0, 0, saluting ? 1.9 : -0.5 + Math.sin(t * 2) * 0.1);
+    const docked = bot.state === 'docked';
+    // Rotors spin down on the pad and up for flight.
+    state.spin += ((docked ? 6 : 70) - state.spin) * Math.min(1, dt * (docked ? 1.5 : 4));
+    state.angle += state.spin * dt;
+    rotors.current.forEach((r, n) => { if (r) r.rotation.y = state.angle * (n % 3 === 0 ? 1 : -1) + n; });
+    blurs.current.forEach((m) => { if (m) m.opacity = Math.min(0.35, state.spin / 200); });
+    const hover = docked ? 0 : Math.sin(t * 3.1) * 0.012;
+    root.current.position.set(p.x, p.y + hover, Z_ACTORS);
+    const saluting = bot.state === 'salute', tantrum = bot.state === 'tantrum';
+    // Bank into the direction of travel; salute with a barrel roll, tantrum with a furious wobble.
+    const roll = saluting ? (1 - Math.max(0, bot.stateTimer) / 2.2) * Math.PI * 2 : -v.x * 0.12 + (tantrum ? Math.sin(t * 28) * 0.4 : 0);
+    frame.current.rotation.set(v.y * 0.05 + (tantrum ? Math.sin(t * 23) * 0.3 : 0), bot.facing > 0 ? -0.35 : Math.PI + 0.35, roll * bot.facing);
+    shell.current.emissive.setRGB(bot.heat / 60, bot.heat / 300, 0);
+    const blink = Math.sin(t * 5) > 0;
+    const c = tantrum ? [3, 0.2, 0.1] : docked ? [0.2, blink ? 2 : 0.5, 0.4] : bot.state === 'toDepot' ? [0.3, 0.9, 2.5] : [2.5, 1.4, 0.2];
+    led.current.color.setRGB(c[0], c[1], c[2]);
+    const load = Math.min(1, (bot.cargo.ore + bot.cargo.scrap) / 6);
+    pod.current.scale.set(1, 0.4 + load * 0.6, 1);
+    // Mining laser from the emitter under the nose to the cell being cut.
+    const dp = bot.drillPoint;
+    beam.current.visible = spot.current.visible = !!dp;
+    if (dp) {
+      const ex = 0.05 * bot.facing, ey = -0.07;
+      const dx = dp.x - p.x - ex, dy = dp.y - p.y - ey;
+      const len = Math.hypot(dx, dy);
+      beam.current.position.set(ex + dx / 2, ey + dy / 2, 0.02);
+      beam.current.rotation.set(0, 0, Math.atan2(dy, dx) - Math.PI / 2);
+      beam.current.scale.set(0.7 + Math.random() * 0.6, len, 0.7 + Math.random() * 0.6);
+      spot.current.position.set(dp.x - p.x, dp.y - p.y, 0.05);
+      spot.current.scale.setScalar(0.7 + Math.random() * 0.6);
     }
-    glow.current.emissive.setRGB(bot.heat / 60, bot.heat / 300, 0);
-    flame.current.visible = bot.body.gravityScale() === 0 && v.y > -0.1;
-    flame.current.scale.y = 0.6 + Math.random() * 0.6;
   });
   return (
     <group ref={root}>
-      <group ref={body}>
-        {/* treads */}
-        <mesh position={[0, -0.11, 0.09]}><boxGeometry args={[0.36, 0.09, 0.07]} /><meshStandardMaterial color="#2c2b2a" roughness={0.9} /></mesh>
-        <mesh position={[0, -0.11, -0.09]}><boxGeometry args={[0.36, 0.09, 0.07]} /><meshStandardMaterial color="#2c2b2a" roughness={0.9} /></mesh>
-        {/* body */}
-        <mesh position={[0, 0.02, 0]}><boxGeometry args={[0.3, 0.2, 0.24]} /><meshStandardMaterial ref={glow} color={rust} roughness={0.7} metalness={0.3} /></mesh>
-        <mesh position={[0, 0.02, 0.121]}><planeGeometry args={[0.18, 0.1]} /><meshStandardMaterial color="#3d3a33" /></mesh>
-        {/* head */}
-        <group ref={head} position={[0.02, 0.17, 0]}>
-          <mesh position={[0, -0.03, 0]}><cylinderGeometry args={[0.015, 0.015, 0.08]} /><meshStandardMaterial color="#555" /></mesh>
-          {[-0.055, 0.055].map((z) => (
-            <group key={z} position={[0.02, 0.03, z]}>
-              <mesh rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.045, 0.05, 0.1, 12]} /><meshStandardMaterial color="#8e8a80" metalness={0.5} roughness={0.4} /></mesh>
-              <mesh position={[0.051, 0, 0]} rotation={[0, Math.PI / 2, 0]}><circleGeometry args={[0.032, 12]} /><meshStandardMaterial color="#111" emissive="#7fd8ff" emissiveIntensity={1.5} /></mesh>
+      <group ref={frame} scale={1.3}>
+        {/* body shell and sensor eye */}
+        <mesh><boxGeometry args={[0.15, 0.06, 0.12]} /><meshStandardMaterial ref={shell} color={rust} roughness={0.55} metalness={0.4} /></mesh>
+        <mesh position={[0, 0.035, 0]}><boxGeometry args={[0.1, 0.02, 0.09]} /><meshStandardMaterial color="#3d3a33" metalness={0.5} /></mesh>
+        <mesh position={[0.075, 0, 0]} rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.026, 0.026, 0.02, 12]} /><meshStandardMaterial color="#8e8a80" metalness={0.6} roughness={0.35} /></mesh>
+        <mesh position={[0.086, 0, 0]} rotation={[0, Math.PI / 2, 0]}><circleGeometry args={[0.018, 12]} /><meshStandardMaterial color="#111" emissive="#7fd8ff" emissiveIntensity={1.8} /></mesh>
+        <mesh position={[-0.05, 0.05, 0]}><sphereGeometry args={[0.012, 8, 6]} /><meshBasicMaterial ref={led} /></mesh>
+        {/* crossed arms, motors and rotors */}
+        {[0.69, -0.69].map((a) => (
+          <mesh key={a} rotation={[0, a, 0]} position={[0, 0.01, 0]}><boxGeometry args={[0.3, 0.014, 0.018]} /><meshStandardMaterial color="#3d4248" metalness={0.7} roughness={0.4} /></mesh>
+        ))}
+        {ROTORS.map(([x, z], n) => (
+          <group key={n} position={[x, 0.025, z]}>
+            <mesh><cylinderGeometry args={[0.014, 0.016, 0.03, 8]} /><meshStandardMaterial color="#2c2b2a" metalness={0.6} /></mesh>
+            <group ref={(g) => { rotors.current[n] = g; }} position={[0, 0.02, 0]}>
+              <mesh><boxGeometry args={[0.12, 0.003, 0.014]} /><meshStandardMaterial color="#c8c4bc" /></mesh>
             </group>
-          ))}
-          <mesh position={[-0.04, 0.1, 0]} rotation={[0, 0, 0.3]}><cylinderGeometry args={[0.006, 0.006, 0.12]} /><meshStandardMaterial color="#444" /></mesh>
-          <mesh position={[-0.058, 0.16, 0]}><sphereGeometry args={[0.018]} /><meshStandardMaterial color="#f33" emissive="#f22" emissiveIntensity={2} /></mesh>
-        </group>
-        {/* drill arm */}
-        <group ref={arm} position={[0.12, 0.02, 0.13]}>
-          <mesh position={[0.08, 0, 0]} rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.018, 0.018, 0.16]} /><meshStandardMaterial color="#666" metalness={0.6} /></mesh>
-          <mesh position={[0.2, 0, 0]} rotation={[0, 0, -Math.PI / 2]}><coneGeometry args={[0.04, 0.1, 6]} /><meshStandardMaterial color="#bbb" metalness={0.8} roughness={0.3} /></mesh>
-        </group>
-        {/* thruster flame */}
-        <mesh ref={flame} position={[0, -0.2, 0]} rotation={[Math.PI, 0, 0]}><coneGeometry args={[0.05, 0.14, 8]} /><meshBasicMaterial color={[3, 1.3, 0.3]} /></mesh>
+            <mesh position={[0, 0.022, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+              <circleGeometry args={[0.062, 20]} />
+              <meshBasicMaterial ref={(m) => { blurs.current[n] = m; }} color="#d8d4cc" transparent depthWrite={false} side={THREE.DoubleSide} />
+            </mesh>
+          </group>
+        ))}
+        {/* landing skids */}
+        {[-0.05, 0.05].map((z) => (
+          <mesh key={z} position={[0, -0.055, z]}><boxGeometry args={[0.13, 0.008, 0.008]} /><meshStandardMaterial color="#2c2b2a" /></mesh>
+        ))}
+        {/* cargo pod and laser emitter */}
+        <mesh ref={pod} position={[-0.01, -0.04, 0]}><boxGeometry args={[0.07, 0.04, 0.06]} /><meshStandardMaterial color="#9a6440" roughness={0.8} /></mesh>
+        <mesh position={[0.05, -0.05, 0]} rotation={[0, 0, 0.6]}><cylinderGeometry args={[0.008, 0.012, 0.04, 8]} /><meshStandardMaterial color="#bbb" metalness={0.8} roughness={0.3} /></mesh>
       </group>
+      <mesh ref={beam}><cylinderGeometry args={[0.008, 0.008, 1, 6]} /><meshBasicMaterial color={[4, 1.6, 0.4]} /></mesh>
+      <mesh ref={spot}><sphereGeometry args={[0.035, 10, 8]} /><meshBasicMaterial color={[5, 2.4, 0.7]} /></mesh>
     </group>
   );
 }
 
-/** A handful of point lights follow the first bots so the deep tunnels aren't pitch black. */
+/** A handful of point lights follow the airborne drones so the deep tunnels aren't pitch black. */
 function HeadLamps({ game }: { game: Game }) {
   const lights = useRef<(THREE.PointLight | null)[]>([]);
   useFrame(() => {
-    const bots = game.bots.filter((b) => !b.dead);
+    const bots = game.bots.filter((b) => !b.dead && b.state !== 'docked');
     lights.current.forEach((l, n) => {
       if (!l) return;
       const b = bots[n];
@@ -205,18 +235,6 @@ function CritterModel({ critter }: { critter: Critter }) {
           <mesh position={[0.025, 0, 0]}><sphereGeometry args={[0.018, 6, 4]} /><meshBasicMaterial color="black" /></mesh>
         </group>
       ))}
-    </group>
-  );
-}
-
-function Depot({ game }: { game: Game }) {
-  const d = game.layout.depot;
-  return (
-    <group position={[d.x, d.y, -DEPTH * 0.6]}>
-      <mesh position={[0, 0.3, 0]}><boxGeometry args={[1.1, 0.6, 0.6]} /><meshStandardMaterial color="#6d5d3b" roughness={0.8} /></mesh>
-      <mesh position={[0, 0.62, 0]}><boxGeometry args={[1.2, 0.06, 0.7]} /><meshStandardMaterial color="#c9a227" metalness={0.4} /></mesh>
-      <mesh position={[0, 0.85, 0]}><boxGeometry args={[0.5, 0.18, 0.04]} /><meshBasicMaterial color={[0.3, 2.2, 0.6]} /></mesh>
-      <pointLight position={[0, 1.4, 0.8]} intensity={3} distance={6} color="#ffd9a0" />
     </group>
   );
 }

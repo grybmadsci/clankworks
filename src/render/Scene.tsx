@@ -1,6 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three/webgpu';
+import * as TSL from 'three/tsl';
 import { float, mix, pass, screenUV, vec4 } from 'three/tsl';
 import { ao } from 'three/examples/jsm/tsl/display/GTAONode.js';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
@@ -9,7 +10,7 @@ import { enabled } from '../debug';
 import { unlockAudio } from '../game/audio';
 import type { Game } from '../game/Game';
 import { Entities } from './Entities';
-import { overlayMode } from './materials';
+import { gameTime, overlayMode } from './materials';
 import { quality } from './quality';
 import { BackWall, Fluids, Foreground, Particles, TerrainMesh } from './World';
 
@@ -25,6 +26,7 @@ export function Scene({ game }: { game: Game }) {
   useFrame((_, dt) => {
     game.update(dt);
     overlayMode.value = game.overlay;
+    gameTime.value = game.time;
   }, -1);
   return (
     <>
@@ -39,6 +41,7 @@ export function Scene({ game }: { game: Game }) {
       {enabled('particles') && <Particles game={game} />}
       {enabled('entities') && <Entities game={game} />}
       <Foreground />
+      <DigRange game={game} />
       <Cursor game={game} />
       <CameraRig game={game} />
       {enabled('post') && !quality.low && <PostFx />}
@@ -141,7 +144,8 @@ function Cursor({ game }: { game: Game }) {
     ref.current.position.set(c.x, c.y, 0.08);
     const r = game.tool === 'dig' ? 0.7 : game.tool === 'cancel' ? 0.9 : 0.25;
     ref.current.scale.setScalar(r);
-    mat.current.color.set(game.tool === 'cancel' ? '#ff5544' : game.tool === 'blast' ? '#ff2222' : '#ffd23f');
+    const outOfRange = game.tool === 'dig' && !game.inDigRange(c.x, c.y);
+    mat.current.color.set(game.tool === 'cancel' || outOfRange ? '#ff5544' : game.tool === 'blast' ? '#ff2222' : '#ffd23f');
   });
   return (
     <mesh ref={ref} renderOrder={20}>
@@ -149,6 +153,26 @@ function Cursor({ game }: { game: Game }) {
       <meshBasicMaterial ref={mat} transparent opacity={0.8} depthTest={false} />
     </mesh>
   );
+}
+
+/** Dashed ring marking how far from the base the drones will dig; brighter with the Dig tools. */
+function DigRange({ game }: { game: Game }) {
+  const { mesh, opacity } = useMemo(() => {
+    const { atan, positionLocal, step, time, uniform } = TSL as any;
+    const opacity = uniform(0.2);
+    const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false });
+    m.colorNode = TSL.color('#7fd8ff');
+    // 90 dashes that creep slowly around the ring.
+    const dash = step(0.45, atan(positionLocal.y, positionLocal.x).mul(90 / (2 * Math.PI)).add(time.mul(0.6)).fract());
+    m.opacityNode = dash.mul(opacity);
+    const r = game.digRadius;
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(r - 0.05, r, 360), m);
+    mesh.position.set(game.digCenter.x, game.digCenter.y, 0.06);
+    mesh.renderOrder = 19;
+    return { mesh, opacity };
+  }, [game]);
+  useFrame(() => { opacity.value = game.tool === 'dig' || game.tool === 'cancel' ? 0.75 : 0.18; });
+  return <primitive object={mesh} />;
 }
 
 /** Screen-space ambient occlusion (GTAO from depth) and bloom for magma, sparks and lamps. */

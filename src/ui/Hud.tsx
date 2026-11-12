@@ -6,9 +6,9 @@ import { unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
 const TOOLS: { id: Tool; key: string; label: string; hint: string }[] = [
-  { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for scrapbots to excavate' },
+  { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine (within the dashed range ring)' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
-  { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support (2 scrap)' },
+  { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support; braces cracking rock (2 scrap)' },
   { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates. Runs hot (8 scrap)' },
   { id: 'blast', key: '5', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
 ];
@@ -42,7 +42,7 @@ export function Hud({ game }: { game: Game }) {
         <Res label="Scrap" value={fmt(r.scrap)} color="#9aa3ad" />
         <Res label="Plates" value={fmt(r.plates)} color="#f0b84a" />
         <Res label="Goo" value={fmt(r.goo)} color="#8fd65a" />
-        <Res label="Bots" value={`${alive.length}`} color="#7fd8ff" />
+        <Res label="Drones" value={`${alive.length}`} color="#7fd8ff" />
         <div className="quota">
           <div>Quota {game.platesMade}/{game.quota} plates</div>
           <div className="bar"><div style={{ width: `${Math.min(100, (game.platesMade / game.quota) * 100)}%` }} /></div>
@@ -56,7 +56,7 @@ export function Hud({ game }: { game: Game }) {
           </button>
         ))}
         <button className="build" title="3 plates + 2 critter goo" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
-          <kbd>B</kbd>Build bot
+          <kbd>B</kbd>Build drone
         </button>
         <button onClick={() => { game.overlay = ((game.overlay + 1) % 3) as 0 | 1 | 2; force((n) => n + 1); }}>
           <kbd>T</kbd>{OVERLAYS[game.overlay]}
@@ -113,6 +113,21 @@ function Bubbles({ game }: { game: Game }) {
         v.set(b.x, b.y + 0.45, -DEPTH * 0.45).project(cam);
         el.style.transform = `translate(-50%, -100%) translate(${(v.x * 0.5 + 0.5) * host.clientWidth}px, ${(-v.y * 0.5 + 0.5) * host.clientHeight}px)`;
         el.style.opacity = String(Math.min(1, b.ttl * 2));
+      }
+      // Countdown tags over rock that is cracking ahead of a cave-in.
+      for (const p of game.pendingCollapses) {
+        const id = -p.id;
+        live.add(id);
+        let el = els.get(id);
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'bubble collapse';
+          host.appendChild(el);
+          els.set(id, el);
+        }
+        el.textContent = `⚠ Cave-in ${Math.max(0, p.due - game.time).toFixed(1)}s`;
+        v.set(p.x, p.y, 0).project(cam);
+        el.style.transform = `translate(-50%, -50%) translate(${(v.x * 0.5 + 0.5) * host.clientWidth}px, ${(-v.y * 0.5 + 0.5) * host.clientHeight}px)`;
       }
       for (const [id, el] of els) if (!live.has(id)) { el.remove(); els.delete(id); }
     };

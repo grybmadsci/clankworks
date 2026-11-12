@@ -1,25 +1,28 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import type { WebGPURenderer } from 'three/webgpu';
-import { CELL, CHUNK, Emit, H, ISO, Mat, MATERIALS, SKY_ROWS, W, cellCenter, cellIndex, toCell } from '../config';
+import { CELL, CHUNK, COLLAPSE_DELAY, CRACK_SHIFT, DIG_BIT, Emit, H, ISO, Mat, MATERIALS, SKY_ROWS, W, cellCenter, cellIndex, toCell } from '../config';
 import { GpuSim, ParticleKind } from '../gpu/GpuSim';
 import { chunkPolylines } from '../sim/contours';
 import { findCollapses } from '../sim/integrity';
 import { findPath } from '../sim/pathfind';
 import type { Terrain, Yield } from '../sim/terrain';
 import { EmitterDef, WorldLayout, generateWorld } from '../sim/worldgen';
-import { chirp, rumble } from './audio';
+import { chirp, creak, rumble } from './audio';
+import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
 export type Tool = 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast';
 type Vec = { x: number; y: number };
 
-const BOT_RADIUS = 0.2;
-const BOT_SPEED = 2.6;
+const BOT_RADIUS = 0.14;
+const BOT_SPEED = 3;
 const DRILL_RATE = 3.2;
-const DRILL_REACH = 1.0;
+/** Mining-laser range. */
+const DRILL_REACH = 1.2;
 const CARGO_CAP = 6;
-const MAX_BOTS = 12;
 const QUOTA = 30;
+/** Collapses smaller than this crumble at once instead of cracking first. */
+const MIN_WARNED_COLLAPSE = 8;
 
 const COST = {
   strut: { scrap: 2 },
@@ -34,14 +37,17 @@ const groups = (member: number, filter: number) => (member << 16) | filter;
 
 const BOT_NAMES = ['Rivet', 'Sprocket', 'Gasket', 'Ratchet', 'Clunk', 'Widget', 'Dinky', 'Bolt', 'Grommet', 'Tinpot', 'Flange', 'Pinion'];
 
+/** A mining quad-copter drone. Drones dock at the base, launch to fill dig orders, and land to unload. */
 export interface Bot {
   id: number;
   name: string;
+  /** Landing pad index (see dockSlot). */
+  slot: number;
   body: RAPIER.RigidBody;
   hp: number;
   heat: number;
   cargo: { ore: number; scrap: number };
-  state: 'idle' | 'toDig' | 'digging' | 'toDepot' | 'salute' | 'tantrum';
+  state: 'docked' | 'idle' | 'toDig' | 'digging' | 'toDepot' | 'salute' | 'tantrum';
   target: number;
   path: Vec[];
   replanAt: number;
@@ -75,6 +81,8 @@ export interface Blast { id: number; x: number; y: number; fuse: number }
 export interface Critter { id: number; name: string; x: number; y: number; vx: number; health: number; happy: boolean; complaint: string; hop: number; dead: boolean }
 export interface Bubble { id: number; text: string; bot?: Bot; x: number; y: number; ttl: number }
 export interface LogEntry { id: number; time: number; text: string; kind: 'emote' | 'info' | 'warn' }
+/** Unsupported rock that is cracking and will fall at `due` unless it gets braced first. */
+export interface PendingCollapse { id: number; cells: number[]; start: number; due: number; x: number; y: number }
 
 export interface Env { water: number; magma: number; o2: number; toxic: number; temp: number }
 
@@ -98,6 +106,7 @@ export class Game {
   critters: Critter[] = [];
   bubbles: Bubble[] = [];
   log: LogEntry[] = [];
+  pendingCollapses: PendingCollapse[] = [];
   /** Incremented whenever entity lists change, so React can re-render the lists. */
   entityVersion = 0;
   shake = 0;
@@ -120,6 +129,8 @@ export class Game {
   private oreDeliveries: number[] = [];
   private caveIns: { time: number; x: number; y: number; botIds: number[]; checked: boolean }[] = [];
   private quotaAnnounced = false;
+  private pendingCheckAt = 0;
+  private rangeWarnAt = 0;
 
   static async create(seed?: number) {
     await RAPIER.init();
@@ -136,7 +147,7 @@ export class Game {
     this.terrain.structuralDirty = null;
     this.deepestY = layout.depot.y;
 
-    for (const s of layout.botSpawns) this.spawnBot(s.x, s.y, false);
+    for (let n = 0; n < 3; n++) this.spawnBot(false);
     for (let n = 0; n < 4; n++) {
       const t = layout.terrarium;
       this.critters.push({
@@ -150,7 +161,7 @@ export class Game {
       for (let j = 0; j < H; j++) if (this.terrain.strut[cellIndex(i, j)]) { if (j0 < 0) j0 = j; j1 = j; }
       if (j0 >= 0) this.struts.push({ id: nextId++, i, j0, j1 });
     }
-    this.info('Shift started. Designate rock to dig with the Dig tool. Oxygen is strictly optional.');
+    this.info('Shift started. Designate rock near the base and the drones will mine it. Oxygen is strictly optional.');
     this.info(`Quarterly quota: ${QUOTA} copper plates. Management believes in you, statistically.`);
   }
 
@@ -228,20 +239,31 @@ export class Game {
     }
   }
 
+  /** Centre of the drones' working range. */
+  get digCenter() { return digCenter(this.layout.depot); }
+  get digRadius() { return DIG_RADIUS; }
+  inDigRange(x: number, y: number) { return dist({ x, y }, this.digCenter) <= DIG_RADIUS; }
+
   designate(x: number, y: number, radius: number, on: boolean) {
     const r = radius / CELL;
     const ci = x / CELL - 0.5, cj = y / CELL - 0.5;
-    let changed = false;
+    const marks = this.terrain.digMark;
+    let changed = false, outOfRange = false;
     for (let j = Math.floor(cj - r); j <= cj + r; j++) for (let i = Math.floor(ci - r); i <= ci + r; i++) {
       if (!this.terrain.inBounds(i, j) || Math.hypot(i - ci, j - cj) > r) continue;
       const k = cellIndex(i, j);
-      if (on && (this.terrain.density[k] <= ISO || this.terrain.material[k] === Mat.Bedrock || this.terrain.digMark[k])) continue;
-      if (!on && !this.terrain.digMark[k]) continue;
-      this.terrain.digMark[k] = on ? 1 : 0;
+      if (on && (this.terrain.density[k] <= ISO || this.terrain.material[k] === Mat.Bedrock || marks[k] & DIG_BIT)) continue;
+      if (on && !this.inDigRange(cellCenter(i), cellCenter(j))) { outOfRange = true; continue; }
+      if (!on && !(marks[k] & DIG_BIT)) continue;
+      marks[k] = on ? marks[k] | DIG_BIT : marks[k] & ~DIG_BIT;
       if (on) this.marked.add(k); else this.marked.delete(k);
       changed = true;
     }
     if (changed) this.terrain.gpuDirty = true;
+    if (outOfRange && !changed && this.time >= this.rangeWarnAt) {
+      this.rangeWarnAt = this.time + 3;
+      this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`);
+    }
   }
 
   placeStrut(x: number, y: number) {
@@ -256,6 +278,8 @@ export class Game {
     if (!this.pay(COST.strut)) return this.warn('Insufficient scrap for a strut (2).');
     for (j = j0; j <= j1; j++) t.strut[cellIndex(i, j)] = 1;
     this.struts.push({ id: nextId++, i, j0, j1 });
+    // A strut may have saved cracking rock; re-evaluate straight away.
+    this.pendingCheckAt = 0;
     this.entityVersion++;
     this.info(`Steel strut installed (${((j1 - j0 + 1) * CELL).toFixed(1)}m).`);
   }
@@ -283,18 +307,23 @@ export class Game {
   }
 
   buildBot() {
-    if (this.bots.filter((b) => !b.dead).length >= MAX_BOTS) return this.warn('Crew quarters are full.');
-    if (!this.pay(COST.bot)) return this.warn('A new scrapbot needs 3 plates and 2 critter goo.');
-    const d = this.layout.depot;
-    const bot = this.spawnBot(d.x, d.y + 0.6, true);
+    if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.');
+    if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates and 2 critter goo.');
+    const bot = this.spawnBot(true);
     this.emote(bot, 'strikeTheEarth');
   }
 
   // ---------------------------------------------------------------- entities
 
-  private spawnBot(x: number, y: number, announce: boolean) {
+  /** Assemble a drone on the first free landing pad. */
+  private spawnBot(announce: boolean) {
+    const used = new Set(this.bots.filter((b) => !b.dead).map((b) => b.slot));
+    let slot = 0;
+    while (used.has(slot)) slot++;
+    const { x, y } = dockSlot(this.layout.depot, slot);
+    // Rotors cancel gravity; only impulses (blasts, kicks) knock drones around.
     const body = this.physics.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y).lockRotations().setLinearDamping(0.6).setCcdEnabled(true),
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y).lockRotations().setLinearDamping(0.6).setCcdEnabled(true).setGravityScale(0),
     );
     this.physics.createCollider(
       RAPIER.ColliderDesc.ball(BOT_RADIUS).setFriction(0.3).setRestitution(0.1).setCollisionGroups(groups(G_BOT, G_TERRAIN | G_DEBRIS)),
@@ -302,7 +331,7 @@ export class Game {
     );
     const bot: Bot = {
       id: nextId++, name: BOT_NAMES[this.bots.length % BOT_NAMES.length] + (this.bots.length >= BOT_NAMES.length ? ' II' : ''),
-      body, hp: 100, heat: 0, cargo: { ore: 0, scrap: 0 }, state: 'idle', target: -1, path: [], replanAt: 0,
+      slot, body, hp: 100, heat: 0, cargo: { ore: 0, scrap: 0 }, state: 'docked', target: -1, path: [], replanAt: 0,
       stuck: 0, progressPos: { x, y }, progressAt: this.time, stateTimer: 0, emoteAt: {}, blacklist: new Map(),
       drillPoint: null, drillFx: 0, facing: 1, dead: false,
     };
@@ -347,6 +376,7 @@ export class Game {
     this.updateSmelters(dt);
     this.updateCritters(dt);
     this.updateEvents();
+    this.updatePendingCollapses(dt);
 
     if (this.terrain.structuralDirty && this.time >= this.structuralAt) {
       this.structuralAt = this.time + 0.15;
@@ -400,24 +430,104 @@ export class Game {
   // ---------------------------------------------------------------- structural integrity
 
   private checkCollapses(region: { i0: number; j0: number; i1: number; j1: number }) {
-    const islands = findCollapses(this.terrain, region);
+    this.queueCollapses(findCollapses(this.terrain, region));
+  }
+
+  /**
+   * New unsupported islands start cracking rather than falling at once, giving the player
+   * COLLAPSE_DELAY seconds to brace them. Islands that grow out of an existing warning join it
+   * and keep its deadline. Crumbs too small to matter fall straight away.
+   */
+  private queueCollapses(islands: number[][]) {
+    const owner = new Map<number, PendingCollapse>();
+    for (const p of this.pendingCollapses) for (const k of p.cells) owner.set(k, p);
     const taken = new Set<number>();
-    let total = 0;
-    let cx = 0, cy = 0;
     for (const island of islands) {
-      const cells = island.filter((k) => !taken.has(k));
-      cells.forEach((k) => taken.add(k));
-      if (!cells.length) continue;
-      total += cells.length;
-      const c = this.detach(cells);
-      cx += c.x * cells.length; cy += c.y * cells.length;
+      const fresh = island.filter((k) => !owner.has(k) && !taken.has(k));
+      fresh.forEach((k) => taken.add(k));
+      if (!fresh.length) continue;
+      const joined = island.map((k) => owner.get(k)).find((p) => p !== undefined);
+      if (joined) {
+        joined.cells.push(...fresh);
+        this.setCracking(fresh, joined.start);
+        continue;
+      }
+      if (fresh.length < MIN_WARNED_COLLAPSE) { this.detach(fresh); continue; }
+      const p: PendingCollapse = { id: nextId++, cells: fresh, start: this.time, due: this.time + COLLAPSE_DELAY, x: 0, y: 0 };
+      this.centre(p);
+      this.pendingCollapses.push(p);
+      this.setCracking(fresh, p.start);
+      creak(1);
+      this.warn(`Cave-in warning! ${fresh.length} cells of rock are cracking. Brace them with struts within ${COLLAPSE_DELAY}s.`);
     }
-    if (total < 6) return;
-    cx /= total; cy /= total;
-    rumble(Math.min(3, total / 40));
-    this.shake = Math.min(1.2, 0.2 + total / 150);
-    this.warn(`Cave-in! ${total} cells of unsupported rock came loose.`);
-    this.caveIns.push({ time: this.time, x: cx, y: cy, checked: false, botIds: this.bots.filter((b) => !b.dead && dist(b.body.translation(), { x: cx, y: cy }) < 6).map((b) => b.id) });
+  }
+
+  /** Record (or with start = null, clear) the crack start time the terrain shader animates from. */
+  private setCracking(cells: number[], start: number | null) {
+    const marks = this.terrain.digMark;
+    const stamp = start === null ? 0 : (Math.round(start * 10) + 1) << CRACK_SHIFT;
+    for (const k of cells) marks[k] = (marks[k] & DIG_BIT) | stamp;
+    this.terrain.gpuDirty = true;
+  }
+
+  private centre(p: PendingCollapse) {
+    p.x = p.cells.reduce((s, k) => s + cellCenter(k % W), 0) / p.cells.length;
+    p.y = p.cells.reduce((s, k) => s + cellCenter((k / W) | 0), 0) / p.cells.length;
+  }
+
+  /**
+   * Cracking rock sheds dust and creaks. A few times a second the structure is re-evaluated:
+   * cells that are now supported (a strut went in, or the drones dug them out) stop cracking,
+   * and whatever is still unsupported at the deadline falls.
+   */
+  private updatePendingCollapses(dt: number) {
+    const pending = this.pendingCollapses;
+    if (!pending.length) return;
+    const t = this.terrain;
+    for (const p of pending) {
+      const urgency = (this.time - p.start) / COLLAPSE_DELAY;
+      if (Math.random() < dt * (3 + urgency * 12)) {
+        const k = p.cells[Math.floor(Math.random() * p.cells.length)];
+        this.gpu?.burst(cellCenter(k % W), cellCenter((k / W) | 0) - CELL * 0.5, 3 + urgency * 6, t.material[k], 0.4, 0.1);
+      }
+      if (Math.random() < dt * (0.3 + urgency)) creak(0.4 + urgency);
+    }
+    if (this.time < this.pendingCheckAt && !pending.some((p) => p.due <= this.time)) return;
+    this.pendingCheckAt = this.time + 0.4;
+
+    let i0 = W, j0 = H, i1 = 0, j1 = 0;
+    for (const p of pending) for (const k of p.cells) {
+      const i = k % W, j = (k / W) | 0;
+      i0 = Math.min(i0, i); j0 = Math.min(j0, j); i1 = Math.max(i1, i); j1 = Math.max(j1, j);
+    }
+    const islands = findCollapses(t, { i0, j0, i1, j1 });
+    const unsupported = new Set(islands.flat());
+    for (const p of [...pending]) {
+      const still = p.cells.filter((k) => t.density[k] > 0.5 && unsupported.has(k));
+      const keep = new Set(still);
+      const safe = p.cells.filter((k) => !keep.has(k));
+      if (safe.length) this.setCracking(safe, null);
+      p.cells = still;
+      if (still.length < 4) {
+        this.pendingCollapses = this.pendingCollapses.filter((o) => o !== p);
+        this.setCracking(still, null);
+        this.info('The cracking has stopped. The rock is holding.');
+      } else if (this.time >= p.due) {
+        this.pendingCollapses = this.pendingCollapses.filter((o) => o !== p);
+        this.collapse(still);
+      } else {
+        this.centre(p);
+      }
+    }
+    this.queueCollapses(islands);
+  }
+
+  private collapse(cells: number[]) {
+    const c = this.detach(cells);
+    rumble(Math.min(3, cells.length / 40));
+    this.shake = Math.min(1.2, 0.2 + cells.length / 150);
+    this.warn(`Cave-in! ${cells.length} cells of unsupported rock came loose.`);
+    this.caveIns.push({ time: this.time, x: c.x, y: c.y, checked: false, botIds: this.bots.filter((b) => !b.dead && dist(b.body.translation(), c) < 6).map((b) => b.id) });
   }
 
   /** Remove cells from the grid and turn them into a falling rigidbody (or dust if tiny). */
@@ -671,7 +781,7 @@ export class Game {
     }
   }
 
-  // ---------------------------------------------------------------- scrapbots
+  // ---------------------------------------------------------------- drones
 
   private updateBots(dt: number) {
     for (const bot of this.bots) {
@@ -695,6 +805,7 @@ export class Game {
           this.steer(bot, null, dt);
           if (bot.stateTimer <= 0) bot.state = 'idle';
           continue;
+        case 'docked': this.botDocked(bot, dt); break;
         case 'idle': this.botIdle(bot); break;
         case 'toDig':
         case 'toDepot': this.botTravel(bot, dt); break;
@@ -722,40 +833,52 @@ export class Game {
     }
   }
 
+  private slotOf(bot: Bot) { return dockSlot(this.layout.depot, bot.slot); }
+
+  /** Sitting on the pad, rotors idle. Launch straight up when there is reachable work. */
+  private botDocked(bot: Bot, dt: number) {
+    const slot = this.slotOf(bot);
+    this.steer(bot, slot, dt, true);
+    if (this.time < bot.replanAt) return;
+    bot.replanAt = this.time + 0.6 + Math.random() * 0.4;
+    if (this.findWork(bot)) {
+      bot.path.unshift({ x: slot.x, y: slot.y + 0.45 });
+      this.gpu?.burst(slot.x, slot.y - 0.05, 14, ParticleKind.Steam, 0.8, 0.12);
+    }
+  }
+
+  /** Airborne with nothing claimed: take the next job, or fly home. */
   private botIdle(bot: Bot) {
-    const p = bot.body.translation();
     const load = bot.cargo.ore + bot.cargo.scrap;
     if (load >= CARGO_CAP) return this.goDepot(bot);
     if (this.time < bot.replanAt) return;
     bot.replanAt = this.time + 0.6 + Math.random() * 0.4;
-    // Try a few of the nearest exposed designated cells.
-    const candidates = this.exposedTargets(p, bot).slice(0, 4);
-    for (const k of candidates) {
+    if (!this.findWork(bot)) this.goDepot(bot);
+  }
+
+  /** Claim one of the nearest exposed designated cells and plan a route to it. */
+  private findWork(bot: Bot) {
+    const p = bot.body.translation();
+    for (const k of this.exposedTargets(p, bot).slice(0, 4)) {
       const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
-      if (dist(p, { x: tx, y: ty }) <= DRILL_REACH) return this.startDig(bot, k);
+      if (dist(p, { x: tx, y: ty }) <= DRILL_REACH) { this.startDig(bot, k); return true; }
       const path = findPath(this.terrain, p.x, p.y, tx, ty, DRILL_REACH - 0.1);
       if (path) {
         this.claim(bot, k);
         bot.path = path;
         bot.state = 'toDig';
-        return;
+        return true;
       }
       bot.blacklist.set(k, this.time + 12);
     }
-    if (load > 0.5) return this.goDepot(bot);
-    // Nothing to do: drift home.
-    const d = this.layout.depot;
-    if (dist(p, d) > 3) {
-      const path = findPath(this.terrain, p.x, p.y, d.x, d.y + 0.5, 1.5);
-      if (path) { bot.path = path; bot.state = 'toDepot'; }
-    }
+    return false;
   }
 
   private exposedTargets(p: Vec, bot: Bot) {
     const t = this.terrain;
     const out: { k: number; d: number }[] = [];
     for (const k of this.marked) {
-      if (!t.digMark[k] || t.density[k] <= ISO) { this.marked.delete(k); continue; }
+      if (!(t.digMark[k] & DIG_BIT) || t.density[k] <= ISO) { this.marked.delete(k); continue; }
       const owner = this.claims.get(k);
       if (owner !== undefined && owner !== bot.id) continue;
       if ((bot.blacklist.get(k) ?? 0) > this.time) continue;
@@ -783,12 +906,13 @@ export class Game {
     bot.path = [];
   }
 
+  /** Fly back to this drone's landing pad, where it unloads and docks. */
   private goDepot(bot: Bot) {
     const p = bot.body.translation();
-    const d = this.layout.depot;
+    const slot = this.slotOf(bot);
     this.releaseClaim(bot);
-    const path = findPath(this.terrain, p.x, p.y, d.x, d.y + 0.4, 0.7, 12000);
-    if (path) { bot.path = path; bot.state = 'toDepot'; } else { bot.state = 'idle'; bot.replanAt = this.time + 2; }
+    const path = findPath(this.terrain, p.x, p.y, slot.x, slot.y, 0.6, 12000);
+    if (path) { bot.path = [...path, slot]; bot.state = 'toDepot'; } else { bot.state = 'idle'; bot.replanAt = this.time + 2; }
   }
 
   private botTravel(bot: Bot, dt: number) {
@@ -802,11 +926,12 @@ export class Game {
     // Replan periodically: the terrain changes under everyone's feet.
     if (this.time >= bot.replanAt) {
       bot.replanAt = this.time + 3;
+      const slot = this.slotOf(bot);
       const goal = bot.state === 'toDig'
         ? { x: cellCenter(bot.target % W), y: cellCenter((bot.target / W) | 0), r: DRILL_REACH - 0.1 }
-        : { x: this.layout.depot.x, y: this.layout.depot.y + 0.4, r: 0.7 };
+        : { ...slot, r: 0.6 };
       const path = findPath(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 12000);
-      if (path) bot.path = path;
+      if (path) bot.path = bot.state === 'toDepot' ? [...path, slot] : path;
     }
     while (bot.path.length && dist(p, bot.path[0]) < 0.3) bot.path.shift();
     if (!bot.path.length) {
@@ -863,8 +988,8 @@ export class Game {
     this.oreDeliveries = this.oreDeliveries.filter((t) => this.time - t < 60);
     if (ore >= 3 && this.time > this.cogCooldown) { this.cogCooldown = this.time + 25; this.emote(bot, 'cogAndStone'); }
     bot.cargo = { ore: 0, scrap: 0 };
-    bot.state = 'idle';
-    bot.replanAt = this.time + 0.3;
+    bot.state = 'docked';
+    bot.replanAt = this.time + 0.5;
   }
 
   private tantrum(bot: Bot) {
@@ -888,7 +1013,7 @@ export class Game {
     }
   }
 
-  /** Thruster controller: chase a waypoint, or hover in place when target is null. */
+  /** Rotor controller: chase a waypoint, or hover in place when target is null. */
   private steer(bot: Bot, target: Vec | null, dt: number, arrive = false) {
     const body = bot.body;
     const p = body.translation();
@@ -901,13 +1026,8 @@ export class Game {
       desired = { x: (dx / d) * speed, y: (dy / d) * speed };
       if (Math.abs(dx) > 0.05) bot.facing = Math.sign(dx);
     }
-    // Hovering bots cancel gravity; settling bots let it pull them to the floor.
-    const hovering = target !== null || bot.state === 'digging';
-    body.setGravityScale(hovering ? 0 : 1, true);
     const k = Math.min(1, dt * 7);
-    const nx = v.x + (desired.x - v.x) * k;
-    const ny = hovering ? v.y + (desired.y - v.y) * k : v.y;
-    body.setLinvel({ x: nx, y: ny }, true);
+    body.setLinvel({ x: v.x + (desired.x - v.x) * k, y: v.y + (desired.y - v.y) * k }, true);
   }
 }
 

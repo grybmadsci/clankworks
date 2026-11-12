@@ -15,6 +15,16 @@ export const SKY_ROWS = 10;
 
 export const ISO = 0.5;
 
+/**
+ * Per-cell flags shared with the GPU (Terrain.digMark): bit 0 is a dig designation, and the bits
+ * from CRACK_SHIFT up hold 1 + the game time (in tenths of a second) when the cell began cracking
+ * ahead of a cave-in, or 0 when it is sound.
+ */
+export const DIG_BIT = 1;
+export const CRACK_SHIFT = 8;
+/** Seconds between unsupported rock starting to crack and it falling. */
+export const COLLAPSE_DELAY = 6;
+
 export const enum Mat {
   Air = 0,
   Dirt = 1,

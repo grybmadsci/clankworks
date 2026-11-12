@@ -14,24 +14,30 @@ npm run build
 
 ## Playing
 
-Scrapbots dig wherever you designate rock and haul ore back to the depot. A smelter turns ore
-into plates, and new bots cost plates plus goo from the terrarium critters. The quarterly quota
-is 30 plates.
+Mining drones wait on landing pads at the base: four on the hub roof and eight cradles on the
+rack tower. When you designate rock, they launch, cut it with their lasers, and fly home to
+unload and dock. Dig orders only work inside the dashed ring 11m around the base. A smelter
+turns ore into plates. New drones cost plates plus goo from the terrarium critters. The
+quarterly quota is 30 plates.
+
+Unsupported rock does not fall at once. It pales with dust, cracks along glowing fractures,
+trembles and creaks, and a countdown tag appears over it. You get 6 seconds to brace it with a
+strut. If the rock is still unsupported when the countdown ends, it collapses.
 
 | Input | Action |
 | --- | --- |
 | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag) |
-| `3` Strut | Floor-to-ceiling steel support (2 scrap). Wide ceilings collapse without them |
+| `3` Strut | Floor-to-ceiling steel support (2 scrap). Wide ceilings collapse without them; one placed under cracking rock saves it |
 | `4` Smelter | Ore → plates. It runs hot, so keep it away from the critters (8 scrap) |
 | `5` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
-| `B` | Build a scrapbot (3 plates + 2 goo) |
+| `B` | Build a drone (3 plates + 2 goo) |
 | `T` | Cycle the heat and oxygen overlays |
 | Right-drag / WASD, wheel | Pan, zoom |
 
 The critters need 6–38 °C, oxygen, no toxic gas and dry feet. Breaching the toxic pocket under
 the terrarium, flooding it from the aquifer, or parking a smelter next to it will cost you
-critters. Bots shout the emotes from the design doc when their triggers fire (cave-in
-survivors, Carl's alcove, stuck bots, losses that still increased ore output, and so on).
+critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
+survivors, Carl's alcove, stuck drones, losses that still increased ore output, and so on).
 
 ## Architecture
 
@@ -44,10 +50,15 @@ The simulation is split between a CPU-authoritative 2D voxel grid and GPU-reside
   then Rapier polyline colliders. Only dirty chunks are rebuilt.
 - `integrity.ts`: a BFS from bedrock finds islands that are no longer anchored. "Ceiling
   components" measure unsupported spans against each material's limit (dirt 9 cells, granite
-  26). Both kinds of failure detach into Rapier rigidbodies that tumble, crush things, shatter
-  on impact, and then settle back into the grid as rubble. Settling can trigger further
-  collapses (the domino effect).
-- `pathfind.ts`: A* on 2×2-cell nodes for the thruster-hovering scrapbots.
+  26). `Game.queueCollapses` turns new failures into pending collapses. Their crack start time
+  goes into spare bits of the per-cell `digMark` buffer, so the terrain shader animates the
+  cracks and tremble from a game-time uniform with no per-frame uploads. A recheck every 0.4s
+  drops cells that are supported again. At the deadline, whatever is still unsupported detaches
+  into Rapier rigidbodies that tumble, crush things, shatter on impact, and then settle back into
+  the grid as rubble. Settling can trigger further collapses (the domino effect).
+- `pathfind.ts`: A* on 2×2-cell nodes for the hovering drones.
+- `game/base.ts`: dig range and landing-pad layout, shared by the drone AI and the base model
+  (`render/Base.tsx`).
 
 **GPU (`src/gpu/kernels.ts`, all `wgslFn` compute kernels).**
 - `fluidStep`: a cellular automaton for water, magma, oxygen and toxic gas. It is written as a
@@ -78,8 +89,9 @@ Each kernel gets its own storage node over the shared attribute.
 
 ## Testing
 
-- `npm run smoke` boots the game in Chromium and fast-forwards the simulation through mining,
-  a blast, a cave-in chain, and real toolbar, canvas and hotkey input. It checks that the GPU
+- `npm run smoke` boots the game in Chromium and fast-forwards the simulation through drone
+  mining, the dig range limit, a blast, a cave-in warning and collapse chain, a strut saving a
+  cracking ceiling, and real toolbar, canvas and hotkey input. It checks that the GPU
   kernels changed the state (no NaNs, heat spreading into rock, compacted mesh size) and saves
   `smoke-*.png` screenshots.
 - `tests/gpu.html` (served by `npm run dev`) dispatches each kernel in isolation.
