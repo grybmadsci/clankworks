@@ -1,0 +1,150 @@
+// End-to-end smoke test: boots the game in Chromium with WebGPU, fast-forwards the simulation
+// through digging, a blast and a cave-in, checks GPU-produced state, and saves screenshots.
+//
+//   npm run smoke                 (headed: WebGPU canvases can't present in headless WSL Chromium)
+//   HEADLESS=1 npm run smoke      (for machines where headless WebGPU presentation works)
+import { createServer } from 'vite';
+import { chromium } from 'playwright';
+
+const server = await createServer({ server: { port: 5288, strictPort: true }, logLevel: 'error' });
+await server.listen();
+const browser = await chromium.launch({ headless: process.env.HEADLESS === '1', channel: 'chromium', args: ['--enable-unsafe-webgpu', ...(process.env.CHROME_ARGS ?? '').split(' ').filter(Boolean)] });
+const [vw, vh] = (process.env.VIEWPORT ?? '1280x800').split('x').map(Number);
+const page = await browser.newPage({ viewport: { width: vw, height: vh } });
+const errors = [];
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('pageerror', (e) => errors.push(e.message));
+
+let failed = false;
+const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) failed = true; };
+/** Advance the game with fixed 1/30s steps, yielding so readbacks and rendering can happen. */
+const fastForward = (seconds) => page.evaluate(async (s) => {
+  const g = window.__game;
+  for (let n = 0; n < s * 30; n++) {
+    g.update(1 / 30);
+    if (n % 10 === 0) await new Promise((r) => setTimeout(r, 30));
+  }
+}, seconds);
+const shot = async (name) => { await page.waitForTimeout(600); await page.screenshot({ path: `smoke-${name}.png` }); };
+
+try {
+  await page.goto('http://localhost:5288/');
+  await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
+  console.log('quality:', await page.evaluate(() => document.querySelector('canvas')?.dataset.quality ?? 'high'));
+  await fastForward(4);
+  await shot('1-start');
+
+  const gpu = await page.evaluate(async () => {
+    const g = window.__game;
+    await g.gpu.readback();
+    const f = g.gpu.fluidSnapshot, f0 = g.layout.fluid, t = g.gpu.tempSnapshot, t0 = g.layout.temperature;
+    let changed = 0, nan = 0, maxRockT = 0;
+    for (let k = 0; k < t.length; k++) {
+      if (Math.abs(f[k * 4 + 2] - f0[k * 4 + 2]) > 1e-3 || Math.abs(t[k] - t0[k]) > 1e-2) changed++;
+      if (!Number.isFinite(t[k]) || !Number.isFinite(f[k * 4]) || !Number.isFinite(f[k * 4 + 2])) nan++;
+      if (g.terrain.density[k] > 0.5) maxRockT = Math.max(maxRockT, t[k]);
+    }
+    const args = new Uint32Array(await g.gpu.renderer.getArrayBufferAsync(g.gpu.meshDrawArgs));
+    return { changed, nan, maxRockT, meshVerts: args[0] };
+  });
+  console.log('gpu', JSON.stringify(gpu));
+  check(gpu.changed > 1000, `GPU fluid/thermal kernels evolved the state (${gpu.changed} cells changed)`);
+  check(gpu.nan === 0, 'no NaNs in GPU fluid/thermal state');
+  check(gpu.maxRockT > 200, `magma conducts heat into surrounding rock (max rock ${gpu.maxRockT.toFixed(0)}°C)`);
+  check(gpu.meshVerts > 50000, `GPU mesher compacted ${gpu.meshVerts} terrain vertices`);
+
+  // Designate a strip of rock beside the base and let the bots work.
+  const before = await page.evaluate(() => {
+    const g = window.__game;
+    const d = g.layout.depot;
+    for (let x = 0; x < 2.4; x += 0.3) g.designate(d.x + 4.2 + x, d.y + 0.6, 0.7, true);
+    return { density: g.terrain.density.reduce((a, b) => a + b, 0), resources: { ...g.resources } };
+  });
+  await fastForward(30);
+  const after = await page.evaluate(() => {
+    const g = window.__game;
+    return {
+      density: g.terrain.density.reduce((a, b) => a + b, 0),
+      resources: g.resources,
+      cargo: g.bots.reduce((s, b) => s + b.cargo.ore + b.cargo.scrap, 0),
+      states: g.bots.map((b) => b.state),
+      critters: g.critters.map((c) => `${c.name}:${c.happy ? 'happy' : c.complaint}`),
+    };
+  });
+  console.log('after dig', JSON.stringify(after));
+  check(after.density < before.density - 15, `bots excavated terrain (Δdensity ${(before.density - after.density).toFixed(1)})`);
+  check(after.cargo + after.resources.ore + after.resources.scrap > before.resources.ore + before.resources.scrap, 'mining yielded cargo or resources');
+  check(after.critters.some((c) => c.endsWith('happy')), 'at least one critter is comfortable');
+  await shot('2-digging');
+
+  // Blast the rock under a slab to provoke a cave-in and falling rigidbodies.
+  const blast = await page.evaluate(() => {
+    const g = window.__game;
+    const d = g.layout.depot;
+    g.resources.scrap += 5;
+    g.tool = 'blast';
+    // Two charges side by side in the soft dirt below the surface leave an over-long ceiling.
+    const y = (g.layout.surfaceRow - 9) * 0.25;
+    g.useTool(d.x - 7, y, false);
+    g.useTool(d.x - 9, y, false);
+    g.tool = 'dig';
+    return g.blasts.length;
+  });
+  check(blast === 2, 'blast charges placed');
+  await fastForward(3.5);
+  const cave = await page.evaluate(() => {
+    const g = window.__game;
+    return { debris: g.debris.length, log: g.log.slice(-10).map((l) => l.text) };
+  });
+  console.log('after blast', JSON.stringify(cave));
+  check(cave.debris > 0 || cave.log.some((l) => /cave-in/i.test(l)), 'blast triggered a structural collapse');
+  await shot('3-cavein');
+  // Settled rubble re-triggers structural checks, so collapses can chain; they must converge.
+  let remaining = -1;
+  for (let n = 0; n < 12 && remaining !== 0; n++) {
+    await fastForward(2);
+    remaining = await page.evaluate(() => window.__game.debris.length);
+  }
+  check(remaining === 0, `collapse chain converged and rubble merged back into terrain (${remaining} bodies left)`);
+
+  // Real input path: toolbar button, canvas click, and hotkeys.
+  const ui = await page.evaluate(() => {
+    const g = window.__game;
+    g.resources.scrap += 10; g.resources.plates += 3; g.resources.goo += 2;
+    const d = g.layout.depot;
+    const v = { x: d.x - 2.5, y: d.y + 1.2, z: 0 };
+    const cam = window.__view.camera;
+    // Project the world point to CSS pixels.
+    const m = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse);
+    const e = m.elements;
+    const w = e[3] * v.x + e[7] * v.y + e[11] * v.z + e[15];
+    const nx = (e[0] * v.x + e[4] * v.y + e[8] * v.z + e[12]) / w;
+    const ny = (e[1] * v.x + e[5] * v.y + e[9] * v.z + e[13]) / w;
+    const r = document.querySelector('canvas').getBoundingClientRect();
+    return { x: r.left + (nx * 0.5 + 0.5) * r.width, y: r.top + (-ny * 0.5 + 0.5) * r.height, struts: g.struts.length, bots: g.bots.length };
+  });
+  await page.getByRole('button', { name: /Strut/ }).click();
+  await page.mouse.click(ui.x, ui.y);
+  await page.keyboard.press('b');
+  await page.waitForTimeout(300);
+  const uiAfter = await page.evaluate(() => ({ struts: window.__game.struts.length, bots: window.__game.bots.length, tool: window.__game.tool }));
+  check(uiAfter.tool === 'strut' && uiAfter.struts === ui.struts + 1, `toolbar + canvas click placed a strut (${ui.struts} → ${uiAfter.struts})`);
+  check(uiAfter.bots === ui.bots + 1, 'B hotkey built a new scrapbot');
+  await fastForward(1);
+  await shot('4-ui');
+
+  await page.evaluate(() => { window.__game.overlay = 1; });
+  await shot('5-heat');
+  await page.evaluate(() => { window.__game.overlay = 2; });
+  await shot('6-oxygen');
+  await page.evaluate(() => { window.__game.overlay = 0; });
+} catch (e) {
+  check(false, `exception: ${e.message}`);
+}
+
+const serious = errors.filter((e) => !/Failed to load resource/.test(e));
+check(serious.length === 0, `no console errors (${serious.length})`);
+for (const e of [...new Set(serious)].slice(0, 10)) console.log('  ' + e.slice(0, 400));
+await browser.close();
+await server.close();
+process.exit(failed ? 1 : 0);
