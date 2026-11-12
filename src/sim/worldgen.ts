@@ -65,15 +65,16 @@ export class WorldGen {
       for (let s = 0; s <= steps; s++) ellipse(ia + (ib - ia) * (s / steps), ja + (jb - ja) * (s / steps), r, r, undefined, fill);
     };
 
-    // Starting cavern with a flat floor, and Carl's alcove.
-    ellipse(i0, startJ, 15, 7, Mat.Granite);
-    this.add({ kind: 'floor', i0: i0 - 12, i1: i0 + 12, j0: startJ - 9, floorJ, openI0: i0 - 11, openI1: i0 + 11 });
-    ellipse(i0 - 17, startJ - 2, 4, 3);
+    // Starting cavern with a wide flat floor (room to build beside the base), and Carl's alcove.
+    ellipse(i0, startJ, 20, 7, Mat.Granite);
+    this.add({ kind: 'floor', i0: i0 - 17, i1: i0 + 17, j0: startJ - 9, floorJ, openI0: i0 - 16, openI1: i0 + 16 });
+    // Carl's alcove opens off the cavern's left end, under its own granite roof.
+    ellipse(i0 - 23, startJ - 2, 4, 3, Mat.Granite);
     this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45 });
     // The critters' cave, joined to Carl's alcove by a narrow tunnel. Kept narrow enough (18 cells
     // under a granite roof that holds 26) that the start area raises no structural warnings.
     ellipse(i0 - 42, terrJ, 9, 5, Mat.Granite, OXYGEN);
-    tunnel(i0 - 30, terrJ - 2, i0 - 20, startJ - 2, 1.6, OXYGEN);
+    tunnel(i0 - 32, terrJ - 2, i0 - 25, startJ - 2, 1.6, OXYGEN);
     emitters.push({ x: i0 - 42, y: terrJ, radius: 5, type: Emit.Oxygen, rate: 0.02 });
     // Toxic pocket under the terrarium and an aquifer with an ice rim to the right.
     ellipse(i0 - 38, terrJ - 24, 8, 4, Mat.Granite, TOXIC);
@@ -119,7 +120,7 @@ export class WorldGen {
       seed, surfaceRow, startJ, floorJ,
       depot: { x: wx(i0), y: floorJ * CELL },
       // Refined once the start chunks exist (see locate()).
-      carl: { x: wx(i0 - 17), y: (startJ - 5) * CELL },
+      carl: { x: wx(i0 - 23), y: (startJ - 5) * CELL },
       terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 2.8, h: 2.2 },
       strutCols: [i0 - 8, i0 + 8],
       emitters,
@@ -210,7 +211,7 @@ export class WorldGen {
     const floorBelow = (i: number, j: number) => { while (j > 0 && t.isOpen(i, j - 1)) j--; return j; };
     const { startJ } = this.layout;
     const i0 = W / 2;
-    this.layout.carl = { x: wx(i0 - 17), y: floorBelow(i0 - 17, startJ - 2) * CELL };
+    this.layout.carl = { x: wx(i0 - 23), y: floorBelow(i0 - 23, startJ - 2) * CELL };
     this.layout.terrarium.y = floorBelow(i0 - 42, startJ + 1) * CELL;
   }
 }

@@ -186,7 +186,7 @@ function CameraRig({ game }: { game: Game }) {
 function Cursor({ game }: { game: Game }) {
   const ring = useRef<THREE.Mesh>(null!);
   const ringMat = useRef<THREE.MeshBasicMaterial>(null!);
-  const { disc, tint } = useMemo(() => {
+  const { disc, square, tint } = useMemo(() => {
     const { abs, color, fract, fwidth, positionWorld, smoothstep, uniform } = TSL as any;
     const tint = uniform(color('#ffbe2e'));
     const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false });
@@ -196,14 +196,21 @@ function Cursor({ game }: { game: Game }) {
     m.opacityNode = hatch.mul(0.55).add(0.12);
     const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 48), m);
     disc.renderOrder = 19;
-    return { disc, tint };
+    // Square brush: a 4-sided circle turned 45° is a square with half-side 1/√2, so scale by √2.
+    const square = new THREE.Mesh(new THREE.CircleGeometry(Math.SQRT2, 4, Math.PI / 4), m);
+    square.renderOrder = 19;
+    return { disc, square, tint };
   }, []);
+  const squareRing = useRef<THREE.Mesh>(null!);
   useFrame(() => {
     const c = view.cursor;
     const brush = game.tool === 'dig' || game.tool === 'cancel';
     const marker = game.tool === 'blast' || game.tool === 'scrap';
-    ring.current.visible = !!c && (brush || marker);
-    disc.visible = !!c && brush;
+    const sq = brush && game.brushSquare;
+    ring.current.visible = !!c && (brush || marker) && !sq;
+    squareRing.current.visible = !!c && sq;
+    disc.visible = !!c && brush && !sq;
+    square.visible = !!c && sq;
     if (!c) return;
     const r = game.tool === 'dig' ? 0.7 : game.tool === 'cancel' ? 0.9 : 0.25;
     const bad = game.tool === 'cancel' || (game.tool === 'dig' && !game.inDigRange(c.x, c.y));
@@ -213,11 +220,21 @@ function Cursor({ game }: { game: Game }) {
     ringMat.current.color.set(col);
     disc.position.set(c.x, c.y, 0.07);
     disc.scale.setScalar(r * 0.95);
+    square.position.set(c.x, c.y, 0.07);
+    square.scale.setScalar(r * 0.95);
+    squareRing.current.position.set(c.x, c.y, 0.08);
+    squareRing.current.scale.setScalar(r);
+    (squareRing.current.material as THREE.MeshBasicMaterial).color.set(col);
     tint.value.set(bad ? '#ff5544' : '#ffbe2e');
   });
   return (
     <>
       <primitive object={disc} />
+      <primitive object={square} />
+      <mesh ref={squareRing} renderOrder={20}>
+        <ringGeometry args={[Math.SQRT2 * 0.95, Math.SQRT2, 4, 1, Math.PI / 4]} />
+        <meshBasicMaterial transparent opacity={0.85} depthTest={false} />
+      </mesh>
       <mesh ref={ring} renderOrder={20}>
         <ringGeometry args={[0.92, 1, 40]} />
         <meshBasicMaterial ref={ringMat} transparent opacity={0.85} depthTest={false} />

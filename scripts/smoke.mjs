@@ -180,7 +180,7 @@ try {
   await doStep(() => page.evaluate(() => {
     const g = window.__game, d = g.layout.depot;
     g.resources.scrap += 8;
-    g.placeSmelter(d.x - 2.6, d.y + 1.5);
+    g.placeSmelter(d.x - 3.2, d.y + 0.5);
     g.platesMade = 3;
   }));
   await doStep(async () => {
@@ -195,6 +195,30 @@ try {
     `tutorial checklists tick as each action is done and move on by themselves (${tutorial.steps.map((s) => `${s.ticked}/${s.items}`).join(' ')})`);
   check(tutorial.steps.slice(1, 5).every((s) => s.pointers > 0), 'tutorial steps about the HUD highlight it and draw a line to it');
   check(tutorial.done && tutorial.drones === 2, 'tutorial finishes after building a drone');
+  // Buildings need flat ground, and drones route around them (or past them when they must).
+  const build = await page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain;
+    const x = d.x + 3.2, y = d.y + 0.5;
+    const flat = g.smelterSite(x, y).error ?? 'ok';
+    const ci = Math.floor(x / 0.25), cj = Math.floor(d.y / 0.25) - 1, k = cj * 512 + ci + 2;
+    const keep = [t.density[k], t.material[k]];
+    t.density[k] = 0; t.material[k] = 0;
+    const bumpy = g.smelterSite(x, y).error ?? 'ok';
+    t.density[k] = keep[0]; t.material[k] = keep[1];
+    const s = g.smelters[0];
+    const occupiedAlong = (path) => (path ?? []).filter((p) => g.buildingAt(p.x, p.y)).length;
+    const around = g.route(s.x - 1.2, s.y + 0.4, s.x + 1.0, s.y + 0.4, 0.3);
+    // Wall the smelter in with "building" cells up to the ceiling: now there is no way around.
+    const saved = [];
+    for (let j = Math.floor(s.y / 0.25); j < Math.floor(s.y / 0.25) + 14; j++) for (let i = Math.floor((s.x - 0.45) / 0.25); i <= Math.floor((s.x + 0.45) / 0.25); i++) { saved.push([j * 512 + i, t.occupied[j * 512 + i]]); t.occupied[j * 512 + i] = 1; }
+    const past = g.route(s.x - 1.2, s.y + 0.4, s.x + 1.0, s.y + 0.4, 0.3);
+    for (const [k2, v] of saved) t.occupied[k2] = v;
+    return { flat, bumpy, around: around ? { len: around.length, through: occupiedAlong(around) } : null, past: past ? { len: past.length, through: occupiedAlong(past) } : null };
+  });
+  console.log('buildings', JSON.stringify(build));
+  check(build.flat === 'ok' && /flat ground/i.test(build.bumpy), 'smelters need flat ground');
+  check(build.around && build.around.through === 0 && build.past && build.past.through > 0, 'drones route around buildings, and straight past them when there is no way around');
+
   // A third drone for the mining tests below.
   await page.evaluate(() => { const g = window.__game; g.resources.plates += 3; g.buildBot(); });
 
@@ -215,14 +239,21 @@ try {
     window.stripDensity = (g) => {
       const d = g.layout.depot;
       let s = 0;
-      for (let y = d.y - 0.4; y < d.y + 1.8; y += 0.25) for (let x = d.x + 3.2; x < d.x + 7.6; x += 0.25) s += g.terrain.density[Math.floor(y / 0.25) * 512 + Math.floor(x / 0.25)];
+      for (let y = d.y - 0.4; y < d.y + 1.8; y += 0.25) for (let x = d.x + 4.2; x < d.x + 8.6; x += 0.25) s += g.terrain.density[Math.floor(y / 0.25) * 512 + Math.floor(x / 0.25)];
       return s;
     };
   });
   const before = await page.evaluate(() => {
     const g = window.__game;
     const d = g.layout.depot;
-    for (let x = 0; x < 2.4; x += 0.3) g.designate(d.x + 4.2 + x, d.y + 0.6, 0.7, true);
+    for (let x = 0; x < 2.4; x += 0.3) g.designate(d.x + 5.2 + x, d.y + 0.6, 0.7, true);
+    // Snapshot the rock around the strip that is NOT ordered dug: lasers must leave it alone.
+    const t = g.terrain;
+    window.__untouched = [];
+    for (let y = d.y - 0.6; y < d.y + 2.0; y += 0.25) for (let x = d.x + 4.0; x < d.x + 8.8; x += 0.25) {
+      const k = Math.floor(y / 0.25) * 512 + Math.floor(x / 0.25);
+      if (t.density[k] > 0.5 && !(t.digMark[k] & 1)) window.__untouched.push([k, t.density[k]]);
+    }
     return { density: stripDensity(g), resources: { ...g.resources } };
   });
   // An order sealed inside solid rock is flagged unreachable; the strip beside the base is not.
@@ -278,6 +309,8 @@ try {
   });
   console.log('after dig', JSON.stringify(after));
   check(after.density < before.density - 15, `bots excavated terrain (Δdensity ${(before.density - after.density).toFixed(1)})`);
+  const eroded = await page.evaluate(() => window.__untouched.filter(([k, d0]) => { const d = window.__game.terrain.density[k]; return d > 0.01 && d < d0 - 1e-4; }).length);
+  check(eroded === 0, `mining lasers only cut rock that is ordered dug (${eroded} unordered cells nicked)`);
   check(after.cargo + after.resources.ore + after.resources.scrap > before.resources.ore + before.resources.scrap, 'mining yielded cargo or resources');
   check(after.critters.some((c) => c.endsWith('happy')), 'at least one critter is comfortable');
   await shot('2-digging');
@@ -426,14 +459,15 @@ try {
     const stretched = s.j1 - s.j0 + 1, brokenAfterStretch = s.broken;
     // Order a dig another 2m down: that would take it past 4m, so it warns and asks first.
     const order = () => { for (let y = (cj - 5) * 0.25; y > (cj - 12) * 0.25; y -= 0.2) g.designate((ci + 0.5) * 0.25, y, 0.3, true); };
-    const logBefore = g.log.length;
+    // (The log keeps the last 40 entries, so compare entry ids rather than its length.)
+    const lastId = g.log.at(-1)?.id ?? 0;
     g.tool = 'dig';
     order();
-    const warned = g.log.slice(logBefore).some((l) => /undermine a strut/i.test(l.text));
+    const warned = g.log.some((l) => l.id > lastId && /undermine a strut/i.test(l.text));
     const atRisk = s.atRisk;
     await new Promise((r) => setTimeout(r, 350));
     const asked = !!document.querySelector('.confirm');
-    const held = g.exposedTargets({ x: (ci + 0.5) * 0.25, y: (cj - 5) * 0.25 }, g.bots[0]).length === 0;
+    const held = !g.exposedTargets({ x: (ci + 0.5) * 0.25, y: (cj - 5) * 0.25 }, g.bots[0]).some((k) => Math.abs((k % W) - ci) <= 6);
     // Cancel: the orders around the strut go and it is safe again.
     document.querySelector('.confirm button:last-child').click();
     const marksLeft = (() => { let n = 0; for (let j = cj - 12; j < cj; j++) n += t.digMark[j * W + ci] & 1; return n; })();
@@ -503,6 +537,25 @@ try {
   await page.evaluate(() => { window.__game.tool = 'dig'; });
   await hover(base.x + 3.5, base.y + 1.2, 0);
   await shot('8-dig-cursor');
+
+  // Square brush paints more of a square than the round one does.
+  const brush = await page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain;
+    const count = () => t.digMark.reduce((n, v) => n + (v & 1), 0);
+    const paint = (sq, x) => { g.brushSquare = sq; const n0 = count(); g.designate(x, d.y - 3, 0.7, true); const n = count() - n0; g.designate(x, d.y - 3, 0.9, false); return n; };
+    const out = { round: paint(false, d.x - 1.5), square: paint(true, d.x + 1.5) };
+    g.brushSquare = false;
+    return out;
+  });
+  check(brush.square > brush.round, `square brush covers a square (${brush.square} cells vs ${brush.round} round)`);
+
+  // Resource icons in the top bar, and cost cards on priced buttons.
+  const resIcons = await page.evaluate(() => document.querySelectorAll('.topbar .res svg').length);
+  await page.getByRole('button', { name: /Smelter/ }).hover();
+  await page.waitForTimeout(250);
+  const card = await page.evaluate(() => { const c = document.querySelector('.cost-card'); return c ? { bar: c.querySelector('.cost-bar').textContent, icons: c.querySelectorAll('.cost-bar svg').length } : null; });
+  await page.mouse.move(640, 300);
+  check(resIcons === 4 && card && /8/.test(card.bar) && card.icons === 1, `resources have icons, and building cards lead with their cost (${card?.bar})`);
 
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {

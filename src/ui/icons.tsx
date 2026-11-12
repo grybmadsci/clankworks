@@ -11,6 +11,12 @@ const ICONS: Record<string, { d: string; fill?: string }> = {
   strut: { d: 'M6 3 H18 M6 21 H18 M9.5 3 V21 M14.5 3 V21 M9.5 7 L14.5 11 M14.5 11 L9.5 15 M9.5 15 L14.5 19' },
   smelter: { d: 'M4 21 V9 H17 V21 Z M7.5 21 V15.5 H13.5 V21 M14 9 V3.5 H17 V9 M10.5 14 C8.5 12.5 10 11 10.5 10 C12.5 11.5 12.5 13 10.5 14 Z' },
   drone: { d: 'M9 10 H15 V14 H9 Z M9 10 L6.5 7.5 M15 10 L17.5 7.5 M9 14 L6.5 16.5 M15 14 L17.5 16.5 M3 6.5 H10 M14 6.5 H21 M3 17.5 H10 M14 17.5 H21' },
+  // Resources (scrap is a nut; 'scrap' above is the Scrap tool's wrench)
+  ore: { d: 'M10 4.5 L12 11 L20 11 M12 11 L9 19.5', fill: 'M6 9 L10 4.5 L16 5.5 L20 11 L17 18.5 L9 19.5 L4 14.5 Z' },
+  nut: { d: 'M12 3 L19.8 7.5 V16.5 L12 21 L4.2 16.5 V7.5 Z M15 12 A3 3 0 1 1 9 12 A3 3 0 0 1 15 12 Z' },
+  plates: { d: 'M3 15.5 L12 19.5 L21 15.5 M3 12 L12 16 L21 12 L12 8 Z' },
+  square: { d: 'M5 5 H19 V19 H5 Z' },
+  circle: { d: 'M19 12 A7 7 0 1 1 5 12 A7 7 0 0 1 19 12 Z' },
   normal: { d: 'M2 12 C5 6 19 6 22 12 C19 18 5 18 2 12 Z M12 15 A3 3 0 1 0 12 9 A3 3 0 0 0 12 15 Z' },
   heat: { d: 'M14 14.2 V5 A2 2 0 0 0 10 5 V14.2 A4 4 0 1 0 14 14.2 Z M12 9 V16' },
   oxygen: { d: 'M12 9 A4 4 0 1 1 4 9 A4 4 0 0 1 12 9 Z M20.5 14 A3 3 0 1 1 14.5 14 A3 3 0 0 1 20.5 14 Z M13 20.5 A2 2 0 1 1 9 20.5 A2 2 0 0 1 13 20.5 Z' },
@@ -23,8 +29,9 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
   if (!icon) return null;
   return (
     <svg className="icon" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      {icon.d && <path d={icon.d} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />}
       {icon.fill && <path d={icon.fill} fill="currentColor" stroke="currentColor" strokeWidth={0.8} strokeLinejoin="round" />}
+      {/* Over a filled shape the strokes are facet lines, drawn dark. */}
+      {icon.d && <path d={icon.d} fill="none" stroke={icon.fill ? 'rgba(0,0,0,0.45)' : 'currentColor'} strokeWidth={icon.fill ? 1.3 : 1.8} strokeLinecap="round" strokeLinejoin="round" />}
     </svg>
   );
 }

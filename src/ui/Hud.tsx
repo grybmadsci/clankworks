@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
-import { TUTORIAL, type Game, type Overlay, type Tool } from '../game/Game';
+import { COST, TUTORIAL, type Game, type Overlay, type Tool } from '../game/Game';
 import { MATERIAL_KEY } from '../render/materials';
 import { inspect } from '../game/inspect';
 import { Icon, cursorFor } from './icons';
@@ -43,6 +43,7 @@ export function Hud({ game }: { game: Game }) {
       const tool = e.key === 'Escape' ? TOOLS[0] : TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
+      if (e.key === 'q') game.brushSquare = !game.brushSquare;
       if (e.key === 't') game.overlay = ((game.overlay + 1) % LAYERS.length) as Overlay;
       force((n) => n + 1);
     };
@@ -57,10 +58,10 @@ export function Hud({ game }: { game: Game }) {
     <div className="hud">
       <header className="topbar">
         <div className="title">CLANKWORKS <span>Rustbucket Logistics</span></div>
-        <Res label="Ore" value={fmt(r.ore)} color="#d9844a" />
-        <Res label="Scrap" value={fmt(r.scrap)} color="#9aa3ad" />
-        <Res label="Plates" value={fmt(r.plates)} color="#f0b84a" />
-        <Res label="Drones" value={`${alive.length}`} color="#7fd8ff" />
+        <Res icon="ore" label="Ore" value={fmt(r.ore)} />
+        <Res icon="nut" label="Scrap" value={fmt(r.scrap)} />
+        <Res icon="plates" label="Plates" value={fmt(r.plates)} />
+        <Res icon="drone" label="Drones" value={`${alive.length}`} />
         <div className="quota">
           <div>Quota {game.platesMade}/{game.quota} plates</div>
           <div className="bar"><div style={{ width: `${Math.min(100, (game.platesMade / game.quota) * 100)}%` }} /></div>
@@ -74,12 +75,25 @@ export function Hud({ game }: { game: Game }) {
         </div>
       ) : (
         <nav className="tools">
+          {(game.tool === 'dig' || game.tool === 'cancel') && (
+            <div className="brush">
+              <span>Brush</span>
+              {[false, true].map((sq) => (
+                <button key={String(sq)} className={game.brushSquare === sq ? 'active' : ''} data-tip={sq ? 'Square brush: paint neat rooms and straight tunnels' : 'Round brush'}
+                  onClick={() => { game.brushSquare = sq; force((n) => n + 1); }}>
+                  <Icon name={sq ? 'square' : 'circle'} size={14} />{sq ? 'Square' : 'Round'}
+                </button>
+              ))}
+              <kbd>Q</kbd>
+            </div>
+          )}
           <ToolGroup title="Orders">
             {ORDERS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
           </ToolGroup>
           <ToolGroup title="Buildings">
             {BUILDINGS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
-            <button className="build" data-tip="A mining drone: 3 plates (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
+            <button className="build" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}
+              onMouseEnter={(e) => costCard.show(e.currentTarget, 'drone', 'Drone', 'A mining drone. It takes the next free landing pad on the base; there are four.')} onMouseLeave={() => costCard.hide()}>
               <Icon name="drone" /><span>Drone</span><kbd>B</kbd>
             </button>
           </ToolGroup>
@@ -150,6 +164,7 @@ export function Hud({ game }: { game: Game }) {
 
       <Bubbles game={game} />
       <Inspector game={game} />
+      <CostCard game={game} />
     </div>
   );
 }
@@ -229,9 +244,52 @@ function ToolGroup({ title, hint, children }: { title: string; hint?: string; ch
   );
 }
 
-function ToolButton({ t, game, onPick }: { t: ToolDef; game: Game; onPick: () => void }) {
+/** What each priced tool costs (or refunds, for Scrap). */
+const PRICES: Partial<Record<Tool | 'drone', { cost: Record<string, number>; refund?: boolean }>> = {
+  blast: { cost: COST.blast },
+  strut: { cost: COST.strut },
+  smelter: { cost: COST.smelter },
+  drone: { cost: COST.bot },
+  scrap: { cost: { scrap: 1 }, refund: true },
+};
+
+/**
+ * Hover card for priced tools and buildings: a bar of resource chips across the top shows the
+ * cost at a glance (red when you can't afford it, green for a refund), then the description.
+ */
+const costCard = { show: (_el: HTMLElement, _id: string, _title: string, _hint: string) => {}, hide: () => {} };
+function CostCard({ game }: { game: Game }) {
+  const [card, setCard] = useState<{ rect: DOMRect; id: string; title: string; hint: string } | null>(null);
+  costCard.show = (el, id, title, hint) => setCard({ rect: el.getBoundingClientRect(), id, title, hint });
+  costCard.hide = () => setCard(null);
+  if (!card) return null;
+  const price = PRICES[card.id as Tool | 'drone'];
+  if (!price) return null;
+  const r = game.resources as Record<string, number>;
   return (
-    <button className={game.tool === t.id ? 'active' : ''} data-tip={t.hint} onClick={() => { game.tool = t.id; onPick(); }}>
+    <div className="cost-card" style={{ left: card.rect.left, top: card.rect.top - 8 }}>
+      <div className="cost-bar">
+        <span>{price.refund ? 'Refund' : 'Cost'}</span>
+        {Object.entries(price.cost).map(([res, n]) => {
+          const short = !price.refund && (r[res] ?? 0) < n;
+          return (
+            <b key={res} className={price.refund ? 'refund' : short ? 'short' : ''} style={{ color: price.refund || short ? undefined : RESOURCE_COLOR[res] }}>
+              <Icon name={RESOURCE_ICON[res] ?? res} size={15} />{price.refund ? '+' : ''}{n}
+            </b>
+          );
+        })}
+      </div>
+      <h4>{card.title}</h4>
+      <p>{card.hint}</p>
+    </div>
+  );
+}
+
+function ToolButton({ t, game, onPick }: { t: ToolDef; game: Game; onPick: () => void }) {
+  const priced = !!PRICES[t.id];
+  return (
+    <button className={game.tool === t.id ? 'active' : ''} data-tip={priced ? undefined : t.hint} onClick={() => { game.tool = t.id; onPick(); }}
+      onMouseEnter={priced ? (e) => costCard.show(e.currentTarget, t.id, t.label, t.hint) : undefined} onMouseLeave={priced ? () => costCard.hide() : undefined}>
       <Icon name={t.id} /><span>{t.label}</span><kbd>{t.key}</kbd>
     </button>
   );
@@ -276,8 +334,13 @@ function Inspector({ game }: { game: Game }) {
   return <div ref={card} className="inspector" />;
 }
 
-function Res({ label, value, color }: { label: string; value: string; color: string }) {
-  return <div className="res"><i style={{ background: color }} />{label}<b>{value}</b></div>;
+/** Colour for each resource's icon, wherever it appears. */
+export const RESOURCE_COLOR: Record<string, string> = { ore: '#e08a4f', nut: '#a9b2bc', scrap: '#a9b2bc', plates: '#f0b84a', drone: '#7fd8ff' };
+/** Icon for each resource key. */
+const RESOURCE_ICON: Record<string, string> = { ore: 'ore', scrap: 'nut', plates: 'plates' };
+
+function Res({ icon, label, value }: { icon: string; label: string; value: string }) {
+  return <div className="res" style={{ color: RESOURCE_COLOR[icon] }}><Icon name={icon} size={15} /><span>{label}</span><b>{value}</b></div>;
 }
 
 /** Floating emote speech bubbles, projected from world space every animation frame. */

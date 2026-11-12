@@ -7,12 +7,12 @@ import {
 import { GpuSim, ParticleKind } from '../gpu/GpuSim';
 import { chunkPolylines } from '../sim/contours';
 import { ceilings, findCollapses } from '../sim/integrity';
-import { GH, GW, findPath, floodNodes, nearFlooded } from '../sim/pathfind';
+import { GH, GW, findRoute, floodNodes, nearFlooded } from '../sim/pathfind';
 import { Terrain, type Yield } from '../sim/terrain';
 import { EmitterDef, WorldGen, WorldLayout } from '../sim/worldgen';
 import { ChunkStreamer, chunkRows, origin } from './chunks';
 import { alarm, chirp, creak, rumble } from './audio';
-import { DIG_RADIUS, DOCK_SLOTS, digCenter, dockSlot } from './base';
+import { DIG_RADIUS, DOCK_SLOTS, HUB, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
 export type Tool = 'select' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast' | 'scrap';
@@ -24,6 +24,8 @@ const BOT_SPEED = 2.2;
 const DRILL_RATE = 3.2;
 /** Mining-laser range. */
 const DRILL_REACH = 1.2;
+/** How close (world units) a drone's route gets to a dig target, so it can see it to cut it. */
+const DIG_APPROACH = 0.8;
 const CARGO_CAP = 6;
 /** Drone battery (percent): drain per second flying, extra while the laser runs, charge per second on the pad. */
 const BATTERY = { fly: 1.0, laser: 1.6, charge: 14, low: 25, launch: 70 };
@@ -36,7 +38,7 @@ export const DEPLOY_TIME = 5;
 /** Collapses smaller than this just crumble to dust at once; anything that falls as a chunk is warned first. */
 const MIN_WARNED_COLLAPSE = 4;
 
-const COST = {
+export const COST = {
   strut: { scrap: 2 },
   smelter: { scrap: 8 },
   blast: { scrap: 1 },
@@ -251,6 +253,8 @@ export class Game {
   shake = 0;
   /** The plain cursor ('select') only inspects; the others act on click. */
   tool: Tool = 'select';
+  /** Dig and Cancel paint with a square brush instead of a round one. */
+  brushSquare = false;
   /** 0 normal, 1 heat, 2 oxygen, 3 structural integrity, 4 materials. */
   overlay: Overlay = 0;
   /** Materials the material layer shows, one bit per material id (all solids by default). */
@@ -535,6 +539,8 @@ export class Game {
     const d = this.layout.depot;
     this.carveShaft(d.y - 0.25);
     this.intro = { phase: 'done', t: 0, offset: 0 };
+    // The boiler house is a building drones route around (they dock on its roof, above this).
+    this.occupy(d.x - HUB.w / 2 - 0.1, d.y, d.x + HUB.w / 2 + 0.1, d.y + HUB.h, 1);
     // Drones rode down on their pads; make sure they're on them (skipping jumps the base down).
     for (const bot of this.bots) bot.body.setTranslation(this.slotOf(bot), true);
     this.reveal(d.x, d.y + 1, 9);
@@ -762,7 +768,8 @@ export class Game {
     const marks = this.terrain.digMark;
     let changed = false, outOfRange = false;
     for (let j = Math.floor(cj - r); j <= cj + r; j++) for (let i = Math.floor(ci - r); i <= ci + r; i++) {
-      if (!this.terrain.inBounds(i, j) || Math.hypot(i - ci, j - cj) > r) continue;
+      const outside = this.brushSquare ? Math.max(Math.abs(i - ci), Math.abs(j - cj)) > r : Math.hypot(i - ci, j - cj) > r;
+      if (!this.terrain.inBounds(i, j) || outside) continue;
       const k = cellIndex(i, j);
       if (on && (this.terrain.density[k] <= ISO || this.terrain.material[k] === Mat.Bedrock || marks[k] & DIG_BIT)) continue;
       if (on && !this.inDigRange(cellCenter(i), cellCenter(j))) { outOfRange = true; continue; }
@@ -816,6 +823,24 @@ export class Game {
     return site;
   }
 
+  /** Mark (1) or clear (0) the cells a building stands in, from a world-space box. */
+  private occupy(x0: number, y0: number, x1: number, y1: number, v: number) {
+    for (let j = toCell(y0); j <= toCell(y1 - 0.001); j++) for (let i = toCell(x0); i <= toCell(x1); i++) {
+      if (this.terrain.inBounds(i, j)) this.terrain.occupied[cellIndex(i, j)] = v;
+    }
+  }
+
+  /** A drone route between two points: around buildings if possible, else straight past them. */
+  route(ax: number, ay: number, bx: number, by: number, reach = 0.6) {
+    return findRoute(this.terrain, ax, ay, bx, by, reach, 40000);
+  }
+
+  /** True if a building stands at this world position. */
+  buildingAt(x: number, y: number) {
+    const i = toCell(x), j = toCell(y);
+    return this.terrain.inBounds(i, j) && this.terrain.occupied[cellIndex(i, j)] === 1;
+  }
+
   /** The strut under a world position (its column ±1 cell, plates included), if any. */
   strutAt(x: number, y: number) {
     const i = toCell(x);
@@ -861,8 +886,14 @@ export class Game {
     if (!t.isOpen(i, j)) return { x, y, error: 'Smelters must be placed in open space.' };
     while (j > 0 && t.isOpen(i, j - 1)) j--;
     const site = { x: cellCenter(i), y: j * CELL };
+    // Flat ground: solid rock right under every column of the footprint, at the same height.
+    for (let di = -2; di <= 2; di++) {
+      if (!t.isSolid(i + di, j - 1) || !t.isOpen(i + di, j)) return { ...site, error: 'Smelters need flat ground: the floor under it must be level.' };
+    }
     for (let dj = 0; dj < 5; dj++) for (let di = -2; di <= 2; di++) {
       if (!t.isOpen(i + di, j + dj)) return { ...site, error: 'Not enough room for a smelter (needs 1.25m × 1.25m).' };
+      const k = cellIndex(i + di, j + dj);
+      if (t.occupied[k] || t.strut[k]) return { ...site, error: 'Something is already built there.' };
     }
     if (!this.canAfford(COST.smelter)) return { ...site, error: 'Insufficient scrap for a smelter (8).' };
     return site;
@@ -872,6 +903,7 @@ export class Game {
     const site = this.smelterSite(x, y);
     if (site.error || !this.pay(COST.smelter)) return this.warn(site.error ?? 'Insufficient scrap for a smelter (8).');
     this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0 });
+    this.occupy(site.x - 0.45, site.y, site.x + 0.45, site.y + 0.95, 1);
     this.entityVersion++;
     this.info('Smelter online. Ore in, plates out.');
     this.emote(this.randomBot(), 'quarryMustGrow');
@@ -1309,6 +1341,7 @@ export class Game {
   private destroySmelter(s: Smelter, cause: string) {
     if (!this.smelters.includes(s)) return;
     this.smelters = this.smelters.filter((o) => o !== s);
+    this.occupy(s.x - 0.45, s.y, s.x + 0.45, s.y + 0.95, 0);
     this.gpu?.burst(s.x, s.y + 0.5, 200, ParticleKind.Spark, 5, 0.4);
     this.entityVersion++;
     this.warn(`Smelter ${cause}.`);
@@ -1407,7 +1440,7 @@ export class Game {
     for (const k of this.marked) {
       if (!live(k)) continue;
       const i = k % W, j = (k / W) | 0;
-      if (this.exposed(i, j) && nearFlooded(this.access, cellCenter(i), cellCenter(j), DRILL_REACH - 0.1)) { reached.add(k); queue.push(k); }
+      if (this.exposed(i, j) && nearFlooded(this.access, cellCenter(i), cellCenter(j), DIG_APPROACH)) { reached.add(k); queue.push(k); }
     }
     for (let q = 0; q < queue.length; q++) {
       const k = queue[q], i = k % W;
@@ -1526,8 +1559,8 @@ export class Game {
     const p = bot.body.translation();
     for (const k of this.exposedTargets(p, bot).slice(0, 4)) {
       const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
-      if (dist(p, { x: tx, y: ty }) <= DRILL_REACH) { this.startDig(bot, k); return true; }
-      const path = findPath(this.terrain, p.x, p.y, tx, ty, DRILL_REACH - 0.1, 40000);
+      if (dist(p, { x: tx, y: ty }) <= DRILL_REACH && this.laserClear(p, k)) { this.startDig(bot, k); return true; }
+      const path = findRoute(this.terrain, p.x, p.y, tx, ty, DIG_APPROACH, 40000);
       if (path) {
         this.claim(bot, k);
         // The route ends near the cell, not at it; keep closing in until the laser reaches.
@@ -1556,6 +1589,22 @@ export class Game {
     return out.sort((a, b) => a.d - b.d).map((o) => o.k);
   }
 
+  /**
+   * Whether a drone at p can see cell k: the beam must cross only open space until it enters the
+   * cell, so lasers never cut through rock that isn't ordered dug.
+   */
+  private laserClear(p: Vec, k: number) {
+    const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
+    const steps = Math.ceil(dist(p, { x: tx, y: ty }) / (CELL * 0.25));
+    for (let s = 0; s <= steps; s++) {
+      const f = s / steps;
+      const i = toCell(p.x + (tx - p.x) * f), j = toCell(p.y + (ty - p.y) * f);
+      if (cellIndex(i, j) === k) return true;
+      if (this.terrain.isSolid(i, j)) return false;
+    }
+    return true;
+  }
+
   private claim(bot: Bot, k: number) {
     this.releaseClaim(bot);
     bot.target = k;
@@ -1578,7 +1627,7 @@ export class Game {
     const p = bot.body.translation();
     const slot = this.slotOf(bot);
     this.releaseClaim(bot);
-    const path = findPath(this.terrain, p.x, p.y, slot.x, slot.y, 0.6, 40000);
+    const path = findRoute(this.terrain, p.x, p.y, slot.x, slot.y, 0.6, 40000);
     if (path) { bot.path = [...path, slot]; bot.state = 'toDepot'; } else { bot.state = 'idle'; bot.replanAt = this.time + 2; }
   }
 
@@ -1588,16 +1637,16 @@ export class Game {
       const k = bot.target;
       if (k < 0 || this.terrain.density[k] <= ISO) { this.releaseClaim(bot); bot.state = 'idle'; return; }
       const target = { x: cellCenter(k % W), y: cellCenter((k / W) | 0) };
-      if (dist(p, target) <= DRILL_REACH) return this.startDig(bot, k);
+      if (dist(p, target) <= DRILL_REACH && this.laserClear(p, k)) return this.startDig(bot, k);
     }
     // Replan periodically: the terrain changes under everyone's feet.
     if (this.time >= bot.replanAt) {
       bot.replanAt = this.time + 3;
       const slot = this.slotOf(bot);
       const goal = bot.state === 'toDig'
-        ? { x: cellCenter(bot.target % W), y: cellCenter((bot.target / W) | 0), r: DRILL_REACH - 0.1 }
+        ? { x: cellCenter(bot.target % W), y: cellCenter((bot.target / W) | 0), r: DIG_APPROACH }
         : { ...slot, r: 0.6 };
-      const path = findPath(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 40000);
+      const path = findRoute(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 40000);
       if (path) bot.path = [...path, bot.state === 'toDepot' ? slot : goal];
     }
     while (bot.path.length && dist(p, bot.path[0]) < 0.3) bot.path.shift();
@@ -1616,17 +1665,26 @@ export class Game {
     let k = bot.target;
     if (k < 0 || t.density[k] <= ISO) {
       // Continue on the next designated cell within reach, if any.
-      const next = this.exposedTargets(p, bot).find((n) => dist(p, { x: cellCenter(n % W), y: cellCenter((n / W) | 0) }) <= DRILL_REACH);
+      const next = this.exposedTargets(p, bot).find((n) => dist(p, { x: cellCenter(n % W), y: cellCenter((n / W) | 0) }) <= DRILL_REACH && this.laserClear(p, n));
       this.releaseClaim(bot);
       if (next === undefined || bot.cargo.ore + bot.cargo.scrap >= CARGO_CAP) { bot.state = 'idle'; return; }
       this.claim(bot, next);
       k = next;
     }
+    // Rock (or the drone itself, nudged by a blast) can come between the laser and its target:
+    // go back to approaching it rather than cutting through.
+    if (!this.laserClear(p, k)) {
+      bot.state = 'idle';
+      bot.replanAt = this.time;
+      return;
+    }
     const x = cellCenter(k % W), y = cellCenter((k / W) | 0);
     bot.facing = x >= p.x ? 1 : -1;
     bot.drillPoint = { x, y };
     const hardness = t.hardness(k);
-    const yields: Yield = t.carve(x, y, 0.3, (dt * DRILL_RATE) / hardness);
+    // The laser's soft edge only ever touches rock that is ordered dug.
+    const target = k;
+    const yields: Yield = t.carve(x, y, 0.3, (dt * DRILL_RATE) / hardness, {}, (c) => c === target || (t.digMark[c] & DIG_BIT) !== 0);
     for (const [m, amount] of Object.entries(yields)) {
       const def = MATERIALS[Number(m)];
       bot.cargo.ore += (def.yields.ore ?? 0) * amount;

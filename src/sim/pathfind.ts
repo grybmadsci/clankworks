@@ -14,6 +14,8 @@ const gScore = new Float32Array(GW * GH);
 const cameFrom = new Int32Array(GW * GH);
 const closed = new Uint32Array(GW * GH);
 let generation = 0;
+/** While set, cells buildings stand in count as blocked (see findPath's `avoidBuildings`). */
+let avoidBuildings = false;
 
 export function nodeOpen(t: Terrain, gx: number, gy: number) {
   if (gx < 0 || gy < 0 || gx >= GW || gy >= GH) return false;
@@ -21,7 +23,7 @@ export function nodeOpen(t: Terrain, gx: number, gy: number) {
     const i = gx + di, j = gy + dj;
     if (i >= W || j >= H) continue;
     const k = cellIndex(i, j);
-    if (t.density[k] > ISO) return false;
+    if (t.density[k] > ISO || (avoidBuildings && t.occupied[k])) return false;
   }
   return true;
 }
@@ -115,7 +117,24 @@ export function nearFlooded(flood: Uint8Array, x: number, y: number, reach: numb
  * A* from a world position to any open node within `reach` of the goal point.
  * Returns world-space waypoints (excluding the start), or null if unreachable.
  */
-export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand = 24000) {
+export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand = 24000, avoid = false) {
+  avoidBuildings = avoid;
+  try {
+    return search(t, sx, sy, gx, gy, reach, maxExpand);
+  } finally {
+    avoidBuildings = false;
+  }
+}
+
+/**
+ * A route that goes around buildings if there is one, else the direct route (drones then fly
+ * past in front of the building rather than through it).
+ */
+export function findRoute(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand = 24000) {
+  return findPath(t, sx, sy, gx, gy, reach, maxExpand, true) ?? findPath(t, sx, sy, gx, gy, reach, maxExpand, false);
+}
+
+function search(t: Terrain, sx: number, sy: number, gx: number, gy: number, reach: number, maxExpand: number) {
   generation++;
   const start = startNode(t, sx, sy);
   if (start < 0) return null;

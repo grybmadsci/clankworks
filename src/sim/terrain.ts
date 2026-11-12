@@ -16,6 +16,11 @@ export class Terrain {
   readonly strut = new Uint8Array(CELLS);
   /** Per-cell flags: dig orders, reachability, fog of war, stress, cracking (see config). */
   readonly digMark = new Uint32Array(CELLS);
+  /**
+   * Cells a building stands in. Drones route around them where they can, and pass in front of
+   * them where they can't; new buildings can't overlap them.
+   */
+  readonly occupied = new Uint8Array(CELLS);
   /** 1 for chunks whose real data is resident, by chunkId. */
   readonly loaded = new Uint8Array(CW * CH);
 
@@ -112,7 +117,7 @@ export class Terrain {
    * Subtract a smooth radial brush from the density field. `amount` is the density removed at
    * the brush center; returns the density removed per material so callers can award resources.
    */
-  carve(x: number, y: number, radius: number, amount: number, out: Yield = {}): Yield {
+  carve(x: number, y: number, radius: number, amount: number, out: Yield = {}, allow?: (k: number) => boolean): Yield {
     const ci = x / CELL - 0.5, cj = y / CELL - 0.5;
     const r = radius / CELL;
     const i0 = Math.floor(ci - r), i1 = Math.ceil(ci + r);
@@ -123,7 +128,7 @@ export class Terrain {
         if (!this.inBounds(i, j)) continue;
         const k = cellIndex(i, j);
         const m = this.material[k];
-        if (m === Mat.Bedrock) continue;
+        if (m === Mat.Bedrock || (allow && !allow(k))) continue;
         const d = Math.hypot(i - ci, j - cj) / r;
         if (d >= 1) continue;
         const fall = 1 - d * d * (3 - 2 * d);

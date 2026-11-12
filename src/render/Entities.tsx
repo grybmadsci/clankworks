@@ -23,7 +23,7 @@ export function Entities({ game }: { game: Game }) {
     <>
       <Base game={game} />
       <Carl game={game} />
-      {game.bots.filter((b) => !b.dead).map((b) => <DroneModel key={b.id} bot={b} />)}
+      {game.bots.filter((b) => !b.dead).map((b) => <DroneModel key={b.id} bot={b} game={game} />)}
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
       {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} game={game} />)}
       {game.smelters.map((s) => <SmelterModel key={s.id} smelter={s} game={game} />)}
@@ -43,7 +43,7 @@ const ROTORS: [number, number][] = [[0.11, 0.09], [-0.11, 0.09], [0.11, -0.09], 
  * A small mining quad-copter: four rotors on crossed arms, a cyclops sensor eye, a cargo pod
  * that fills with ore, and an under-slung mining laser. It banks into its flight direction.
  */
-function DroneModel({ bot }: { bot: Bot }) {
+function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
   const root = useRef<THREE.Group>(null!);
   const frame = useRef<THREE.Group>(null!);
   const rotors = useRef<(THREE.Group | null)[]>([]);
@@ -54,7 +54,7 @@ function DroneModel({ bot }: { bot: Bot }) {
   const gauges = useRef<(THREE.Mesh | null)[]>([]);
   const beam = useRef<THREE.Mesh>(null!);
   const spot = useRef<THREE.Mesh>(null!);
-  const state = useMemo(() => ({ phase: Math.random() * 10, spin: 0, angle: 0 }), []);
+  const state = useMemo(() => ({ phase: Math.random() * 10, spin: 0, angle: 0, z: Z_ACTORS }), []);
   useFrame(({ clock }, dt) => {
     if (bot.dead) return;
     const t = clock.elapsedTime + state.phase;
@@ -67,7 +67,11 @@ function DroneModel({ bot }: { bot: Bot }) {
     rotors.current.forEach((r, n) => { if (r) r.rotation.y = state.angle * (n % 3 === 0 ? 1 : -1) + n; });
     blurs.current.forEach((m) => { if (m) m.opacity = Math.min(0.35, state.spin / 200); });
     const hover = docked ? 0 : Math.sin(t * 3.1) * 0.012;
-    root.current.position.set(p.x, p.y + hover, Z_ACTORS);
+    // Drones route around buildings when they can; when they can't, they fly past in front of
+    // them (eased forward and back) rather than through them.
+    const front = !docked && (game.buildingAt(p.x, p.y) || game.buildingAt(p.x, p.y - 0.12) || game.buildingAt(p.x, p.y + 0.12));
+    state.z += ((front ? -0.15 : Z_ACTORS) - state.z) * Math.min(1, dt * 6);
+    root.current.position.set(p.x, p.y + hover, state.z);
     const saluting = bot.state === 'salute', tantrum = bot.state === 'tantrum';
     // Bank into the direction of travel; salute with a barrel roll, tantrum with a furious wobble.
     const roll = saluting ? (1 - Math.max(0, bot.stateTimer) / 2.2) * Math.PI * 2 : -v.x * 0.12 + (tantrum ? Math.sin(t * 28) * 0.4 : 0);
