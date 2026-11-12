@@ -1,16 +1,16 @@
 // End-to-end smoke test: boots the game in Chromium with WebGPU, fast-forwards the simulation
 // through digging, a blast and a cave-in, checks GPU-produced state, and saves screenshots.
 //
-//   npm run smoke                 (headed: WebGPU canvases can't present in headless WSL Chromium)
+//   npm run smoke:win             (WSL: Windows Chrome on the real GPU, headless)
+//   npm run smoke                 (Linux Chromium, headed; under WSL this is SwiftShader)
 //   HEADLESS=1 npm run smoke      (for machines where headless WebGPU presentation works)
-import { createServer } from 'vite';
-import { chromium } from 'playwright';
+import { baseUrl, launchBrowser, newPage } from './browser.mjs';
 
-const server = await createServer({ server: { port: 5288, strictPort: true }, logLevel: 'error' });
-await server.listen();
-const browser = await chromium.launch({ headless: process.env.HEADLESS === '1', channel: 'chromium', args: ['--enable-unsafe-webgpu', ...(process.env.CHROME_ARGS ?? '').split(' ').filter(Boolean)] });
-const [vw, vh] = (process.env.VIEWPORT ?? '1280x800').split('x').map(Number);
-const page = await browser.newPage({ viewport: { width: vw, height: vh } });
+// With BASE_URL set, the caller (scripts/win.mjs) is already serving the app.
+const server = baseUrl ? null : await (await import('vite')).createServer({ server: { port: 5288, strictPort: true }, logLevel: 'error' });
+await server?.listen();
+const browser = await launchBrowser();
+const page = await newPage(browser);
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push(e.message));
@@ -28,9 +28,13 @@ const fastForward = (seconds) => page.evaluate(async (s) => {
 const shot = async (name) => { await page.waitForTimeout(600); await page.screenshot({ path: `smoke-${name}.png` }); };
 
 try {
-  await page.goto('http://localhost:5288/');
+  await page.goto(baseUrl ?? 'http://localhost:5288/');
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
   console.log('quality:', await page.evaluate(() => document.querySelector('canvas')?.dataset.quality ?? 'high'));
+  console.log('adapter:', await page.evaluate(async () => {
+    const a = await navigator.gpu.requestAdapter();
+    return `${a.info.vendor} ${a.info.architecture}${a.info.isFallbackAdapter ? ' (fallback)' : ''}`;
+  }));
   await fastForward(4);
   await shot('1-start');
 
@@ -146,5 +150,5 @@ const serious = errors.filter((e) => !/Failed to load resource/.test(e));
 check(serious.length === 0, `no console errors (${serious.length})`);
 for (const e of [...new Set(serious)].slice(0, 10)) console.log('  ' + e.slice(0, 400));
 await browser.close();
-await server.close();
+await server?.close();
 process.exit(failed ? 1 : 0);

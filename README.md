@@ -8,6 +8,7 @@ runs as a WGSL compute kernel, written with three.js `wgslFn()`.
 npm install
 npm run dev        # http://localhost:5287 — needs a WebGPU browser (recent Chrome / Edge)
 npm run smoke      # end-to-end test in Chromium (see Testing)
+npm run smoke:win  # same test from WSL, in Windows Chrome on the real GPU
 npm run build
 ```
 
@@ -83,10 +84,20 @@ Each kernel gets its own storage node over the shared attribute.
   `?quality=low|high` overrides the automatic quality tier. Software adapters such as
   SwiftShader get the low tier: cheaper shading, one fluid slice, no post-processing.
 
-**WSL note:** headless Chromium here cannot present WebGPU canvases. The shared-image backing
-fails and the device is lost, even for a single cube. Compute-only pages work. The test scripts
-therefore launch a *headed* Chromium through WSLg by default. Set `HEADLESS=1` on machines where
-headless WebGPU presentation works.
+**WSL:** Linux Chromium under WSL only gets the SwiftShader (CPU) WebGPU adapter, and headless
+it cannot present WebGPU canvases at all. Run browser scripts through `scripts/win.mjs` instead:
+
+```sh
+npm run smoke:win
+node scripts/win.mjs scripts/inspect.mjs "?quality=low" 10
+node scripts/win.mjs scripts/run-page.mjs "tests/gpu.html?only=mesh"
+```
+
+`win.mjs` serves the app from WSL on `127.0.0.1:5288`, which Windows reaches through WSL
+localhost forwarding. It then runs the script with Windows Node (`node.exe`), so Playwright
+drives the Windows install of Chrome (`channel: 'chrome'`) on the real GPU, headless by default.
+`HEADLESS`, `VIEWPORT` and `CHROME_ARGS` pass through. Run directly in WSL (`npm run smoke`),
+the scripts launch a headed Chromium through WSLg instead.
 
 ## Not yet built (relative to the design doc)
 
