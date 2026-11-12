@@ -6,6 +6,7 @@ import { DEPTH } from '../config';
 import { HUB, dockSlot } from '../game/base';
 import { DEPLOY_TIME, type Game } from '../game/Game';
 import { ParticleKind } from '../gpu/GpuSim';
+import { rustMaterial } from './materials';
 
 const Z_HUB = -DEPTH * 0.62;
 const R = 0.4;
@@ -37,6 +38,10 @@ const M = {
   wood: mat('#5a3b22', 0, 0.85),
   ore: mat('#a5602f', 0.25, 0.8),
   steelScrap: mat('#8a8f95', 0.45, 0.6),
+  // Neglect: rust on the boiler's iron, verdigris on its copper ends.
+  rustIron: rustMaterial('#3b3530', 0.75),
+  rustDark: rustMaterial('#25221f', 0.5),
+  verdigris2: rustMaterial('#ad6038', 0.5, ['#2f5a48', '#6aa486']),
   enamel: mat('#e8dcc0', 0.1, 0.4),
   black: mat('#141210', 0.3, 0.7),
 };
@@ -254,6 +259,10 @@ export function Base({ game }: { game: Game }) {
       festoon,
       wire: new THREE.TubeGeometry(new THREE.CatmullRomCurve3(festoon), 32, 0.004, 4, false),
       padRing: new THREE.TorusGeometry(0.15, 0.012, 6, 24),
+      // A cable that came loose and hangs from the festoon hook.
+      looseCable: new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+        new THREE.Vector3(-1.42, 1.93, -0.98), new THREE.Vector3(-1.5, 1.6, -0.95), new THREE.Vector3(-1.44, 1.32, -0.93), new THREE.Vector3(-1.52, 1.12, -0.92),
+      ]), 24, 0.006, 4, false),
       bit,
     };
   }, []);
@@ -308,7 +317,8 @@ export function Base({ game }: { game: Game }) {
     // Boiler pressure: a slow swell with nervous jitter.
     ref.needle.current.rotation.z = 0.6 - (Math.sin(t * 0.3) * 0.5 + 0.5) * 1.6 + (Math.random() - 0.5) * 0.06;
     ref.nixies.current.children.forEach((c, n) => {
-      const on = 0.6 + 0.4 * Math.abs(Math.sin(t * (0.7 + n * 0.37) + n * 1.7));
+      // Tube 3 died years ago; tube 1 stutters.
+      const on = n === 3 ? 0.02 : n === 1 && Math.sin(t * 23) * Math.sin(t * 3.1) > 0.6 ? 0.1 : 0.6 + 0.4 * Math.abs(Math.sin(t * (0.7 + n * 0.37) + n * 1.7));
       ((c as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setRGB(3 * on, 0.9 * on, 0.15 * on);
     });
     ref.bulbs.current.children.forEach((c, n) => {
@@ -359,20 +369,32 @@ export function Base({ game }: { game: Game }) {
       {/* Riveted back plate bolted to the cavern wall; gussets carry the deck the boiler sits on,
           so the whole works hangs off the wall rather than standing on the floor. */}
       <group ref={ref.wall}>
-        <mesh geometry={geo.backPlate} material={M.iron} position={[0, 0.45, Z_WALL]} />
+        <mesh geometry={geo.backPlate} material={M.rustDark} position={[0, 0.45, Z_WALL]} />
         {[-0.98, -0.33, 0.33, 0.98].flatMap((x) => [-0.1, 1.0].map((y) => (
           <mesh key={`${x}:${y}`} position={[x, y, Z_WALL + 0.03]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><cylinderGeometry args={[0.025, 0.025, 0.025, 6]} /></mesh>
         )))}
-        {[-0.62, 0, 0.62].map((x) => <mesh key={x} geometry={geo.gusset} material={M.darkIron} position={[x, 0.0, Z_WALL]} />)}
+        {[-0.62, 0, 0.62].map((x) => <mesh key={x} geometry={geo.gusset} material={M.rustDark} position={[x, 0.0, Z_WALL]} />)}
       </group>
-      <mesh geometry={geo.deck} material={M.darkIron} position={[0, 0.1, Z_HUB + 0.02]} />
+      <mesh geometry={geo.deck} material={M.rustDark} position={[0, 0.1, Z_HUB + 0.02]} />
       {[-0.5, 0.5].map((x) => (
         <mesh key={x} position={[x, 0.5, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.iron}>
           <cylinderGeometry args={[R + 0.04, R + 0.04, 0.06, 24, 1, true, Math.PI / 2, Math.PI]} />
         </mesh>
       ))}
-      <mesh position={[0, 0.48, Z_HUB]} rotation={[0, 0, Math.PI / 2]} material={M.iron}><cylinderGeometry args={[R, R, 1.5, 32]} /></mesh>
-      {[-1, 1].map((s) => <mesh key={s} geometry={geo.head} material={M.copper} position={[s * 0.75, 0.48, Z_HUB]} rotation={[0, 0, -s * Math.PI / 2]} />)}
+      <mesh position={[0, 0.48, Z_HUB]} rotation={[0, 0, Math.PI / 2]} material={M.rustIron}><cylinderGeometry args={[R, R, 1.5, 32]} /></mesh>
+      {[-1, 1].map((s) => <mesh key={s} geometry={geo.head} material={M.verdigris2} position={[s * 0.75, 0.48, Z_HUB]} rotation={[0, 0, -s * Math.PI / 2]} />)}
+      {/* Riveted repair patches over old leaks */}
+      {[[0.46, 0.28, -0.5], [-0.58, 0.66, 0.42]].map(([x, y, a]) => {
+        const ang = Math.asin((y - 0.48) / R);
+        return (
+          <group key={x} position={[x, y, Z_HUB + Math.cos(ang) * (R + 0.006)]} rotation={[-ang, 0, a * 0.2]}>
+            <mesh material={M.rustDark}><boxGeometry args={[0.14, 0.1, 0.008]} /></mesh>
+            {[[-0.055, -0.035], [0.055, -0.035], [-0.055, 0.035], [0.055, 0.035]].map(([rx, ry]) => (
+              <mesh key={`${rx}${ry}`} position={[rx, ry, 0.006]} material={M.brass}><sphereGeometry args={[0.009, 6, 4]} /></mesh>
+            ))}
+          </group>
+        );
+      })}
       {[-0.62, -0.2, 0.22, 0.62].map((x) => (
         <group key={x}>
           <mesh position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.brass}><torusGeometry args={[R + 0.008, 0.016, 8, 40]} /></mesh>
@@ -383,7 +405,7 @@ export function Base({ game }: { game: Game }) {
       {[-0.42, 0.02].map((x) => (
         <group key={x} position={[x, 0.53, FRONT - 0.005]}>
           <mesh material={M.brass}><torusGeometry args={[0.075, 0.018, 8, 24]} /></mesh>
-          <mesh><circleGeometry args={[0.072, 20]} /><meshBasicMaterial color={[2.2, 1.0, 0.3]} /></mesh>
+          <mesh><circleGeometry args={[0.072, 20]} /><meshBasicMaterial color={x < 0 ? [2.2, 1.0, 0.3] : [0.7, 0.3, 0.1]} /></mesh>
         </group>
       ))}
       <group position={[-0.2, 0.23, Z_HUB + 0.31]} rotation={[-0.68 + Math.PI / 2, 0, 0]}>
@@ -416,7 +438,8 @@ export function Base({ game }: { game: Game }) {
       {/* Steam dome, whistle and smokestack */}
       <mesh geometry={geo.dome} material={M.brass} position={[-0.12, 0.84, Z_HUB - 0.2]} />
       <mesh position={[-0.12, 1.12, Z_HUB - 0.2]} material={M.brass}><cylinderGeometry args={[0.02, 0.025, 0.12, 10]} /></mesh>
-      <mesh geometry={geo.stack} material={M.darkIron} position={[0.55, 0.86, Z_HUB - 0.18]} />
+      {/* The stack has settled a little crooked */}
+      <mesh geometry={geo.stack} material={M.rustDark} position={[0.55, 0.86, Z_HUB - 0.18]} rotation={[0.03, 0, -0.07]} />
       {[0.95, 1.2].map((y) => <mesh key={y} position={[0.55, y, Z_HUB - 0.18]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><torusGeometry args={[0.078, 0.01, 6, 20]} /></mesh>)}
       {/* Steam pipes. The two that run out to the cavern walls unfold once the base has landed;
           on the way down they'd poke through the sides of the shaft. */}
@@ -481,6 +504,7 @@ export function Base({ game }: { game: Game }) {
       <group ref={ref.festoon}>
         <WallArm x={-1.42} y={1.95} z={-0.98} />
         <mesh geometry={geo.wire} material={M.black} />
+        <mesh geometry={geo.looseCable} material={M.black} />
         <group ref={ref.bulbs}>
           {geo.festoon.map((p, n) => (
             <mesh key={n} position={[p.x, p.y - 0.03, p.z]}><sphereGeometry args={[0.022, 8, 6]} /><meshBasicMaterial /></mesh>

@@ -542,6 +542,30 @@ try {
   console.log('hover', JSON.stringify({ tool0, hoverBase, hoverRock }));
   check(plain === '' && tool0 === 'info' && /Base/.test(hoverBase) && /drones docked/.test(hoverBase) && /dig|Cannot be dug/i.test(hoverRock), 'the plain cursor is plain; the Info tool describes what it hovers (the base, the rock)');
   check(icons, 'every tool and layer button has an icon');
+
+  // Smelters craft in batches: ore in, plate out; the Info card shows a progress ring and recipe.
+  const craft = await page.evaluate(async () => {
+    const g = window.__game, s = g.smelters[0];
+    g.resources.ore += 2;
+    const plates0 = g.platesMade;
+    for (let n = 0; n < 30; n++) g.update(1 / 30);
+    const mid = { crafting: s.crafting, f: s.smeltTimer / 2.5 };
+    for (let n = 0; n < 60; n++) g.update(1 / 30);
+    return { mid, made: g.platesMade - plates0, x: s.x, y: s.y };
+  });
+  const smelterCard = await page.evaluate(async ({ x, y }) => {
+    window.__game.resources.ore += 1;
+    for (let n = 0; n < 20; n++) window.__game.update(1 / 30);
+    window.__view.goto(x, y + 0.5);
+    return null;
+  }, craft);
+  await page.waitForTimeout(400);
+  const card2 = await hover(craft.x - 0.1, craft.y + 0.4, -1.25 * 0.45);
+  const cardHtml = await page.evaluate(() => document.querySelector('.inspector').innerHTML);
+  check(craft.mid.crafting && craft.mid.f > 0.2 && craft.made >= 1, `smelter takes ore and makes plates in batches (${craft.made} made)`);
+  check(/Smelter/.test(card2) && /class="ring"/.test(cardHtml) && /class="recipe"/.test(cardHtml) && /\/min/.test(card2),
+    'the smelter Info card shows job progress and its recipe');
+  await page.evaluate(() => { const d = window.__game.layout.depot; window.__view.goto(d.x, d.y + 1); });
   await page.evaluate(() => { window.__game.tool = 'dig'; });
   await hover(base.x + 3.5, base.y + 1.2, 0);
   await shot('8-dig-cursor');

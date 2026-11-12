@@ -257,6 +257,43 @@ export function backWallMaterial(gpu: GpuSim) {
 }
 
 /**
+ * Weathered metal: blotchy rust patches, rust streaks running down from them, and pitting, over a
+ * base colour. Rusty areas go rough and lose their shine. `tint` is the corrosion colour pair
+ * (dark, light), e.g. orange-brown rust or green verdigris on copper.
+ */
+export function rustMaterial(base: string, amount = 0.5, tint: [string, string] = ['#5a2410', '#9a4a1c']) {
+  const { color: tslColor } = TSL as any;
+  const m = new THREE.MeshStandardNodeMaterial();
+  const p = positionWorld;
+  const blotch = noise(p.xy.mul(3.3).add(p.z.mul(2.1))).mul(0.5).add(0.5).add(noise(p.xy.mul(13).add(p.z.mul(7))).mul(0.18));
+  const patches = smoothstep(0.85 - amount * 0.6, 0.95 - amount * 0.5, blotch);
+  // Drips: long thin noise along the vertical, strongest just below the patches.
+  const drip = smoothstep(0.5, 0.85, noise(vec2(p.x.mul(30).add(p.z.mul(11)), p.y.mul(1.3))).mul(0.5).add(0.5)).mul(amount);
+  const corrosion = clamp(patches.add(drip.mul(0.7)), 0, 1);
+  const rustColor = mix(tslColor(tint[0]), tslColor(tint[1]), noise(p.xy.mul(45).add(p.z.mul(20))).mul(0.5).add(0.5));
+  const pits = smoothstep(0.72, 0.9, noise(p.xy.mul(70).add(p.z.mul(31))).mul(0.5).add(0.5)).mul(0.35);
+  m.colorNode = mix(tslColor(base), rustColor, corrosion).mul(pits.oneMinus());
+  m.roughnessNode = mix(float(0.62), float(0.95), corrosion);
+  m.metalnessNode = mix(float(0.45), float(0.05), corrosion);
+  if (!quality.low) m.normalNode = bumpNormal(corrosion.mul(0.0015).sub(pits.mul(0.002)));
+  return m;
+}
+
+/** Firebrick: staggered courses with recessed mortar, each brick a slightly different shade. */
+export function brickMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+  const p = positionWorld;
+  const rowH = 0.055, brickW = 0.11;
+  const row = floor(p.y.div(rowH));
+  const u = p.x.add(p.z).div(brickW).add(row.mul(0.5));
+  const mortar = smoothstep(0.06, 0.1, abs(u.fract().sub(0.5)).mul(-1).add(0.5)).mul(smoothstep(0.06, 0.12, abs(p.y.div(rowH).fract().sub(0.5)).mul(-1).add(0.5)));
+  const shade = noise(vec2(floor(u), row).mul(1.7)).mul(0.15).add(1);
+  m.colorNode = mix(vec3(0.12, 0.11, 0.1), vec3(0.32, 0.12, 0.07).mul(shade), mortar);
+  if (!quality.low) m.normalNode = bumpNormal(mortar.mul(0.004));
+  return m;
+}
+
+/**
  * Grout poured under and over strut plates: mottled grey cement with faint horizontal pour lines.
  */
 let grout: THREE.MeshStandardNodeMaterial | null = null;

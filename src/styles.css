@@ -244,3 +244,14 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .settings .check input { accent-color: var(--accent); width: 15px; height: 15px; }
 .settings .buttons { display: flex; justify-content: flex-end; margin-top: 8px; }
 .modal { background: #17120d; }
+
+/* Info card: job progress ring and recipe row */
+.inspector .job { display: flex; align-items: center; gap: 8px; margin: 4px 0 6px; }
+.inspector .ring .track { fill: none; stroke: rgba(255, 255, 255, 0.12); stroke-width: 4; }
+.inspector .ring .fill { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray 0.1s linear; }
+.inspector .ring text { fill: var(--text); font-size: 10px; font-weight: 700; }
+.inspector .job span { color: #ffd76b; }
+.inspector .recipe { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; padding: 4px 6px; background: rgba(0, 0, 0, 0.3); border-radius: 4px; }
+.inspector .recipe b { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; }
+.inspector .recipe i { color: var(--muted); font-style: normal; }
+.inspector .recipe span { margin-left: auto; color: var(--muted); font-size: 11px; }

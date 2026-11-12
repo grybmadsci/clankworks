@@ -88,7 +88,7 @@ The toolbar has three sections:
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc or square: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor. `Q` (or the Brush toggle above the toolbar) switches between a round and a square brush |
 | Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
 | Buildings | `3` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
-| Buildings | `4` Smelter | Ore → plates (8 scrap). It needs flat, level ground and can't overlap the base, a strut or another building. A hologram previews where it will stand: cyan if it fits, red if not |
+| Buildings | `4` Smelter | Ore → plates (8 scrap): one ore per batch, 2.5 s each (24 plates a minute). The Info tool shows the batch's progress and the recipe. It needs flat, level ground and can't overlap the base, a strut or another building. A hologram previews where it will stand: cyan if it fits, red if not |
 | Buildings | `B` Drone | Build a drone (3 plates), one per landing pad |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |

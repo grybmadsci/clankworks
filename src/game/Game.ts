@@ -97,7 +97,14 @@ export interface Debris {
  * are done.
  */
 export interface Strut { id: number; i: number; j0: number; j1: number; broken: boolean; atRisk: boolean }
-export interface Smelter { id: number; x: number; y: number; hp: number; smeltTimer: number; hotUntil: number }
+/**
+ * A smelter. While `crafting`, `smeltTimer` counts up to SMELT.time and the batch's ore has
+ * already been taken; `hotUntil` keeps it glowing a little after a batch.
+ */
+export interface Smelter { id: number; x: number; y: number; hp: number; smeltTimer: number; hotUntil: number; crafting: boolean }
+
+/** The smelter's recipe: one ore in, one copper plate out, every 2.5 seconds. */
+export const SMELT = { input: { ore: 1 }, output: { plates: 1 }, time: 2.5 };
 export interface Critter { id: number; name: string; x: number; y: number; vx: number; health: number; happy: boolean; complaint: string; hop: number; dead: boolean }
 export interface Bubble { id: number; text: string; bot?: Bot; x: number; y: number; ttl: number }
 export interface LogEntry { id: number; time: number; text: string; kind: 'emote' | 'info' | 'warn' }
@@ -929,7 +936,7 @@ export class Game {
   placeSmelter(x: number, y: number) {
     const site = this.smelterSite(x, y);
     if (site.error || !this.pay(COST.smelter)) return this.warn(site.error ?? 'Insufficient scrap for a smelter (8).', 'hints');
-    this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0 });
+    this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0, crafting: false });
     this.occupy(site.x - 0.45, site.y, site.x + 0.45, site.y + 0.95, 1);
     this.entityVersion++;
     this.info('Smelter online. Ore in, plates out.');
@@ -1310,15 +1317,22 @@ export class Game {
 
   private updateSmelters(dt: number) {
     for (const s of [...this.smelters]) {
-      s.smeltTimer += dt;
-      if (s.smeltTimer >= 2.5 && this.resources.ore >= 1) {
+      // Start a batch when there's ore, then cook it for SMELT.time.
+      if (!s.crafting && this.resources.ore >= SMELT.input.ore) {
+        this.resources.ore -= SMELT.input.ore;
+        s.crafting = true;
         s.smeltTimer = 0;
-        this.resources.ore -= 1;
-        this.resources.plates += 1;
-        this.platesMade++;
-        s.hotUntil = this.time + 4;
-        this.gpu?.burst(s.x, s.y + 1.4, 12, ParticleKind.Steam, 0.6, 0.1);
-        this.gpu?.burst(s.x + 0.3, s.y + 0.4, 6, ParticleKind.Flame, 1, 0.05);
+      }
+      if (s.crafting) {
+        s.smeltTimer += dt;
+        s.hotUntil = this.time + 1.5;
+        if (s.smeltTimer >= SMELT.time) {
+          s.crafting = false;
+          s.smeltTimer = 0;
+          this.resources.plates += SMELT.output.plates;
+          this.platesMade += SMELT.output.plates;
+          this.gpu?.burst(s.x + 0.3, s.y + 0.25, 10, ParticleKind.Spark, 1.2, 0.05);
+        }
       }
       const e = this.env(s.x, s.y + 0.3);
       if (e.magma > 0.3) { s.hp -= dt * 30; if (s.hp <= 0) this.destroySmelter(s, 'melted into a puddle'); }

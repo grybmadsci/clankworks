@@ -1,12 +1,21 @@
 import { CELL, COLLAPSE_DELAY, CRACK_SHIFT, DEPTH, DIG_BIT, EXPLORED_BIT, H, ISO, MATERIALS, Mat, REACH_BIT, STRESS_MAX, STRESS_SHIFT, W, cellIndex } from '../config';
 import { DOCK_SLOTS, HUB } from './base';
-import type { Bot, Game } from './Game';
+import { SMELT, type Bot, type Game } from './Game';
 
 /** Where the cursor ray crosses depth z (the scene's things sit at different depths). */
 export type RayAt = (z: number) => { x: number; y: number };
 
-/** What was inspected (the tutorial watches for some of these), its name, and a few facts. */
-export interface Inspection { kind: string; title: string; lines: string[] }
+/**
+ * What was inspected (the tutorial watches for some of these), its name and a few facts, plus
+ * for machines the progress of the current job (0..1) and the recipe it runs.
+ */
+export interface Inspection {
+  kind: string;
+  title: string;
+  lines: string[];
+  progress?: { value: number; label: string };
+  recipe?: { input: Record<string, number>; output: Record<string, number>; seconds: number };
+}
 
 // Depths the renderer draws things at (see render/Entities.tsx and render/Base.tsx).
 const Z_ACTORS = -DEPTH * 0.45, Z_CRITTER = -DEPTH * 0.35, Z_STRUT = -DEPTH * 0.72, Z_HUB = -DEPTH * 0.62, Z_DEBRIS = -DEPTH * 0.5;
@@ -47,10 +56,16 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
   }
   for (const s of game.smelters) {
     if (Math.abs(pa.x - s.x) > 0.45 || pa.y < s.y || pa.y > s.y + 1.1) continue;
+    const f = s.crafting ? s.smeltTimer / SMELT.time : 0;
     return {
       kind: 'smelter',
       title: 'Smelter',
-      lines: [game.time < s.hotUntil ? 'Smelting ore into plates' : game.resources.ore >= 1 ? 'Loading ore' : 'Waiting for ore', `Integrity ${pct(s.hp)}`, `${game.platesMade} plates made so far`],
+      lines: [`Integrity ${pct(s.hp)} · ${game.platesMade} plates made so far`],
+      progress: {
+        value: f,
+        label: s.crafting ? `Smelting… ${Math.max(0, SMELT.time - s.smeltTimer).toFixed(1)}s left` : game.resources.ore >= SMELT.input.ore ? 'Loading ore' : 'Idle: waiting for ore',
+      },
+      recipe: { input: SMELT.input, output: SMELT.output, seconds: SMELT.time },
     };
   }
   const pc = at(Z_CRITTER);

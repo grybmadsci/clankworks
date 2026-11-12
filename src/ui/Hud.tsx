@@ -3,8 +3,8 @@ import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
 import { ALERTS, COST, TUTORIAL, type AlertKind, type Game, type Overlay, type Tool } from '../game/Game';
 import { MATERIAL_KEY } from '../render/materials';
-import { inspect } from '../game/inspect';
-import { Icon, cursorFor } from './icons';
+import { inspect, type Inspection } from '../game/inspect';
+import { Icon, cursorFor, iconSvg } from './icons';
 import { setVolume, unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
@@ -418,8 +418,7 @@ function Inspector({ game }: { game: Game }) {
       if (!info) { el.style.display = 'none'; return; }
       game.tutorialNote(`saw:${info.kind}`);
       el.style.display = 'block';
-      el.replaceChildren(Object.assign(document.createElement('h4'), { textContent: info.title }),
-        ...info.lines.map((l) => Object.assign(document.createElement('div'), { textContent: l })));
+      el.innerHTML = inspectorHtml(info);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -431,6 +430,33 @@ function Inspector({ game }: { game: Game }) {
 export const RESOURCE_COLOR: Record<string, string> = { ore: '#e08a4f', nut: '#a9b2bc', scrap: '#a9b2bc', plates: '#f0b84a', drone: '#7fd8ff' };
 /** Icon for each resource key. */
 const RESOURCE_ICON: Record<string, string> = { ore: 'ore', scrap: 'nut', plates: 'plates' };
+
+const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+const RES_ICON: Record<string, string> = { ore: 'ore', scrap: 'nut', plates: 'plates' };
+
+/**
+ * The Info card's contents: title and facts, and for machines a progress ring for the current job
+ * and the recipe (inputs → outputs, time per batch and rate).
+ */
+function inspectorHtml(info: Inspection) {
+  let html = `<h4>${esc(info.title)}</h4>`;
+  if (info.progress) {
+    const r = 15, c = 2 * Math.PI * r, v = Math.min(1, Math.max(0, info.progress.value));
+    html += `<div class="job"><svg class="ring" width="40" height="40" viewBox="0 0 40 40">` +
+      `<circle cx="20" cy="20" r="${r}" class="track"/>` +
+      `<circle cx="20" cy="20" r="${r}" class="fill" stroke-dasharray="${(c * v).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 20 20)"/>` +
+      `<text x="20" y="24" text-anchor="middle">${Math.round(v * 100)}%</text></svg>` +
+      `<span>${esc(info.progress.label)}</span></div>`;
+  }
+  if (info.recipe) {
+    const items = (m: Record<string, number>) => Object.entries(m)
+      .map(([res, n]) => `<b style="color:${RESOURCE_COLOR[res]}">${iconSvg(RES_ICON[res] ?? res, 15)}${n}</b>`).join(' ');
+    const perMin = (60 / info.recipe.seconds) * Object.values(info.recipe.output)[0];
+    html += `<div class="recipe">${items(info.recipe.input)}<i>→</i>${items(info.recipe.output)}` +
+      `<span>${info.recipe.seconds}s each · ${Math.round(perMin)}/min</span></div>`;
+  }
+  return html + info.lines.map((l) => `<div>${esc(l)}</div>`).join('');
+}
 
 function Res({ icon, label, value }: { icon: string; label: string; value: string }) {
   return <div className="res" style={{ color: RESOURCE_COLOR[icon] }}><Icon name={icon} size={15} /><span>{label}</span><b>{value}</b></div>;

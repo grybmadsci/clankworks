@@ -36,6 +36,16 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
   );
 }
 
+/** An icon as an SVG string, for HUD bits built outside React. */
+export function iconSvg(name: string, size = 16, color = 'currentColor') {
+  const icon = ICONS[name];
+  if (!icon) return '';
+  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" style="color:${color}">` +
+    (icon.fill ? `<path d="${icon.fill}" fill="currentColor" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round"/>` : '') +
+    (icon.d ? `<path d="${icon.d}" fill="none" stroke="${icon.fill ? 'rgba(0,0,0,0.45)' : 'currentColor'}" stroke-width="${icon.fill ? 1.3 : 1.8}" stroke-linecap="round" stroke-linejoin="round"/>` : '') +
+    '</svg>';
+}
+
 /**
  * A CSS cursor drawing a tool's icon (light, with a dark outline so it reads on any rock), with
  * the hot spot where the tool acts: the arrow's tip, or the centre for brushes and placements.

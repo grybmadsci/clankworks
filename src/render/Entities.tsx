@@ -3,7 +3,9 @@ import { type Ref, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { CELL, DEPTH, ISO } from '../config';
 import { enabled } from '../debug';
-import { groutMaterial } from './materials';
+import { brickMaterial, groutMaterial, rustMaterial } from './materials';
+import { SMELT } from '../game/Game';
+import { ParticleKind } from '../gpu/GpuSim';
 import type { Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
 import { Base } from './Base';
 
@@ -394,38 +396,108 @@ function StrutModel({ strut, game }: { strut: Strut; game: Game }) {
 }
 
 const SMELTER_MATS = {
-  body: new THREE.MeshStandardMaterial({ color: '#5b4a3f', metalness: 0.5, roughness: 0.6 }),
-  stack: new THREE.MeshStandardMaterial({ color: '#3d3530', metalness: 0.5 }),
-  trim: new THREE.MeshStandardMaterial({ color: rust }),
+  brick: brickMaterial(),
+  body: rustMaterial('#4a4038', 0.55),
+  dark: rustMaterial('#2c2724', 0.35),
+  brass: new THREE.MeshStandardMaterial({ color: '#b8934a', metalness: 0.55, roughness: 0.5 }),
+  leather: new THREE.MeshStandardMaterial({ color: '#4a2f1c', roughness: 0.9 }),
+  wood: new THREE.MeshStandardMaterial({ color: '#5a3b22', roughness: 0.85 }),
+  ore: new THREE.MeshStandardMaterial({ color: '#a5602f', roughness: 0.8 }),
 };
 
+/** Moving and glowing parts of a smelter, animated by SmelterModel. */
+interface SmelterParts {
+  mouth: Ref<THREE.MeshBasicMaterial>;
+  bellows: Ref<THREE.Group>;
+  stream: Ref<THREE.Mesh>;
+  ingot: Ref<THREE.MeshBasicMaterial>;
+  ore: Ref<THREE.Group>;
+  light: Ref<THREE.PointLight>;
+}
+
 /**
- * The smelter's shapes, with origin at its base. Real smelters pass their materials; the
- * placement hologram passes one see-through material for everything.
+ * A small crucible furnace on a firebrick plinth: rusty iron body with a domed top and chimney,
+ * a fire door, an ore hopper feeding it from the right, hand bellows on the left, and a spout
+ * pouring into an ingot mould. Origin at its base. Real smelters pass `parts` to animate; the
+ * placement hologram passes one `material` for everything.
  */
-export function SmelterBody({ material, mouth }: { material?: THREE.Material; mouth?: Ref<THREE.MeshBasicMaterial> }) {
+export function SmelterBody({ material, parts }: { material?: THREE.Material; parts?: SmelterParts }) {
   const m = (own: THREE.Material) => material ?? own;
+  const glow = (ref: Ref<THREE.MeshBasicMaterial> | undefined) => (material ? undefined : <meshBasicMaterial ref={ref} />);
   return (
     <>
-      <mesh position={[0, 0.3, 0]} material={m(SMELTER_MATS.body)}><boxGeometry args={[0.8, 0.6, 0.6]} /></mesh>
-      <mesh position={[0.22, 0.85, -0.1]} material={m(SMELTER_MATS.stack)}><cylinderGeometry args={[0.08, 0.1, 0.6]} /></mesh>
-      <mesh position={[0, 0.62, 0]} material={m(SMELTER_MATS.trim)}><boxGeometry args={[0.86, 0.05, 0.66]} /></mesh>
-      {material
-        ? <mesh position={[-0.1, 0.25, 0.301]} material={material}><planeGeometry args={[0.3, 0.22]} /></mesh>
-        : <mesh position={[-0.1, 0.25, 0.301]}><planeGeometry args={[0.3, 0.22]} /><meshBasicMaterial ref={mouth} /></mesh>}
+      <mesh position={[0, 0.08, 0]} material={m(SMELTER_MATS.brick)}><boxGeometry args={[0.92, 0.16, 0.6]} /></mesh>
+      {/* Furnace body, bands, dome and chimney */}
+      <mesh position={[-0.1, 0.41, 0]} material={m(SMELTER_MATS.body)}><cylinderGeometry args={[0.27, 0.29, 0.5, 20]} /></mesh>
+      {[0.22, 0.6].map((y) => <mesh key={y} position={[-0.1, y, 0]} rotation={[Math.PI / 2, 0, 0]} material={m(SMELTER_MATS.brass)}><torusGeometry args={[0.285, 0.014, 6, 28]} /></mesh>)}
+      <mesh position={[-0.1, 0.66, 0]} material={m(SMELTER_MATS.body)}><sphereGeometry args={[0.27, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+      <mesh position={[-0.12, 1.0, -0.04]} rotation={[0, 0, 0.05]} material={m(SMELTER_MATS.dark)}><cylinderGeometry args={[0.05, 0.065, 0.5, 10]} /></mesh>
+      <mesh position={[-0.13, 1.27, -0.04]} material={m(SMELTER_MATS.dark)}><coneGeometry args={[0.1, 0.07, 10]} /></mesh>
+      {/* Fire door */}
+      <mesh position={[-0.1, 0.36, 0.27]} material={m(SMELTER_MATS.brass)}><torusGeometry args={[0.095, 0.018, 8, 20]} /></mesh>
+      <mesh position={[-0.1, 0.36, 0.272]} material={material}><circleGeometry args={[0.085, 18]} />{glow(parts?.mouth)}</mesh>
+      {/* Ore hopper on legs, with a chute into the furnace */}
+      <mesh position={[0.29, 0.8, -0.02]} material={m(SMELTER_MATS.body)}><cylinderGeometry args={[0.15, 0.06, 0.22, 12, 1, true]} /></mesh>
+      {[0.22, 0.36].map((x) => <mesh key={x} position={[x, 0.42, -0.02]} material={m(SMELTER_MATS.dark)}><cylinderGeometry args={[0.012, 0.012, 0.52, 6]} /></mesh>)}
+      <mesh position={[0.15, 0.66, -0.02]} rotation={[0, 0, 1.0]} material={m(SMELTER_MATS.dark)}><cylinderGeometry args={[0.025, 0.025, 0.22, 8]} /></mesh>
+      <group ref={parts?.ore} position={[0.29, 0.86, -0.02]}>
+        {[[-0.05, 0], [0.04, 0.03], [0, -0.04]].map(([x, z], n) => <mesh key={n} position={[x, 0, z]} material={m(SMELTER_MATS.ore)}><dodecahedronGeometry args={[0.04]} /></mesh>)}
+      </group>
+      {/* Bellows: two boards and a leather bag, hinged at the back, blowing into the furnace */}
+      <group position={[-0.47, 0.3, 0.06]}>
+        <mesh position={[0.08, -0.015, 0]} material={m(SMELTER_MATS.wood)}><boxGeometry args={[0.18, 0.02, 0.15]} /></mesh>
+        <group ref={parts?.bellows}>
+          <mesh position={[0.08, 0.015, 0]} material={m(SMELTER_MATS.wood)}><boxGeometry args={[0.18, 0.02, 0.15]} /></mesh>
+        </group>
+        <mesh position={[0.07, 0, 0]} scale={[1, 0.6, 1]} material={m(SMELTER_MATS.leather)}><sphereGeometry args={[0.075, 10, 6]} /></mesh>
+        <mesh position={[0.2, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={m(SMELTER_MATS.brass)}><cylinderGeometry args={[0.012, 0.02, 0.08, 8]} /></mesh>
+      </group>
+      {/* Spout, molten stream and the ingot mould on a little stand */}
+      <mesh position={[0.21, 0.29, 0.06]} rotation={[0, 0, -0.35]} material={m(SMELTER_MATS.dark)}><boxGeometry args={[0.16, 0.03, 0.05]} /></mesh>
+      <mesh ref={parts?.stream} position={[0.29, 0.235, 0.06]} material={material}><cylinderGeometry args={[0.008, 0.012, 0.07, 6]} />{material ? null : <meshBasicMaterial color={[4, 1.8, 0.4]} />}</mesh>
+      <mesh position={[0.31, 0.18, 0.06]} material={m(SMELTER_MATS.dark)}><boxGeometry args={[0.2, 0.04, 0.15]} /></mesh>
+      <mesh position={[0.31, 0.202, 0.06]} material={material}><boxGeometry args={[0.15, 0.008, 0.1]} />{glow(parts?.ingot)}</mesh>
+      {!material && <pointLight ref={parts?.light} position={[-0.1, 0.4, 0.5]} color="#ff8a3a" distance={3} decay={1.5} intensity={0} />}
     </>
   );
 }
 
+/**
+ * Animates a smelter while it works: the fire door flickers, the bellows pump, the chimney
+ * smokes, the hopper shows ore, and near the end of each batch molten copper pours into the mould,
+ * where the new ingot glows and then cools.
+ */
 function SmelterModel({ smelter, game }: { smelter: Smelter; game: Game }) {
-  const mouth = useRef<THREE.MeshBasicMaterial>(null!);
-  useFrame(({ clock }) => {
-    const hot = game.time < smelter.hotUntil ? 1 : 0.15;
-    mouth.current.color.setRGB(3 * hot + Math.sin(clock.elapsedTime * 9) * 0.3 * hot, 1.1 * hot, 0.2 * hot);
+  const parts = {
+    mouth: useRef<THREE.MeshBasicMaterial>(null!), bellows: useRef<THREE.Group>(null!), stream: useRef<THREE.Mesh>(null!),
+    ingot: useRef<THREE.MeshBasicMaterial>(null!), ore: useRef<THREE.Group>(null!), light: useRef<THREE.PointLight>(null!),
+  };
+  const smoke = useRef(0);
+  useFrame(({ clock }, dt) => {
+    const t = clock.elapsedTime, active = smelter.crafting;
+    const f = smelter.smeltTimer / SMELT.time;
+    const heat = active ? 1 : Math.max(0, (smelter.hotUntil - game.time) / 1.5) * 0.6;
+    const flick = 0.85 + Math.sin(t * 17) * 0.08 + Math.random() * 0.12;
+    parts.mouth.current.color.setRGB(0.3 + 3 * heat * flick, 0.08 + 1.2 * heat * flick, 0.02 + 0.25 * heat);
+    parts.light.current.intensity = 2.2 * heat * flick;
+    parts.bellows.current.rotation.z = active ? 0.06 + 0.22 * (0.5 + 0.5 * Math.sin(t * 7)) : 0.05;
+    // Pour in the last quarter of a batch; the ingot glows as it fills, then cools.
+    const pouring = active && f > 0.7 && f < 0.97;
+    parts.stream.current.visible = pouring;
+    parts.stream.current.scale.set(0.8 + Math.random() * 0.4, 1, 0.8 + Math.random() * 0.4);
+    const ingotHeat = active ? Math.max(0, (f - 0.7) / 0.3) : Math.max(0, (smelter.hotUntil - game.time) / 1.5);
+    parts.ingot.current.color.setRGB(0.08 + 3.5 * ingotHeat, 0.05 + 1.4 * ingotHeat, 0.03 + 0.3 * ingotHeat);
+    parts.ore.current.visible = game.resources.ore >= 1 || active;
+    smoke.current -= dt;
+    if (active && smoke.current <= 0 && game.gpu) {
+      smoke.current = 0.5 + Math.random() * 0.4;
+      game.gpu.burst(smelter.x - 0.13, smelter.y + 1.32, 4, ParticleKind.Steam, 0.4, 0.03);
+      if (Math.random() < 0.4) game.gpu.burst(smelter.x - 0.1, smelter.y + 0.36, 4, ParticleKind.Spark, 1.2, 0.04);
+    }
   });
   return (
     <group position={[smelter.x, smelter.y, Z_ACTORS]}>
-      <SmelterBody mouth={mouth} />
+      <SmelterBody parts={parts} />
     </group>
   );
 }
