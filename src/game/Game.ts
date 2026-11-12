@@ -15,7 +15,7 @@ import { alarm, chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, HUB, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
-export type Tool = 'select' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'scrap';
+export type Tool = 'select' | 'info' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'scrap';
 export type Overlay = 0 | 1 | 2 | 3 | 4;
 type Vec = { x: number; y: number };
 
@@ -109,6 +109,20 @@ export interface Unstable { key: string; x: number; y: number; ratio: number }
 export interface Env { water: number; magma: number; o2: number; toxic: number; temp: number }
 
 let nextId = 1;
+
+/**
+ * Alert categories the player can switch off in Settings. Switching one off silences its log
+ * messages and sounds (and, for cave-ins, the alert banner); the game itself carries on the same.
+ */
+export const ALERTS = {
+  caveIn: 'Cave-in warnings and collapses',
+  structural: 'Near-collapse ceiling warnings',
+  strut: 'Strut warnings',
+  drones: 'Drone status (battery, losses, new drones)',
+  chatter: 'Crew chatter (emotes)',
+  hints: 'Invalid actions and hints',
+} as const;
+export type AlertKind = keyof typeof ALERTS;
 
 /** Tutorial progress the checklist items look at. */
 export interface TutorialState {
@@ -228,7 +242,7 @@ export class Game {
    * Dig orders that would undermine these struts are on hold until the player confirms or cancels
    * them; drones leave orders near the struts alone meanwhile.
    */
-  strutConfirm: { strutIds: number[] } | null = null;
+  strutConfirm: { strutIds: number[]; x: number; y: number } | null = null;
   platesMade = 0;
   bots: Bot[] = [];
   debris: Debris[] = [];
@@ -242,7 +256,7 @@ export class Game {
   /** Incremented whenever entity lists change, so React can re-render the lists. */
   entityVersion = 0;
   shake = 0;
-  /** The plain cursor ('select') only inspects; the others act on click. */
+  /** 'select' is a plain cursor, 'info' describes what it hovers; the others act on click. */
   tool: Tool = 'select';
   /** Dig and Cancel paint with a square brush instead of a round one. */
   brushSquare = false;
@@ -478,7 +492,7 @@ export class Game {
     for (const u of unstable) {
       if ((this.warnedUnstable.get(u.key) ?? -Infinity) > this.time - 60) continue;
       this.warnedUnstable.set(u.key, this.time);
-      this.warn(`Structural warning: a ceiling is at ${Math.round(u.ratio * 100)}% of its safe span. Add a strut before it gives.`);
+      this.warn(`Structural warning: a ceiling is at ${Math.round(u.ratio * 100)}% of its safe span. Add a strut before it gives.`, 'structural');
     }
     this.unstable = unstable;
   }
@@ -555,6 +569,18 @@ export class Game {
   private strutArea(s: Strut) {
     const pad = 6;
     return { i0: s.i - pad, i1: s.i + pad, j0: Math.max(0, s.j0 - MAX_STRUT_CELLS - 2), j1: Math.min(H - 1, s.j1 + MAX_STRUT_CELLS + 2) };
+  }
+
+  /** Pin the confirmation to the held dig orders: the middle of those around the struts. */
+  private anchorStrutConfirm() {
+    const c = this.strutConfirm;
+    if (!c) return;
+    let sx = 0, sy = 0, n = 0;
+    for (const k of this.marked) {
+      if (!(this.terrain.digMark[k] & DIG_BIT) || !this.heldForStrut(k)) continue;
+      sx += cellCenter(k % W); sy += cellCenter((k / W) | 0); n++;
+    }
+    if (n) { c.x = sx / n; c.y = sy / n; }
   }
 
   private heldForStrut(k: number) {
@@ -659,7 +685,7 @@ export class Game {
       if (span.ok) {
         if (span.a !== s.j0 || span.b !== s.j1 || s.broken) {
           for (let j = span.a; j <= span.b; j++) t.strut[cellIndex(s.i, j)] = 1;
-          if (s.broken) this.info('A strut is braced again.');
+          if (s.broken) this.info('A strut is braced again.', 'strut');
           s.j0 = span.a; s.j1 = span.b; s.broken = false;
           this.entityVersion++;
         }
@@ -667,7 +693,7 @@ export class Game {
         s.broken = true;
         for (let j = s.j0; j <= s.j1; j++) t.strut[cellIndex(s.i, j)] = 0;
         this.entityVersion++;
-        this.warn('A strut was dug out and is no longer supporting the ceiling.');
+        this.warn('A strut was dug out and is no longer supporting the ceiling.', 'strut');
         // Whatever it held up needs re-checking.
         const r = t.structuralDirty, i0 = s.i - 2, i1 = s.i + 2, j0 = s.j0 - 2, j1 = s.j1 + 2;
         t.structuralDirty = r ? { i0: Math.min(r.i0, i0), j0: Math.min(r.j0, j0), i1: Math.max(r.i1, i1), j1: Math.max(r.j1, j1) } : { i0, j0, i1, j1 };
@@ -711,10 +737,20 @@ export class Game {
     this.log.push({ id: nextId++, time: this.time, text, kind });
     if (this.log.length > 40) this.log.shift();
   }
-  info(text: string) { this.pushLog(text, 'info'); }
-  warn(text: string) { this.pushLog(text, 'warn'); chirp(-1, 2); }
+  /** Alert categories switched on (see ALERTS); the Settings dialog edits this. */
+  alerts: Record<AlertKind, boolean> = { caveIn: true, structural: true, strut: true, drones: true, chatter: true, hints: true };
+  /** True while the main menu is open: nothing in the world moves. */
+  paused = false;
+
+  info(text: string, kind?: AlertKind) { if (!kind || this.alerts[kind]) this.pushLog(text, 'info'); }
+  warn(text: string, kind?: AlertKind) {
+    if (kind && !this.alerts[kind]) return;
+    this.pushLog(text, 'warn');
+    chirp(-1, 2);
+  }
 
   emote(bot: Bot | undefined, id: EmoteId, cooldown = 0) {
+    if (!this.alerts.chatter) return;
     if (bot) {
       const last = bot.emoteAt[id] ?? -Infinity;
       if (this.time - last < cooldown) return;
@@ -773,17 +809,19 @@ export class Game {
       this.reachAt = 0;
       const risky = this.struts.filter((s) => s.atRisk).length;
       this.updateStruts(true);
+      this.anchorStrutConfirm();
       if (on && this.struts.filter((s) => s.atRisk).length > risky) {
         // Hold the risky orders and ask the player (see strutConfirm).
         const ids = new Set(this.strutConfirm?.strutIds ?? []);
         for (const st of this.struts) if (st.atRisk) ids.add(st.id);
-        this.strutConfirm = { strutIds: [...ids] };
-        this.warn(`This dig would undermine a strut: it can only stretch to ${MAX_STRUT_CELLS * CELL}m, then it stops holding up the ceiling.`);
+        this.strutConfirm = { strutIds: [...ids], x: 0, y: 0 };
+        this.anchorStrutConfirm();
+        this.warn(`This dig would undermine a strut: it can only stretch to ${MAX_STRUT_CELLS * CELL}m, then it stops holding up the ceiling.`, 'strut');
       }
     }
     if (outOfRange && !changed && this.time >= this.rangeWarnAt) {
       this.rangeWarnAt = this.time + 3;
-      this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`);
+      this.warn(`Out of drone range. Dig orders must be within ${DIG_RADIUS}m of the base.`, 'hints');
     }
   }
 
@@ -839,7 +877,7 @@ export class Game {
   /** Take a strut down for half its scrap back. Whatever it held up is re-checked. */
   scrapStrut(x: number, y: number) {
     const s = this.strutAt(x, y);
-    if (!s) return this.warn('No strut there to scrap.');
+    if (!s) return this.warn('No strut there to scrap.', 'hints');
     const t = this.terrain;
     if (!s.broken) for (let j = s.j0; j <= s.j1; j++) t.strut[cellIndex(s.i, j)] = 0;
     this.struts = this.struts.filter((o) => o !== s);
@@ -855,7 +893,7 @@ export class Game {
   placeStrut(x: number, y: number) {
     const t = this.terrain;
     const { i, j0, j1, error } = this.strutSite(x, y);
-    if (error || !this.pay(COST.strut)) return this.warn(error ?? 'Insufficient scrap for a strut (2).');
+    if (error || !this.pay(COST.strut)) return this.warn(error ?? 'Insufficient scrap for a strut (2).', 'hints');
     for (let j = j0; j <= j1; j++) t.strut[cellIndex(i, j)] = 1;
     this.struts.push({ id: nextId++, i, j0, j1, broken: false, atRisk: false });
     // A strut may have saved cracking rock; re-evaluate straight away.
@@ -890,7 +928,7 @@ export class Game {
 
   placeSmelter(x: number, y: number) {
     const site = this.smelterSite(x, y);
-    if (site.error || !this.pay(COST.smelter)) return this.warn(site.error ?? 'Insufficient scrap for a smelter (8).');
+    if (site.error || !this.pay(COST.smelter)) return this.warn(site.error ?? 'Insufficient scrap for a smelter (8).', 'hints');
     this.smelters.push({ id: nextId++, x: site.x, y: site.y, hp: 100, smeltTimer: 0, hotUntil: 0 });
     this.occupy(site.x - 0.45, site.y, site.x + 0.45, site.y + 0.95, 1);
     this.entityVersion++;
@@ -900,8 +938,8 @@ export class Game {
 
   buildBot() {
     if (this.intro.phase !== 'done') return;
-    if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.');
-    if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates.');
+    if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.', 'hints');
+    if (!this.pay(COST.bot)) return this.warn('A new drone needs 3 plates.', 'hints');
     const bot = this.spawnBot(true);
     this.emote(bot, 'strikeTheEarth');
   }
@@ -930,7 +968,7 @@ export class Game {
     };
     this.bots.push(bot);
     this.entityVersion++;
-    if (announce) this.info(`${bot.name} has been deployed.`);
+    if (announce) this.info(`${bot.name} has been deployed.`, 'drones');
     return bot;
   }
 
@@ -942,7 +980,7 @@ export class Game {
     this.releaseClaim(bot);
     this.gpu?.burst(p.x, p.y, 120, ParticleKind.Spark, 4, 0.2);
     this.resources.scrap += 1;
-    this.warn(`${bot.name} ${cause}. Reclassified as scrap (+1).`);
+    this.warn(`${bot.name} ${cause}. Reclassified as scrap (+1).`, 'drones');
     this.bubbles = this.bubbles.filter((b) => b.bot !== bot);
     this.entityVersion++;
     this.onLoss();
@@ -1075,8 +1113,8 @@ export class Game {
       // Cracking rock is never hidden: lift the fog around it.
       this.reveal(p.x, p.y, 2.5);
       creak(1);
-      alarm();
-      this.warn(`Cave-in warning! ${fresh.length} cells of rock are cracking. Brace them with struts within ${COLLAPSE_DELAY}s.`);
+      if (this.alerts.caveIn) alarm();
+      this.warn(`Cave-in warning! ${fresh.length} cells of rock are cracking. Brace them with struts within ${COLLAPSE_DELAY}s.`, 'caveIn');
     }
   }
 
@@ -1129,7 +1167,7 @@ export class Game {
       if (still.length < 4) {
         this.pendingCollapses = this.pendingCollapses.filter((o) => o !== p);
         this.setCracking(still, null);
-        this.info('The cracking has stopped. The rock is holding.');
+        this.info('The cracking has stopped. The rock is holding.', 'caveIn');
       } else if (this.time >= p.due) {
         this.pendingCollapses = this.pendingCollapses.filter((o) => o !== p);
         this.collapse(still);
@@ -1144,7 +1182,7 @@ export class Game {
     const c = this.detach(cells);
     rumble(Math.min(3, cells.length / 40));
     this.shake = Math.min(1.2, 0.2 + cells.length / 150);
-    this.warn(`Cave-in! ${cells.length} cells of unsupported rock came loose.`);
+    this.warn(`Cave-in! ${cells.length} cells of unsupported rock came loose.`, 'caveIn');
     this.caveIns.push({ time: this.time, x: c.x, y: c.y, checked: false, botIds: this.bots.filter((b) => !b.dead && dist(b.body.translation(), c) < 6).map((b) => b.id) });
   }
 
@@ -1444,7 +1482,7 @@ export class Game {
         bot.battery = Math.max(0, bot.battery - (BATTERY.fly + (bot.state === 'digging' ? BATTERY.laser : 0)) * dt);
         if (bot.battery < BATTERY.low && !bot.lowBattery) {
           bot.lowBattery = true;
-          this.info(`${bot.name} is low on battery and heading home to recharge.`);
+          this.info(`${bot.name} is low on battery and heading home to recharge.`, 'drones');
           if (bot.state !== 'toDepot') this.goDepot(bot);
         }
       }
@@ -1662,7 +1700,7 @@ export class Game {
     }
     if (y < this.deepestY - 4) {
       this.deepestY = y;
-      this.info(`New excavation depth: ${((this.layout.surfaceRow * CELL - y)).toFixed(0)}m below the surface.`);
+      this.info(`New excavation depth: ${((this.layout.surfaceRow * CELL - y)).toFixed(0)}m below the surface.`, 'hints');
       this.emote(bot, 'quarryMustGrow', 30);
     }
     bot.drillFx -= dt;

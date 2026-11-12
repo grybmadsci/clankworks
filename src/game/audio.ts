@@ -1,8 +1,26 @@
 // Synthesized scrapbot chirps. The AudioContext is created lazily on the first user gesture.
 let ctx: AudioContext | null = null;
 
+let master: GainNode | null = null;
+let volume = 0.8;
+
+/** Everything plays through one master gain, set from the settings (0..1). */
+export function setVolume(v: number) {
+  volume = Math.min(1, Math.max(0, v));
+  if (master) master.gain.value = volume;
+}
+
+function out() {
+  return master!;
+}
+
 export function unlockAudio() {
-  if (!ctx) ctx = new AudioContext();
+  if (!ctx) {
+    ctx = new AudioContext();
+    master = ctx.createGain();
+    master.gain.value = volume;
+    master.connect(ctx.destination);
+  }
   if (ctx.state === 'suspended') void ctx.resume();
 }
 
@@ -12,7 +30,7 @@ export function chirp(mood = 0, notes = 3) {
   const now = ctx.currentTime;
   const gain = ctx.createGain();
   gain.gain.value = 0.0001;
-  gain.connect(ctx.destination);
+  gain.connect(out());
   const osc = ctx.createOscillator();
   osc.type = mood < 0 ? 'sawtooth' : 'square';
   osc.connect(gain);
@@ -39,7 +57,7 @@ export function rumble(strength = 1) {
   osc.frequency.exponentialRampToValueAtTime(28, now + 0.6);
   gain.gain.setValueAtTime(Math.min(0.25, 0.08 * strength), now);
   gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
-  osc.connect(gain).connect(ctx.destination);
+  osc.connect(gain).connect(out());
   osc.start(now);
   osc.stop(now + 0.85);
 }
@@ -62,7 +80,7 @@ export function creak(strength = 1) {
   gain.gain.setValueAtTime(0.0001, now);
   gain.gain.exponentialRampToValueAtTime(Math.min(0.12, 0.04 * strength), now + 0.05);
   gain.gain.exponentialRampToValueAtTime(0.0001, now + len);
-  osc.connect(filter).connect(gain).connect(ctx.destination);
+  osc.connect(filter).connect(gain).connect(out());
   osc.start(now);
   osc.stop(now + len + 0.05);
 }
@@ -79,7 +97,7 @@ export function alarm() {
   gain.gain.exponentialRampToValueAtTime(0.05, now + 0.02);
   gain.gain.setValueAtTime(0.05, now + 0.68);
   gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
-  osc.connect(gain).connect(ctx.destination);
+  osc.connect(gain).connect(out());
   osc.start(now);
   osc.stop(now + 0.8);
 }

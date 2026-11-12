@@ -387,7 +387,8 @@ function StrutModel({ strut, game }: { strut: Strut; game: Game }) {
   return (
     <>
       <StrutBody strut={strut} flames={flames.current} broken={strut.broken} />
-      <StrutFootings strut={strut} game={game} />
+      {/* A dug-out strut no longer bears on the rock, so it has no grout base. */}
+      {!strut.broken && <StrutFootings strut={strut} game={game} />}
     </>
   );
 }

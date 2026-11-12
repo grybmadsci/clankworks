@@ -147,7 +147,13 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .layers [data-tip]:hover::after { bottom: auto; left: auto; right: calc(100% + 10px); top: 50%; transform: translateY(-50%); }
 
 /* Confirmation when a dig would undermine a strut */
-.confirm { top: 110px; left: 50%; transform: translateX(-50%); width: 420px; max-width: calc(100% - 24px); border-color: #d9a521; pointer-events: auto; }
+.confirm { position: fixed; top: 0; left: 0; width: 340px; max-width: calc(100% - 24px); border-color: #d9a521; pointer-events: auto; z-index: 6; }
+/* A pointer from the card down (or up) to the dig orders it's about */
+.confirm::after {
+  content: ''; position: absolute; left: var(--tip-x, 50%); bottom: -9px; margin-left: -8px;
+  border: 8px solid transparent; border-bottom: 0; border-top-color: #d9a521;
+}
+.confirm.below::after { bottom: auto; top: -9px; border: 8px solid transparent; border-top: 0; border-bottom-color: #d9a521; }
 .confirm h3 { color: #ffd76b; text-transform: none; letter-spacing: 0; font-size: 14px; }
 .confirm p { margin: 0 0 8px; color: #d8c8ae; font-size: 12px; line-height: 1.45; }
 .confirm div { display: flex; gap: 8px; justify-content: flex-end; }
@@ -218,3 +224,23 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .cost-card h4 { margin: 7px 10px 2px; font-size: 13px; color: var(--accent); }
 .cost-card p { margin: 0 10px 8px; font-size: 12px; line-height: 1.4; color: #d8c8ae; }
 .topbar { pointer-events: auto; }
+
+/* Main menu and settings: centred modals over a dimmed, paused game */
+.modal-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(5, 4, 3, 0.6); pointer-events: auto; }
+.modal { position: relative; width: 320px; padding: 18px 20px; border-color: var(--accent); display: flex; flex-direction: column; gap: 8px; }
+.modal h2 { margin: 0; color: var(--accent); font-size: 18px; letter-spacing: 0.12em; text-transform: uppercase; text-align: center; }
+.modal .sub { margin: 0 0 6px; text-align: center; color: var(--muted); font-size: 12px; }
+.modal h3 { margin: 8px 0 2px; }
+.modal button {
+  font: inherit; cursor: pointer; padding: 8px 12px; border-radius: 6px; color: var(--text); background: #2a2017; border: 1px solid var(--edge);
+}
+.modal button:hover { border-color: var(--accent); background: #3a2c1c; }
+.modal button.quiet { color: var(--muted); }
+.settings { width: 380px; }
+.settings .row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text); }
+.settings .row span { flex: 1; }
+.settings .row input[type=range] { flex: 2; accent-color: var(--accent); }
+.settings .row b { width: 40px; text-align: right; color: var(--accent); }
+.settings .check input { accent-color: var(--accent); width: 15px; height: 15px; }
+.settings .buttons { display: flex; justify-content: flex-end; margin-top: 8px; }
+.modal { background: #17120d; }

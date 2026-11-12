@@ -269,7 +269,7 @@ export function Base({ game }: { game: Game }) {
     firebox: useRef<THREE.MeshBasicMaterial>(null!),
     root: useRef<THREE.Group>(null!), drill: useRef<THREE.Group>(null!), wall: useRef<THREE.Group>(null!),
     conveyor: useRef<THREE.Group>(null!), shelf: useRef<THREE.Group>(null!), festoon: useRef<THREE.Group>(null!),
-    lamps: useRef<THREE.Group>(null!), stock: useRef<THREE.Group>(null!),
+    lamps: useRef<THREE.Group>(null!), stock: useRef<THREE.Group>(null!), pipes: useRef<THREE.Group>(null!),
   };
   /** Seconds into deployment: -1 while drilling, large once deployed. */
   const deployed = () => (game.intro.phase === 'done' ? 99 : game.intro.phase === 'deploy' ? game.intro.t : -1);
@@ -287,6 +287,7 @@ export function Base({ game }: { game: Game }) {
     drill.rotation.y += dt * (intro.phase === 'drill' ? 18 : 4);
     grow(drill, intro.phase === 'drill' ? 1 : 1 - stage(0, 0.6));
     grow(ref.wall.current, easeOutBack(stage(0.3, 1.1)));
+    grow(ref.pipes.current, easeOutBack(stage(0.6, 1.4)));
     grow(ref.conveyor.current, easeOutBack(stage(0.9, 1.7)));
     grow(ref.shelf.current, easeOutBack(stage(1.2, 2.0)));
     grow(ref.festoon.current, easeOutBack(stage(1.6, 2.6)));
@@ -417,9 +418,12 @@ export function Base({ game }: { game: Game }) {
       <mesh position={[-0.12, 1.12, Z_HUB - 0.2]} material={M.brass}><cylinderGeometry args={[0.02, 0.025, 0.12, 10]} /></mesh>
       <mesh geometry={geo.stack} material={M.darkIron} position={[0.55, 0.86, Z_HUB - 0.18]} />
       {[0.95, 1.2].map((y) => <mesh key={y} position={[0.55, y, Z_HUB - 0.18]} rotation={[Math.PI / 2, 0, 0]} material={M.brass}><torusGeometry args={[0.078, 0.01, 6, 20]} /></mesh>)}
-      {/* Steam pipes */}
-      <mesh geometry={geo.pipeA} material={M.copper} />
-      <mesh geometry={geo.pipeB} material={M.verdigris} />
+      {/* Steam pipes. The two that run out to the cavern walls unfold once the base has landed;
+          on the way down they'd poke through the sides of the shaft. */}
+      <group ref={ref.pipes}>
+        <mesh geometry={geo.pipeA} material={M.copper} />
+        <mesh geometry={geo.pipeB} material={M.verdigris} />
+      </group>
       <mesh geometry={geo.pipeC} material={M.copper} />
       {/* Steam engine: flywheel, crank rod, crosshead and cylinder */}
       <mesh ref={ref.fly} geometry={geo.fly} material={M.darkIron} position={[-0.62, 0.3, FRONT + 0.06]} />

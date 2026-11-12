@@ -459,6 +459,18 @@ try {
     const atRisk = s.atRisk;
     await new Promise((r) => setTimeout(r, 350));
     const asked = !!document.querySelector('.confirm');
+    // The question sits by the held dig orders, not at a fixed spot on screen.
+    window.__view.goto(g.strutConfirm.x, g.strutConfirm.y + 1);
+    await new Promise((r) => setTimeout(r, 400));
+    const anchored = (() => {
+      const c = g.strutConfirm, cam = window.__view.camera, box = document.querySelector('.confirm')?.getBoundingClientRect();
+      if (!c || !box) return false;
+      const e = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse).elements;
+      const w = e[3] * c.x + e[7] * c.y + e[15];
+      const sx = ((e[0] * c.x + e[4] * c.y + e[12]) / w * 0.5 + 0.5) * innerWidth, sy = (-(e[1] * c.x + e[5] * c.y + e[13]) / w * 0.5 + 0.5) * innerHeight;
+      return sx >= box.left - 20 && sx <= box.right + 20 && Math.min(Math.abs(sy - box.top), Math.abs(sy - box.bottom)) < 60;
+    })();
+    window.__view.goto(d.x, d.y + 1);
     const held = !g.exposedTargets({ x: (ci + 0.5) * 0.25, y: (cj - 5) * 0.25 }, g.bots[0]).some((k) => Math.abs((k % W) - ci) <= 6);
     // Cancel: the orders around the strut go and it is safe again.
     document.querySelector('.confirm button:last-child').click();
@@ -474,11 +486,12 @@ try {
     const broken = s.broken, bitsCleared = t.strut[(cj + 2) * W + ci] === 0;
     const tag = !!document.querySelector('.bubble.strut.broken');
     g.designate((ci + 0.5) * 0.25, (cj - 8) * 0.25, 3, false);
-    return { placed, stretched, brokenAfterStretch, warned, atRisk, asked, held, marksLeft, safe, broken, bitsCleared, tag };
+    return { placed, stretched, brokenAfterStretch, warned, atRisk, asked, anchored, held, marksLeft, safe, broken, bitsCleared, tag };
   });
   console.log('telescope', JSON.stringify(telescope));
   check(telescope.placed === 8 && telescope.stretched === 12 && !telescope.brokenAfterStretch, `a strut stretches when the floor under it is dug out (${telescope.placed} → ${telescope.stretched} cells)`);
   check(telescope.warned && telescope.atRisk && telescope.asked && telescope.held, 'a dig order that would undermine a strut is held and asks for confirmation');
+  check(telescope.anchored, 'the confirmation is pinned beside the dig orders in question');
   check(telescope.marksLeft === 0 && telescope.safe, 'cancelling from the confirmation clears the digs around the strut');
   check(telescope.broken && telescope.bitsCleared && telescope.tag, 'a strut dug out past its limit stops supporting and is flagged');
 
@@ -517,14 +530,17 @@ try {
     await page.waitForTimeout(400);
     return page.evaluate(() => { const el = document.querySelector('.inspector'); return el.style.display === 'block' ? el.textContent : ''; });
   };
-  await page.keyboard.press('Escape');
+  await page.evaluate(() => { window.__game.tool = 'select'; });
   const base = await page.evaluate(() => window.__game.layout.depot);
+  // The default cursor is plain: hovering shows nothing. The Info tool (I) describes things.
+  const plain = await hover(base.x, base.y + 0.45, -0.775);
+  await page.keyboard.press('i');
   const tool0 = await page.evaluate(() => window.__game.tool);
   const hoverBase = await hover(base.x, base.y + 0.45, -0.775);
   const hoverRock = await hover(base.x, base.y - 1.2, 0);
   const icons = await page.evaluate(() => [...document.querySelectorAll('.tools button, .layers > button')].every((b) => b.querySelector('svg')));
   console.log('hover', JSON.stringify({ tool0, hoverBase, hoverRock }));
-  check(tool0 === 'select' && /Base/.test(hoverBase) && /drones docked/.test(hoverBase) && /dig|Cannot be dug/i.test(hoverRock), 'plain cursor describes what it hovers (the base, the rock)');
+  check(plain === '' && tool0 === 'info' && /Base/.test(hoverBase) && /drones docked/.test(hoverBase) && /dig|Cannot be dug/i.test(hoverRock), 'the plain cursor is plain; the Info tool describes what it hovers (the base, the rock)');
   check(icons, 'every tool and layer button has an icon');
   await page.evaluate(() => { window.__game.tool = 'dig'; });
   await hover(base.x + 3.5, base.y + 1.2, 0);
@@ -548,6 +564,28 @@ try {
   const card = await page.evaluate(() => { const c = document.querySelector('.cost-card'); return c ? { bar: c.querySelector('.cost-bar').textContent, icons: c.querySelectorAll('.cost-bar svg').length } : null; });
   await page.mouse.move(640, 300);
   check(resIcons === 4 && card && /8/.test(card.bar) && card.icons === 1, `resources have icons, and building cards lead with their cost (${card?.bar})`);
+
+  // Esc from the plain cursor opens the main menu and pauses; Settings can switch alerts off.
+  await page.evaluate(() => { window.__game.tool = 'select'; });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  const t0 = await page.evaluate(() => window.__game.time);
+  await page.waitForTimeout(500);
+  const paused = await page.evaluate((t0) => ({ menu: !!document.querySelector('.modal.menu'), frozen: window.__game.time === t0 && window.__game.paused }), t0);
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByLabel(/Invalid actions and hints/).uncheck();
+  const silenced = await page.evaluate(() => {
+    const g = window.__game, n = g.log.length, last = g.log.at(-1)?.id;
+    g.placeStrut(0.5, 0.5);
+    return { hints: g.alerts.hints, logged: g.log.at(-1)?.id !== last, saved: JSON.parse(localStorage.getItem('clankworks-settings')).alerts.hints };
+  });
+  await page.getByLabel(/Invalid actions and hints/).check();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  const resumed = await page.evaluate(() => ({ menu: !!document.querySelector('.modal'), paused: window.__game.paused }));
+  check(paused.menu && paused.frozen, 'Esc from the plain cursor opens the main menu and pauses the game');
+  check(silenced.hints === false && !silenced.logged && silenced.saved === false && !resumed.menu && !resumed.paused, 'Settings switch an alert category off (and Esc backs out of the dialogs)');
 
   // Real input path: toolbar button, canvas click, and hotkeys.
   const ui = await page.evaluate(() => {

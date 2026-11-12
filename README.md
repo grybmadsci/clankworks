@@ -60,12 +60,17 @@ partly dug rock. Struts
 follow the rock. Dig out the floor under a strut's bottom plate (or the rock above its
 top plate) and it stretches to the new floor or ceiling, up to its 4m limit. Ordering a dig
 that would take it past that warns you first, and the strut gets an "⚠ Dig will undermine
-strut" tag. The drones hold off on the orders around that strut, and a panel asks whether to dig
-anyway or cancel the dig orders near the strut. If the dig goes ahead anyway, the strut stops supporting the ceiling, goes dark
-and rusty, and shows "⚠ Strut not supporting" until the gap is short enough to brace again.
+strut" tag. The drones hold off on the orders around that strut, and a card pinned beside those
+orders asks whether to dig anyway or cancel them. If the dig goes ahead anyway, the strut stops supporting the ceiling, goes dark
+and rusty, loses its grout bases, and shows "⚠ Strut not supporting" until the gap is short
+enough to brace again.
 
 The integrity layer shows the stress map: green rock is sound, and ceilings turn yellow,
 then red, as they approach their limit. Cracking rock flashes.
+
+Settings (from the main menu) has a master volume slider and switches for each kind of alert:
+cave-ins, near-collapse warnings, strut warnings, drone status, crew chatter, and invalid
+actions or hints. They are saved in the browser.
 
 Every tool, layer and resource has an icon, and the canvas cursor changes to match the active
 tool. Hovering a building or a priced order shows a card that leads with its cost (red if you
@@ -78,7 +83,8 @@ The toolbar has three sections:
 
 | Section | Input | Action |
 | --- | --- | --- |
-| Orders | `Esc` Select | The default plain cursor: hover anything (a drone, strut, the base, a critter, rock or open cave) for a card of basic facts about it |
+| Orders | `Esc` Select | The default plain cursor. `Esc` from Select opens the main menu (Resume, Settings, Restart shift) and pauses the game |
+| Orders | `I` Info | Hover anything (a drone, strut, the base, a critter, rock or open cave) for a card of basic facts about it |
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc or square: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor. `Q` (or the Brush toggle above the toolbar) switches between a round and a square brush |
 | Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
 | Buildings | `3` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |

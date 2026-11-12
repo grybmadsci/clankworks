@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
-import { COST, TUTORIAL, type Game, type Overlay, type Tool } from '../game/Game';
+import { ALERTS, COST, TUTORIAL, type AlertKind, type Game, type Overlay, type Tool } from '../game/Game';
 import { MATERIAL_KEY } from '../render/materials';
 import { inspect } from '../game/inspect';
 import { Icon, cursorFor } from './icons';
-import { unlockAudio } from '../game/audio';
+import { setVolume, unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
 interface ToolDef { id: Tool; key: string; label: string; hint: string }
 const ORDERS: ToolDef[] = [
-  { id: 'select', key: 'Esc', label: 'Select', hint: 'Plain cursor: hover anything to see what it is' },
+  { id: 'select', key: 'Esc', label: 'Select', hint: 'Plain cursor. Press Esc again for the menu' },
+  { id: 'info', key: 'I', label: 'Info', hint: 'Hover anything in the world to see what it is' },
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
   { id: 'scrap', key: 'X', label: 'Scrap', hint: 'Take down a strut for 1 scrap back. Whatever it was holding up may come down' },
@@ -31,15 +32,29 @@ const LAYERS = [
 /** DOM overlay: resources, tools, critter status, the status log, and emote speech bubbles. */
 export function Hud({ game }: { game: Game }) {
   const [, force] = useState(0);
+  // Main menu / settings dialog. The game is paused while either is open.
+  const [menuState, setMenuState] = useState<null | 'main' | 'settings'>(null);
+  const menu = useRef(menuState);
+  const setMenu = (m: null | 'main' | 'settings') => { menu.current = m; game.paused = m !== null; setMenuState(m); };
+  useEffect(() => { applySettings(game, loadSettings()); }, [game]);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 200);
     const key = (e: KeyboardEvent) => {
       unlockAudio();
+      // Esc: close a dialog, else drop back to the plain cursor, else open the menu.
+      if (e.key === 'Escape') {
+        if (menu.current) setMenu(menu.current === 'settings' ? 'main' : null);
+        else if (game.tool !== 'select' && game.intro.phase === 'done') game.tool = 'select';
+        else setMenu('main');
+        force((n) => n + 1);
+        return;
+      }
+      if (menu.current) return;
       if (game.intro.phase !== 'done') {
         if (e.key === ' ') game.skipIntro();
         return;
       }
-      const tool = e.key === 'Escape' ? TOOLS[0] : TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
+      const tool = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
       if (tool) game.tool = tool.id;
       if (e.key === 'b') game.buildBot();
       if (e.key === 'q') game.brushSquare = !game.brushSquare;
@@ -124,7 +139,7 @@ export function Hud({ game }: { game: Game }) {
         </aside>
       )}
 
-      {game.pendingCollapses.length > 0 && (
+      {game.pendingCollapses.length > 0 && game.alerts.caveIn && (
         <div className="alerts">
           {game.pendingCollapses.slice(0, 3).map((p) => (
             <button key={p.id} onClick={() => view.goto(p.x, p.y)} className={p.due - game.time < 5 ? 'urgent' : ''}>
@@ -137,16 +152,9 @@ export function Hud({ game }: { game: Game }) {
       <aside className="panel log">
         {game.log.slice(-8).map((l) => <div key={l.id} className={l.kind}>{l.text}</div>)}
       </aside>
-      {game.strutConfirm && (
-        <div className="confirm panel">
-          <h3>⚠ This dig would undermine a strut</h3>
-          <p>A strut can only stretch to 4m. Dig here and it stops holding up the ceiling. The drones are holding off on the orders around it until you decide.</p>
-          <div>
-            <button className="danger" onClick={() => { game.resolveStrutConfirm(true); force((n) => n + 1); }}>Dig anyway</button>
-            <button onClick={() => { game.resolveStrutConfirm(false); force((n) => n + 1); }}>Cancel the digs near the strut</button>
-          </div>
-        </div>
-      )}
+      {game.strutConfirm && <StrutConfirm game={game} onDone={() => force((n) => n + 1)} />}
+      {menuState === 'main' && <MainMenu onResume={() => setMenu(null)} onSettings={() => setMenu('settings')} />}
+      {menuState === 'settings' && <Settings game={game} onBack={() => setMenu('main')} />}
 
       {game.intro.phase === 'done' && <Tutorial game={game} onChange={() => force((n) => n + 1)} />}
 
@@ -220,6 +228,104 @@ function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
       </div>
     </aside>
     </>
+  );
+}
+
+/**
+ * The "this dig would undermine a strut" question, pinned to the held dig orders in the world
+ * (it follows them as the camera moves, and points at them).
+ */
+function StrutConfirm({ game, onDone }: { game: Game; onDone: () => void }) {
+  const el = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    const v = new THREE.Vector3();
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const c = game.strutConfirm, cam = view.camera, box = el.current;
+      if (!c || !cam || !box) return;
+      v.set(c.x, c.y, 0).project(cam);
+      const W = innerWidth, H = innerHeight, w = box.offsetWidth, h = box.offsetHeight;
+      const px = (v.x * 0.5 + 0.5) * W, py = (-v.y * 0.5 + 0.5) * H;
+      // Sit above the orders (below them if there's no room), kept on screen.
+      const above = py - h - 24 > 50;
+      const x = Math.min(W - w - 8, Math.max(8, px - w / 2));
+      const y = above ? py - h - 24 : Math.min(H - h - 8, py + 24);
+      box.style.transform = `translate(${x}px, ${y}px)`;
+      box.style.setProperty('--tip-x', `${Math.min(w - 16, Math.max(16, px - x))}px`);
+      box.classList.toggle('below', !above);
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, [game]);
+  return (
+    <div ref={el} className="confirm panel">
+      <h3>⚠ This dig would undermine a strut</h3>
+      <p>A strut can only stretch to 4m. Dig here and it stops holding up the ceiling. The drones are holding off on these orders until you decide.</p>
+      <div>
+        <button className="danger" onClick={() => { game.resolveStrutConfirm(true); onDone(); }}>Dig anyway</button>
+        <button onClick={() => { game.resolveStrutConfirm(false); onDone(); }}>Cancel these digs</button>
+      </div>
+    </div>
+  );
+}
+
+/** Settings kept in the browser between sessions. */
+interface SettingsData { volume: number; alerts: Record<AlertKind, boolean> }
+const SETTINGS_KEY = 'clankworks-settings';
+function loadSettings(): SettingsData {
+  const defaults: SettingsData = { volume: 0.8, alerts: Object.fromEntries(Object.keys(ALERTS).map((k) => [k, true])) as Record<AlertKind, boolean> };
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as Partial<SettingsData> | null;
+    return { volume: saved?.volume ?? defaults.volume, alerts: { ...defaults.alerts, ...saved?.alerts } };
+  } catch {
+    return defaults;
+  }
+}
+function applySettings(game: Game, s: SettingsData) {
+  setVolume(s.volume);
+  game.alerts = { ...s.alerts };
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* storage unavailable: settings last this session */ }
+}
+
+/** Main menu: opened with Esc from the plain cursor. The game is paused behind it. */
+function MainMenu({ onResume, onSettings }: { onResume: () => void; onSettings: () => void }) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal panel menu">
+        <h2>Clankworks</h2>
+        <p className="sub">Paused</p>
+        <button autoFocus onClick={onResume}>Resume</button>
+        <button onClick={onSettings}>Settings</button>
+        <button className="quiet" onClick={() => location.reload()}>Restart shift</button>
+      </div>
+    </div>
+  );
+}
+
+/** Settings: master volume, and which kinds of alert to show. */
+function Settings({ game, onBack }: { game: Game; onBack: () => void }) {
+  const [s, setS] = useState(loadSettings);
+  const update = (next: SettingsData) => { setS(next); applySettings(game, next); };
+  return (
+    <div className="modal-backdrop">
+      <div className="modal panel settings">
+        <h2>Settings</h2>
+        <label className="row">
+          <span>Volume</span>
+          <input type="range" min={0} max={100} value={Math.round(s.volume * 100)} onChange={(e) => update({ ...s, volume: Number(e.target.value) / 100 })} />
+          <b>{Math.round(s.volume * 100)}%</b>
+        </label>
+        <h3>Alerts</h3>
+        {(Object.keys(ALERTS) as AlertKind[]).map((k) => (
+          <label key={k} className="row check">
+            <input type="checkbox" checked={s.alerts[k]} onChange={(e) => update({ ...s, alerts: { ...s.alerts, [k]: e.target.checked } })} />
+            <span>{ALERTS[k]}</span>
+          </label>
+        ))}
+        <div className="buttons"><button onClick={onBack}>Back</button></div>
+      </div>
+    </div>
   );
 }
 
@@ -301,7 +407,7 @@ function Inspector({ game }: { game: Game }) {
       }
       const el = card.current, ray = view.ray;
       if (!el) return;
-      if (game.tool !== 'select' || !ray || !view.cursor) { el.style.display = 'none'; return; }
+      if (game.tool !== 'info' || game.paused || !ray || !view.cursor) { el.style.display = 'none'; return; }
       el.style.transform = `translate(${view.mouse.x + 18}px, ${view.mouse.y + 14}px)`;
       if (now < next) return;
       next = now + 100;
@@ -390,7 +496,7 @@ function Bubbles({ game }: { game: Game }) {
       }
       // Struts that were dug out, or would be by pending dig orders.
       for (const s of game.struts) {
-        if (!s.broken && !s.atRisk) continue;
+        if ((!s.broken && !s.atRisk) || !game.alerts.strut) continue;
         const id = `s${s.id}`;
         live.add(id);
         let el = els.get(id);
@@ -405,7 +511,7 @@ function Bubbles({ game }: { game: Game }) {
         el.style.transform = `translate(-50%, -50%) translate(${(v.x * 0.5 + 0.5) * W}px, ${(-v.y * 0.5 + 0.5) * H}px)`;
       }
       // Early warnings over ceilings close to their safe span.
-      for (const u of game.unstable) {
+      for (const u of game.alerts.structural ? game.unstable : []) {
         const id = 'u' + u.key;
         live.add(id);
         let el = els.get(id);

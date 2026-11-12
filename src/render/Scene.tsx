@@ -34,7 +34,7 @@ export function Scene({ game }: { game: Game }) {
   const setDpr = useThree((s) => s.setDpr);
   useEffect(() => { if (quality.low) setDpr(0.75); }, [setDpr]);
   useFrame((_, dt) => {
-    game.update(dt);
+    if (!game.paused) game.update(dt);
     overlayMode.value = game.overlay;
     materialMask.value = game.materialMask;
     gameTime.value = game.time;
