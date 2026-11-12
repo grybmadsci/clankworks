@@ -53,10 +53,6 @@ export function inspect(game: Game, at: RayAt): Inspection | null {
       lines: [game.time < s.hotUntil ? 'Smelting ore into plates' : game.resources.ore >= 1 ? 'Loading ore' : 'Waiting for ore', `Integrity ${pct(s.hp)}`, `${game.platesMade} plates made so far`],
     };
   }
-  for (const b of game.blasts) {
-    if (!near(b, at(Z_ACTORS + 0.2), 0.2)) continue;
-    return { kind: 'blast', title: 'Blast charge', lines: [`Detonates in ${Math.max(0, b.fuse).toFixed(1)}s`, 'Stand clear'] };
-  }
   const pc = at(Z_CRITTER);
   for (const c of game.critters) {
     if (!near({ x: c.x, y: c.y + 0.1 }, pc, 0.2)) continue;

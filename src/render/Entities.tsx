@@ -4,7 +4,7 @@ import * as THREE from 'three/webgpu';
 import { CELL, DEPTH, ISO } from '../config';
 import { enabled } from '../debug';
 import { groutMaterial } from './materials';
-import type { Blast, Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
+import type { Bot, Critter, Debris, Game, Smelter, Strut } from '../game/Game';
 import { Base } from './Base';
 
 export const Z_ACTORS = -DEPTH * 0.45;
@@ -27,7 +27,6 @@ export function Entities({ game }: { game: Game }) {
       {game.debris.map((d) => <DebrisModel key={d.id} debris={d} />)}
       {game.struts.map((s) => <StrutModel key={`${s.id}:${s.j0}:${s.j1}:${s.broken}`} strut={s} game={game} />)}
       {game.smelters.map((s) => <SmelterModel key={s.id} smelter={s} game={game} />)}
-      {game.blasts.map((b) => <BlastModel key={b.id} blast={b} />)}
       {game.critters.map((c) => <CritterModel key={c.id} critter={c} />)}
       <HeadLamps game={game} />
       <StrutLamps game={game} />
@@ -426,17 +425,6 @@ function SmelterModel({ smelter, game }: { smelter: Smelter; game: Game }) {
   return (
     <group position={[smelter.x, smelter.y, Z_ACTORS]}>
       <SmelterBody mouth={mouth} />
-    </group>
-  );
-}
-
-function BlastModel({ blast }: { blast: Blast }) {
-  const led = useRef<THREE.MeshBasicMaterial>(null!);
-  useFrame(() => { led.current.color.setRGB(Math.sin(blast.fuse * (12 - blast.fuse * 3)) > 0 ? 4 : 0.2, 0, 0); });
-  return (
-    <group position={[blast.x, blast.y, Z_ACTORS + 0.2]}>
-      <mesh><cylinderGeometry args={[0.06, 0.06, 0.22, 10]} /><meshStandardMaterial color="#b3261e" /></mesh>
-      <mesh position={[0, 0.13, 0]}><sphereGeometry args={[0.03]} /><meshBasicMaterial ref={led} /></mesh>
     </group>
   );
 }

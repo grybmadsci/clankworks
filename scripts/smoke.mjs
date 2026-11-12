@@ -1,5 +1,5 @@
 // End-to-end smoke test: boots the game in Chromium with WebGPU, fast-forwards the simulation
-// through digging, a blast and a cave-in, checks GPU-produced state, and saves screenshots.
+// through digging and a cave-in, checks GPU-produced state, and saves screenshots.
 //
 //   npm run smoke:win             (WSL: Windows Chrome on the real GPU, headless)
 //   npm run smoke                 (Linux Chromium, headed; under WSL this is SwiftShader)
@@ -144,8 +144,8 @@ try {
   });
   await page.evaluate((d) => window.__view.goto(d.x, d.y + 1), d0);
   await page.waitForTimeout(400);
-  await doStep(async () => { const p = await toScreen(d0.x, d0.y + 0.45, -0.775); await page.mouse.move(p.x, p.y); await page.waitForTimeout(400); });
-  await doStep(async () => { for (const k of ['1', '4', 'Escape']) { await page.keyboard.press(k); await page.waitForTimeout(150); } });
+  await doStep(async () => { await page.hover('.topbar .quota'); await page.waitForTimeout(300); });
+  await doStep(async () => { for (const k of ['1', '3', 'Escape']) { await page.keyboard.press(k); await page.waitForTimeout(150); } });
   await doStep(async () => {
     await page.getByRole('button', { name: 'Material' }).click();
     await page.waitForTimeout(200);
@@ -153,14 +153,14 @@ try {
     await page.getByRole('button', { name: 'Granite' }).click();
     await page.getByRole('button', { name: 'Normal' }).click();
   });
-  await doStep(async () => {
-    const c = await page.evaluate(() => { const c = window.__game.critters[0]; window.__view.goto(c.x, c.y + 0.5); return { x: c.x, y: c.y }; });
-    await page.waitForTimeout(600);
-    const cc = await page.evaluate(() => { const c = window.__game.critters[0]; return { x: c.x, y: c.y + 0.1 }; });
-    const p = await toScreen(cc.x, cc.y, -1.25 * 0.35);
-    await page.mouse.move(p.x, p.y);
-    await page.waitForTimeout(400);
-  });
+  // Objectives: no pointer lines and no way to skip.
+  await page.waitForTimeout(400);
+  const objectiveUi = await page.evaluate(() => ({
+    title: document.querySelector('.tutorial h3')?.textContent,
+    skips: [...document.querySelectorAll('.tutorial button')].filter((b) => /skip/i.test(b.textContent)).length,
+    lines: document.querySelectorAll('.tut-lines line').length,
+  }));
+  check(/Objective 1/.test(objectiveUi.title) && objectiveUi.skips === 0 && objectiveUi.lines === 0, `objectives can't be skipped and draw no pointer lines (${objectiveUi.title})`);
   await page.evaluate((d) => window.__view.goto(d.x, d.y + 1), d0);
   await doStep(() => page.evaluate(() => {
     const g = window.__game, t = g.terrain, d = g.layout.depot;
@@ -191,9 +191,9 @@ try {
   await page.waitForTimeout(400);
   const tutorial = { steps: tutorialLog, done: !(await page.evaluate(() => !!document.querySelector('.tutorial'))), drones: await page.evaluate(() => window.__game.bots.length) };
   console.log('tutorial', JSON.stringify(tutorial));
-  check(tutorial.steps.length === 8 && tutorial.steps.every((s) => s.items > 0 && s.ticked === s.items && s.advanced),
+  check(tutorial.steps.length === 7 && tutorial.steps.every((s) => s.items > 0 && s.ticked === s.items && s.advanced),
     `tutorial checklists tick as each action is done and move on by themselves (${tutorial.steps.map((s) => `${s.ticked}/${s.items}`).join(' ')})`);
-  check(tutorial.steps.slice(1, 5).every((s) => s.pointers > 0), 'tutorial steps about the HUD highlight it and draw a line to it');
+  check(tutorial.steps.slice(1, 4).every((s) => s.pointers > 0), 'tutorial steps about the HUD highlight it and draw a line to it');
   check(tutorial.done && tutorial.drones === 2, 'tutorial finishes after building a drone');
   // Buildings need flat ground, and drones route around them (or past them when they must).
   const build = await page.evaluate(() => {
@@ -315,24 +315,16 @@ try {
   check(after.critters.some((c) => c.endsWith('happy')), 'at least one critter is comfortable');
   await shot('2-digging');
 
-  // Blast the rock under a slab to provoke a cave-in and falling rigidbodies.
-  const blast = await page.evaluate(() => {
-    const g = window.__game;
-    const d = g.layout.depot;
-    g.resources.scrap += 5;
-    g.tool = 'blast';
-    // Build a block of soft dirt beside the base; two charges side by side in it leave an
-    // over-long ceiling.
-    const t = g.terrain, x = d.x + 9.5, y = d.y - 4;
+  // Hollow out the rock under a slab to provoke a cave-in and falling rigidbodies: build a block
+  // of soft dirt beside the base and cut two holes side by side, leaving an over-long ceiling.
+  await page.evaluate(() => {
+    const g = window.__game, d = g.layout.depot, t = g.terrain, x = d.x + 9.5, y = d.y - 4;
     const ci = Math.floor(x / 0.25), cj = Math.floor(y / 0.25);
     for (let j = cj - 8; j <= cj + 12; j++) for (let i = ci - 14; i <= ci + 14; i++) { t.density[j * 512 + i] = 1; t.material[j * 512 + i] = 1; }
     t.markDirty(ci - 15, cj - 9, ci + 15, cj + 13, false);
-    g.useTool(x - 1, y, false);
-    g.useTool(x + 1, y, false);
-    g.tool = 'dig';
-    return g.blasts.length;
+    t.carve(x - 1, y, 1.4, 3);
+    t.carve(x + 1, y, 1.4, 3);
   });
-  check(blast === 2, 'blast charges placed');
   await fastForward(3.5);
   const warning = await page.evaluate(() => {
     const g = window.__game;
@@ -343,9 +335,9 @@ try {
       log: g.log.slice(-10).map((l) => l.text),
     };
   });
-  console.log('after blast', JSON.stringify(warning));
+  console.log('after undermining', JSON.stringify(warning));
   check(warning.pending > 0 && warning.cracking > 0 && warning.log.some((l) => /cave-in warning/i.test(l)),
-    `blast left unsupported rock cracking with a warning (${warning.cracking} cells)`);
+    `undermined rock cracks with a warning (${warning.cracking} cells)`);
   // The HUD re-renders a few times a second; give the banner a moment to appear.
   await page.waitForFunction(() => document.querySelectorAll('.alerts button').length > 0, null, { timeout: 2000 }).catch(() => {});
   const alerts = await page.evaluate(() => ({ banner: document.querySelectorAll('.alerts button').length, tags: document.querySelectorAll('.bubble.collapse').length }));

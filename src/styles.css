@@ -157,7 +157,7 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .confirm button.danger { background: #4a1208; border-color: #e0442b; }
 
 /* Tutorial panel and the HUD area it is describing */
-.tutorial { top: 210px; left: 12px; width: 300px; border-color: var(--accent); pointer-events: auto; }
+.tutorial { top: 56px; left: 12px; width: 300px; border-color: var(--accent); pointer-events: auto; }
 .tutorial h4 { margin: 0 0 4px; color: var(--accent); font-size: 14px; }
 .tutorial p { margin: 0 0 8px; color: #d8c8ae; font-size: 12px; line-height: 1.5; }
 .tutorial .progress { margin-bottom: 8px; padding: 4px 8px; background: rgba(0, 0, 0, 0.3); border-radius: 4px; color: #ffd76b; font-size: 12px; }
@@ -217,3 +217,4 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .cost-bar b.refund { color: #8fd65a; }
 .cost-card h4 { margin: 7px 10px 2px; font-size: 13px; color: var(--accent); }
 .cost-card p { margin: 0 10px 8px; font-size: 12px; line-height: 1.4; color: #d8c8ae; }
+.topbar { pointer-events: auto; }

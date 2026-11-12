@@ -28,7 +28,7 @@ export function chirp(mood = 0, notes = 3) {
   osc.stop(now + notes * 0.07 + 0.1);
 }
 
-/** Low thump for cave-ins and blasts. */
+/** Low thump for cave-ins and the drill. */
 export function rumble(strength = 1) {
   if (!ctx || ctx.state !== 'running') return;
   const now = ctx.currentTime;

@@ -23,15 +23,14 @@ gas lamps, the drones' headlamps, glowing machinery and magma provide most of it
 A short tutorial follows. Each step is a checklist that ticks itself as you do things, and the
 next step starts a moment after the last box is ticked:
 1. Pan and zoom the camera.
-2. Hover the base to see its stockpile.
+2. Hover the inventory bar at the top.
 3. Pick the Dig tool, then a building, then go back to Select.
 4. Show the Material layer, toggle a material in its key, and go back to Normal.
-5. Find a critter and hover it.
 
-Objectives follow: order a dig on copper ore and deliver 5 ore, build a smelter and make 3 plates,
-then save 3 plates and build a second drone. Each step about part of the HUD highlights it and
-draws a line to it. You start with one drone and no plates. "Skip step" and "Skip tutorial" are
-always there.
+Each tour step points a line at the part of the HUD it describes, and can be skipped. Three
+objectives follow: order a dig on copper ore and deliver 5 ore, build a smelter and make 3
+plates, then save 3 plates and build a second drone. Objectives draw no pointer lines and can't
+be skipped. You start with one drone and no plates.
 
 Mining drones wait on the four brass landing pads on top of the base's boiler, so the fleet tops
 out at four. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
@@ -81,16 +80,14 @@ The toolbar has three sections:
 | --- | --- | --- |
 | Orders | `Esc` Select | The default plain cursor: hover anything (a drone, strut, the base, a critter, rock or open cave) for a card of basic facts about it |
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc or square: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor. `Q` (or the Brush toggle above the toolbar) switches between a round and a square brush |
-| Orders | `3` Blast | Demolition charge with a 2.5 s fuse (1 scrap) |
 | Orders | `X` Scrap | Take down the strut under the cursor (highlighted red) for 1 scrap back. Whatever it held up is re-checked |
-| Buildings | `4` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
-| Buildings | `5` Smelter | Ore → plates (8 scrap). It needs flat, level ground and can't overlap the base, a strut or another building. A hologram previews where it will stand: cyan if it fits, red if not |
+| Buildings | `3` Strut | Floor-to-ceiling steel support, up to 4m, hung with small lamps (2 scrap). A hologram previews the span. Wide ceilings collapse without them; one placed under cracking rock saves it |
+| Buildings | `4` Smelter | Ore → plates (8 scrap). It needs flat, level ground and can't overlap the base, a strut or another building. A hologram previews where it will stand: cyan if it fits, red if not |
 | Buildings | `B` Drone | Build a drone (3 plates), one per landing pad |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 
-The critters need 6–38 °C, oxygen, no toxic gas and dry feet (their alerts are switched off for
-now; the Critters panel shows how they're doing). Breaching the toxic pocket under
+The critters need 6–38 °C, oxygen, no toxic gas and dry feet (they have no alerts or panel for now). Breaching the toxic pocket under
 their cave or flooding it from the aquifer will cost you critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
 survivors, Carl's alcove, stuck drones, losses that still increased ore output, and so on).
 
@@ -168,7 +165,7 @@ Each kernel gets its own storage node over the shared attribute.
 
 - `npm run smoke` boots the game in Chromium, watches the base drill down and deploy, checks the
   toolbar sections, and fast-forwards the simulation through drone
-  mining, the dig range limit, a blast, a cave-in warning and collapse chain, a strut saving a
+  mining, the dig range limit, a cave-in warning and collapse chain, a strut saving a
   cracking ceiling, a strut stretching, warning about and then losing its footing, a
   near-collapse warning, fog of war, streaming a far chunk out and back in
   with its changes intact, a magma chamber heating rock, and real toolbar, canvas and hotkey

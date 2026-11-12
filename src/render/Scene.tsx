@@ -205,7 +205,7 @@ function Cursor({ game }: { game: Game }) {
   useFrame(() => {
     const c = view.cursor;
     const brush = game.tool === 'dig' || game.tool === 'cancel';
-    const marker = game.tool === 'blast' || game.tool === 'scrap';
+    const marker = game.tool === 'scrap';
     const sq = brush && game.brushSquare;
     ring.current.visible = !!c && (brush || marker) && !sq;
     squareRing.current.visible = !!c && sq;
@@ -214,7 +214,7 @@ function Cursor({ game }: { game: Game }) {
     if (!c) return;
     const r = game.tool === 'dig' ? 0.7 : game.tool === 'cancel' ? 0.9 : 0.25;
     const bad = game.tool === 'cancel' || (game.tool === 'dig' && !game.inDigRange(c.x, c.y));
-    const col = bad ? '#ff5544' : game.tool === 'blast' ? '#ff2222' : '#ffd23f';
+    const col = bad ? '#ff5544' : '#ffd23f';
     ring.current.position.set(c.x, c.y, 0.08);
     ring.current.scale.setScalar(r);
     ringMat.current.color.set(col);

@@ -13,12 +13,11 @@ const ORDERS: ToolDef[] = [
   { id: 'select', key: 'Esc', label: 'Select', hint: 'Plain cursor: hover anything to see what it is' },
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
-  { id: 'blast', key: '3', label: 'Blast', hint: 'Demolition charge, 2.5s fuse (1 scrap)' },
   { id: 'scrap', key: 'X', label: 'Scrap', hint: 'Take down a strut for 1 scrap back. Whatever it was holding up may come down' },
 ];
 const BUILDINGS: ToolDef[] = [
-  { id: 'strut', key: '4', label: 'Strut', hint: 'Floor-to-ceiling steel support up to 4m; stretches when its ends are dug out; braces cracking rock (2 scrap)' },
-  { id: 'smelter', key: '5', label: 'Smelter', hint: 'Turns ore into plates (8 scrap). Shows a hologram where it would go' },
+  { id: 'strut', key: '3', label: 'Strut', hint: 'Floor-to-ceiling steel support up to 4m; stretches when its ends are dug out; braces cracking rock (2 scrap)' },
+  { id: 'smelter', key: '4', label: 'Smelter', hint: 'Turns ore into plates (8 scrap). Shows a hologram where it would go' },
 ];
 const TOOLS = [...ORDERS, ...BUILDINGS];
 const LAYERS = [
@@ -56,7 +55,7 @@ export function Hud({ game }: { game: Game }) {
   const fmt = (v: number) => (v < 10 ? v.toFixed(1) : Math.floor(v).toString());
   return (
     <div className="hud">
-      <header className="topbar">
+      <header className="topbar" onMouseEnter={() => game.tutorialNote('hover:topbar')}>
         <div className="title">CLANKWORKS <span>Rustbucket Logistics</span></div>
         <Res icon="ore" label="Ore" value={fmt(r.ore)} />
         <Res icon="nut" label="Scrap" value={fmt(r.scrap)} />
@@ -124,17 +123,6 @@ export function Hud({ game }: { game: Game }) {
           <p className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom</p>
         </aside>
       )}
-
-      <aside className="panel critters">
-        <h3>Critters</h3>
-        {game.critters.map((c) => (
-          <div key={c.id} className={c.dead ? 'dead' : c.happy ? 'happy' : 'sad'}>
-            <span>{c.name}</span>
-            <span>{c.dead ? 'expired' : c.happy ? 'thriving' : c.complaint}</span>
-            <meter min={0} max={100} value={Math.max(0, c.health)} />
-          </div>
-        ))}
-      </aside>
 
       {game.pendingCollapses.length > 0 && (
         <div className="alerts">
@@ -227,8 +215,8 @@ function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
       </ul>
       <div className="buttons">
         <span className="status">{complete ? '✓ Done!' : ''}</span>
-        <button className="quiet" onClick={() => { game.tutorialNext(); onChange(); }}>Skip step</button>
-        <button className="quiet" onClick={() => { game.skipTutorial(); onChange(); }}>Skip tutorial</button>
+        {tour && <button className="quiet" onClick={() => { game.tutorialNext(); onChange(); }}>Skip step</button>}
+        {tour && <button className="quiet" onClick={() => { game.skipTutorial(); onChange(); }}>Skip tutorial</button>}
       </div>
     </aside>
     </>
@@ -246,7 +234,6 @@ function ToolGroup({ title, hint, children }: { title: string; hint?: string; ch
 
 /** What each priced tool costs (or refunds, for Scrap). */
 const PRICES: Partial<Record<Tool | 'drone', { cost: Record<string, number>; refund?: boolean }>> = {
-  blast: { cost: COST.blast },
   strut: { cost: COST.strut },
   smelter: { cost: COST.smelter },
   drone: { cost: COST.bot },

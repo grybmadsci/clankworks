@@ -15,7 +15,7 @@ import { alarm, chirp, creak, rumble } from './audio';
 import { DIG_RADIUS, DOCK_SLOTS, HUB, digCenter, dockSlot } from './base';
 import { EMOTES, EmoteId } from './emotes';
 
-export type Tool = 'select' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'blast' | 'scrap';
+export type Tool = 'select' | 'dig' | 'cancel' | 'strut' | 'smelter' | 'scrap';
 export type Overlay = 0 | 1 | 2 | 3 | 4;
 type Vec = { x: number; y: number };
 
@@ -41,7 +41,6 @@ const MIN_WARNED_COLLAPSE = 4;
 export const COST = {
   strut: { scrap: 2 },
   smelter: { scrap: 8 },
-  blast: { scrap: 1 },
   bot: { plates: 3 },
 } as const;
 
@@ -99,7 +98,6 @@ export interface Debris {
  */
 export interface Strut { id: number; i: number; j0: number; j1: number; broken: boolean; atRisk: boolean }
 export interface Smelter { id: number; x: number; y: number; hp: number; smeltTimer: number; hotUntil: number }
-export interface Blast { id: number; x: number; y: number; fuse: number }
 export interface Critter { id: number; name: string; x: number; y: number; vx: number; health: number; happy: boolean; complaint: string; hop: number; dead: boolean }
 export interface Bubble { id: number; text: string; bot?: Bot; x: number; y: number; ttl: number }
 export interface LogEntry { id: number; time: number; text: string; kind: 'emote' | 'info' | 'warn' }
@@ -133,7 +131,10 @@ export interface TutorialItem {
   progress?: (g: Game) => string;
 }
 
-/** One tutorial step. Tour steps point at a UI area (`focus`); objectives are marked `objective`. */
+/**
+ * One tutorial step. Tour steps point at a UI area (`focus`) and can be skipped; objectives are
+ * marked `objective` and must be completed (no pointer lines, no skipping).
+ */
 export interface TutorialStep {
   title: string;
   text: string;
@@ -156,15 +157,15 @@ export const TUTORIAL: TutorialStep[] = [
     title: 'Stockpiles',
     focus: '.topbar',
     text: 'Ore, scrap, plates and your drone count. The bins beside the base fill up to match. The quota on the right is the long-term goal: 30 copper plates.',
-    items: [{ label: 'Hover the base with the Select cursor to see what it holds', done: (_, t) => t.flags.has('saw:base') }],
+    items: [{ label: 'Hover the inventory bar at the top of the screen', done: (_, t) => t.flags.has('hover:topbar') }],
   },
   {
     title: 'Orders and buildings',
     focus: '.tools',
-    text: 'Orders tell drones what to do: Dig, Cancel, Blast, Scrap. Buildings cost resources: struts hold up ceilings, smelters turn ore into plates, and Drone builds another drone. Hover any button for details.',
+    text: 'Orders tell drones what to do: Dig, Cancel, Scrap. Buildings cost resources: struts hold up ceilings, smelters turn ore into plates, and Drone builds another drone. Hover any button for details.',
     items: [
       { label: 'Pick the Dig tool (1)', done: (g) => g.tool === 'dig' },
-      { label: 'Pick a building: Strut (4) or Smelter (5)', done: (g) => g.tool === 'strut' || g.tool === 'smelter' },
+      { label: 'Pick a building: Strut (3) or Smelter (4)', done: (g) => g.tool === 'strut' || g.tool === 'smelter' },
       { label: 'Go back to the Select cursor (Esc)', done: (g, t) => t.checked[0] && t.checked[1] && g.tool === 'select' },
     ],
   },
@@ -179,15 +180,8 @@ export const TUTORIAL: TutorialStep[] = [
     ],
   },
   {
-    title: 'Critters and log',
-    focus: '.critters, .log',
-    text: 'The critters live in a cave to the left of the base; keep them warm, breathing and dry. The log reports cave-ins, warnings and what the crew is up to.',
-    items: [{ label: 'Find the critters and hover one with the Select cursor', done: (_, t) => t.flags.has('saw:critter') }],
-  },
-  {
     title: 'Mine some ore',
     objective: true,
-    focus: '.tools',
     text: 'Copper ore is the rusty rock to the right of the base (the Material layer shows it in orange). Pick Dig and paint over it; your drone will mine it and bring it home.',
     items: [
       { label: 'Order a dig on copper ore', done: (_, t) => t.flags.has('order:copper') },
@@ -197,7 +191,6 @@ export const TUTORIAL: TutorialStep[] = [
   {
     title: 'Smelt plates',
     objective: true,
-    focus: '.tools',
     text: 'Build a Smelter on open floor near the base (it costs scrap). It turns each ore into a copper plate.',
     items: [
       { label: 'Build a smelter', done: (g) => g.smelters.length > 0 },
@@ -207,7 +200,6 @@ export const TUTORIAL: TutorialStep[] = [
   {
     title: 'Build a drone',
     objective: true,
-    focus: '.tools',
     text: 'A new drone costs 3 plates. Press Drone (or B) to build one; it takes the next free landing pad.',
     items: [
       { label: 'Have 3 plates', done: (g) => g.resources.plates >= 3, progress: (g) => `${Math.min(3, Math.floor(g.resources.plates))} / 3` },
@@ -242,7 +234,6 @@ export class Game {
   debris: Debris[] = [];
   struts: Strut[] = [];
   smelters: Smelter[] = [];
-  blasts: Blast[] = [];
   critters: Critter[] = [];
   bubbles: Bubble[] = [];
   log: LogEntry[] = [];
@@ -387,7 +378,6 @@ export class Game {
     }
     for (const d of this.debris) { const p = d.body.translation(); add(p.x, p.y, 4); }
     for (const p of this.pendingCollapses) add(p.x, p.y, 4);
-    for (const b of this.blasts) add(b.x, b.y, 3);
     const v = this.view, margin = CHUNK * CELL;
     const viewIds: number[] = [];
     const before = out.length;
@@ -752,7 +742,6 @@ export class Game {
       case 'cancel': this.designate(x, y, 0.9, false); break;
       case 'strut': if (!drag) this.placeStrut(x, y); break;
       case 'smelter': if (!drag) this.placeSmelter(x, y); break;
-      case 'blast': if (!drag) this.placeBlast(x, y); break;
       case 'scrap': if (!drag) this.scrapStrut(x, y); break;
     }
   }
@@ -909,12 +898,6 @@ export class Game {
     this.emote(this.randomBot(), 'quarryMustGrow');
   }
 
-  placeBlast(x: number, y: number) {
-    if (!this.pay(COST.blast)) return this.warn('Insufficient scrap for a blast charge (1).');
-    this.blasts.push({ id: nextId++, x, y, fuse: 2.5 });
-    this.entityVersion++;
-  }
-
   buildBot() {
     if (this.intro.phase !== 'done') return;
     if (this.bots.filter((b) => !b.dead).length >= DOCK_SLOTS) return this.warn('Every landing pad is taken.');
@@ -931,7 +914,7 @@ export class Game {
     let slot = 0;
     while (used.has(slot)) slot++;
     const { x, y } = dockSlot(this.layout.depot, slot);
-    // Rotors cancel gravity; only impulses (blasts, kicks) knock drones around.
+    // Rotors cancel gravity; only impulses (tantrum kicks, falling rock) knock drones around.
     const body = this.physics.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y).lockRotations().setLinearDamping(0.6).setCcdEnabled(true).setGravityScale(0),
     );
@@ -980,7 +963,6 @@ export class Game {
 
     if (this.intro.phase !== 'done') this.updateIntro(dt);
     this.updateBots(dt);
-    this.updateBlasts(dt);
     this.physics.timestep = dt;
     this.physics.step();
     this.updateDebris(dt);
@@ -1286,35 +1268,7 @@ export class Game {
     this.removeDebris(d);
   }
 
-  // ---------------------------------------------------------------- blasts & machines
-
-  private updateBlasts(dt: number) {
-    for (const b of [...this.blasts]) {
-      b.fuse -= dt;
-      if (b.fuse > 0) continue;
-      this.blasts = this.blasts.filter((o) => o !== b);
-      this.entityVersion++;
-      this.terrain.carve(b.x, b.y, 1.4, 3);
-      this.gpu?.burst(b.x, b.y, 300, ParticleKind.Spark, 7, 0.3);
-      this.gpu?.burst(b.x, b.y, 300, Mat.Dirt, 5, 0.8);
-      this.gpu?.burst(b.x, b.y, 120, ParticleKind.Steam, 1.5, 0.8);
-      rumble(3);
-      this.shake = 1;
-      for (const bot of this.bots) {
-        if (bot.dead) continue;
-        const bp = bot.body.translation();
-        const d = dist(bp, b);
-        if (d < 3) bot.body.applyImpulse({ x: (bp.x - b.x) / d * 1.2, y: (bp.y - b.y) / d * 1.2 + 0.6 }, true);
-        if (d < 1.2) { bot.hp -= 70; if (bot.hp <= 0) this.destroyBot(bot, 'stood too close to the blast'); }
-      }
-      for (const d of this.debris) {
-        const dp = d.body.translation();
-        const r = dist(dp, b);
-        if (r < 3.5) d.body.applyImpulse({ x: (dp.x - b.x) / r * 4 * d.cells.length * 0.05, y: 6 * d.cells.length * 0.05 }, true);
-      }
-      for (const s of [...this.smelters]) if (dist(s, b) < 1.8) this.destroySmelter(s, 'was caught in a blast');
-    }
-  }
+  // ---------------------------------------------------------------- machines
 
   private updateSmelters(dt: number) {
     for (const s of [...this.smelters]) {
@@ -1560,11 +1514,13 @@ export class Game {
     for (const k of this.exposedTargets(p, bot).slice(0, 4)) {
       const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
       if (dist(p, { x: tx, y: ty }) <= DRILL_REACH && this.laserClear(p, k)) { this.startDig(bot, k); return true; }
-      const path = findRoute(this.terrain, p.x, p.y, tx, ty, DIG_APPROACH, 40000);
+      const a = this.approachPoint(k, p);
+      const path = findRoute(this.terrain, p.x, p.y, a.x, a.y, DIG_APPROACH, 40000);
       if (path) {
         this.claim(bot, k);
-        // The route ends near the cell, not at it; keep closing in until the laser reaches.
-        bot.path = [...path, { x: tx, y: ty }];
+        // The route ends near the open cell beside the target; fly into it, where the laser
+        // always has a clear view of the target.
+        bot.path = [...path, a];
         bot.state = 'toDig';
         return true;
       }
@@ -1590,19 +1546,33 @@ export class Game {
   }
 
   /**
-   * Whether a drone at p can see cell k: the beam must cross only open space until it enters the
-   * cell, so lasers never cut through rock that isn't ordered dug.
+   * Whether a drone at p can see cell k: the beam must stay in open space (judged against the
+   * smoothed rock surface, so grazing a corner doesn't count) until it reaches the cell. Lasers
+   * never cut through rock that isn't ordered dug.
    */
   private laserClear(p: Vec, k: number) {
     const tx = cellCenter(k % W), ty = cellCenter((k / W) | 0);
     const steps = Math.ceil(dist(p, { x: tx, y: ty }) / (CELL * 0.25));
     for (let s = 0; s <= steps; s++) {
       const f = s / steps;
-      const i = toCell(p.x + (tx - p.x) * f), j = toCell(p.y + (ty - p.y) * f);
-      if (cellIndex(i, j) === k) return true;
-      if (this.terrain.isSolid(i, j)) return false;
+      const x = p.x + (tx - p.x) * f, y = p.y + (ty - p.y) * f;
+      if (Math.hypot(x - tx, y - ty) <= CELL * 0.75) return true;
+      if (this.terrain.sample(x, y) > ISO + 0.2) return false;
     }
     return true;
+  }
+
+  /** The open cell beside dig target k nearest to `from`, where a drone can see k to cut it. */
+  private approachPoint(k: number, from: Vec): Vec {
+    const i = k % W, j = (k / W) | 0;
+    let best: Vec | null = null, bestD = Infinity;
+    for (const [di, dj] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      if (!this.terrain.isOpen(i + di, j + dj)) continue;
+      const q = { x: cellCenter(i + di), y: cellCenter(j + dj) };
+      const d = dist(q, from);
+      if (d < bestD) { bestD = d; best = q; }
+    }
+    return best ?? { x: cellCenter(i), y: cellCenter(j) };
   }
 
   private claim(bot: Bot, k: number) {
@@ -1644,7 +1614,7 @@ export class Game {
       bot.replanAt = this.time + 3;
       const slot = this.slotOf(bot);
       const goal = bot.state === 'toDig'
-        ? { x: cellCenter(bot.target % W), y: cellCenter((bot.target / W) | 0), r: DIG_APPROACH }
+        ? { ...this.approachPoint(bot.target, p), r: DIG_APPROACH }
         : { ...slot, r: 0.6 };
       const path = findRoute(this.terrain, p.x, p.y, goal.x, goal.y, goal.r, 40000);
       if (path) bot.path = [...path, bot.state === 'toDepot' ? slot : goal];
@@ -1671,7 +1641,7 @@ export class Game {
       this.claim(bot, next);
       k = next;
     }
-    // Rock (or the drone itself, nudged by a blast) can come between the laser and its target:
+    // Rock (or the drone itself, knocked about) can come between the laser and its target:
     // go back to approaching it rather than cutting through.
     if (!this.laserClear(p, k)) {
       bot.state = 'idle';
@@ -1734,7 +1704,7 @@ export class Game {
       const m = boulder.d.body.mass();
       boulder.d.body.applyImpulse({ x: Math.sign(bp.x - p.x || 1) * m * 3, y: m * 2 }, true);
     } else {
-      this.terrain.carve(p.x + bot.facing * 0.35, p.y, 0.3, 0.7);
+      // Kicks the wall: lots of noise and dust, but it never digs rock nobody ordered dug.
       this.gpu?.burst(p.x + bot.facing * 0.35, p.y, 20, Mat.Dirt, 2.5, 0.1);
     }
   }
