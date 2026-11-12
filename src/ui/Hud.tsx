@@ -88,8 +88,10 @@ export function Hud({ game }: { game: Game }) {
     <div className="hud">
       <header className="topbar" onMouseEnter={() => game.tutorialNote('hover:topbar')}>
         <div className="title">CLANKWORKS <span>Rustbucket Logistics</span></div>
+        <i className="sep" aria-hidden="true" />
         {RESOURCES.map((res) => <Res key={res.key} res={res.key} label={res.short} value={fmt(r[res.key])} />)}
         <Res res="drone" label="Drones" value={`${alive.length}/${game.droneCapacity}`} />
+        <i className="sep push" aria-hidden="true" />
         <div className="quota">
           <div>Quota {game.platesMade}/{game.quota} plates</div>
           <div className="bar"><div style={{ width: `${Math.min(100, (game.platesMade / game.quota) * 100)}%` }} /></div>
