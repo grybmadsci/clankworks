@@ -280,22 +280,40 @@ export function StrutBody({ strut, material, flames, broken }: {
 
 /**
  * Point lights for the strut lamps nearest the middle of the view. Every lamp glows, but only
- * a handful cast light, so building lots of struts doesn't multiply the lighting cost.
+ * a handful cast light, so building lots of struts doesn't multiply the lighting cost. A light
+ * stays with its lamp while it fades out, and fades in at its next lamp, so lamps never snap dark
+ * as the camera moves.
  */
+const STRUT_LIGHTS = 10;
 function StrutLamps({ game }: { game: Game }) {
   const lights = useRef<(THREE.PointLight | null)[]>([]);
-  useFrame(({ clock }) => {
+  const slots = useRef(Array.from({ length: STRUT_LIGHTS }, () => ({ key: null as string | null, level: 0, x: 0, y: 0, z: 0 })));
+  useFrame(({ clock }, dt) => {
     const v = game.view;
-    const near = game.struts.filter((s) => !s.broken).flatMap((s) => strutLamps(s))
-      .sort((a, b) => Math.hypot(a.x - v.x, a.y - v.y) - Math.hypot(b.x - v.x, b.y - v.y));
+    const nearest = game.struts.filter((s) => !s.broken)
+      .flatMap((s) => strutLamps(s).map((p, n) => ({ p, key: `${s.id}:${s.j0}:${s.j1}:${n}` })))
+      .sort((a, b) => Math.hypot(a.p.x - v.x, a.p.y - v.y) - Math.hypot(b.p.x - v.x, b.p.y - v.y))
+      .slice(0, STRUT_LIGHTS);
+    const wanted = new Map(nearest.map((l) => [l.key, l.p]));
+    const rate = dt * 2.5;
+    for (const slot of slots.current) {
+      if (!slot.key) continue;
+      if (wanted.has(slot.key)) { slot.level = Math.min(1, slot.level + rate); wanted.delete(slot.key); }
+      else if ((slot.level -= rate) <= 0) { slot.level = 0; slot.key = null; }
+    }
+    for (const [key, p] of wanted) {
+      const free = slots.current.find((sl) => !sl.key);
+      if (!free) break;
+      Object.assign(free, { key, level: 0, x: p.x, y: p.y, z: p.z + 0.2 });
+    }
     lights.current.forEach((l, n) => {
       if (!l) return;
-      const p = near[n];
-      l.intensity = p ? 0.9 * (0.85 + Math.sin(clock.elapsedTime * 11 + n * 2.3) * 0.08) : 0;
-      if (p) l.position.set(p.x, p.y, p.z + 0.2);
+      const slot = slots.current[n];
+      l.intensity = 0.9 * slot.level * (0.85 + Math.sin(clock.elapsedTime * 11 + n * 2.3) * 0.08);
+      l.position.set(slot.x, slot.y, slot.z);
     });
   });
-  return <>{Array.from({ length: 10 }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={3} decay={1.4} />)}</>;
+  return <>{Array.from({ length: STRUT_LIGHTS }, (_, n) => <pointLight key={n} ref={(l) => { lights.current[n] = l; }} color="#ffb46b" distance={3} decay={1.4} intensity={0} />)}</>;
 }
 
 /**

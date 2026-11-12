@@ -135,3 +135,34 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 /* Keep the toolbar compact enough to sit beside the log */
 .tools button { padding: 5px 8px; }
 .tool-group > div { gap: 3px; }
+
+/* Button tooltips, styled like the rest of the HUD */
+[data-tip] { position: relative; }
+[data-tip]:hover::after {
+  content: attr(data-tip); position: absolute; z-index: 20; bottom: calc(100% + 8px); left: 0; width: max-content; max-width: 240px;
+  padding: 6px 9px; white-space: normal; text-align: left; font-size: 12px; line-height: 1.4; font-weight: 400; letter-spacing: 0;
+  text-transform: none; color: #d8c8ae; background: rgba(18, 14, 10, 0.95); border: 1px solid #6a5636; border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); pointer-events: none;
+}
+.layers [data-tip]:hover::after { bottom: auto; left: auto; right: calc(100% + 10px); top: 50%; transform: translateY(-50%); }
+
+/* Confirmation when a dig would undermine a strut */
+.confirm { top: 110px; left: 50%; transform: translateX(-50%); width: 420px; max-width: calc(100% - 24px); border-color: #d9a521; pointer-events: auto; }
+.confirm h3 { color: #ffd76b; text-transform: none; letter-spacing: 0; font-size: 14px; }
+.confirm p { margin: 0 0 8px; color: #d8c8ae; font-size: 12px; line-height: 1.45; }
+.confirm div { display: flex; gap: 8px; justify-content: flex-end; }
+.confirm button, .tutorial button {
+  font: inherit; cursor: pointer; padding: 5px 10px; border-radius: 6px; color: var(--text); background: #5a4220; border: 1px solid var(--accent);
+}
+.confirm button.danger { background: #4a1208; border-color: #e0442b; }
+
+/* Tutorial panel and the HUD area it is describing */
+.tutorial { top: 210px; left: 12px; width: 300px; border-color: var(--accent); pointer-events: auto; }
+.tutorial h4 { margin: 0 0 4px; color: var(--accent); font-size: 14px; }
+.tutorial p { margin: 0 0 8px; color: #d8c8ae; font-size: 12px; line-height: 1.5; }
+.tutorial .progress { margin-bottom: 8px; padding: 4px 8px; background: rgba(0, 0, 0, 0.3); border-radius: 4px; color: #ffd76b; font-size: 12px; }
+.tutorial .buttons { display: flex; gap: 8px; justify-content: space-between; }
+.tutorial button.quiet { background: transparent; border-color: var(--edge); color: var(--muted); }
+.tutorial.quest .buttons { justify-content: flex-end; }
+.tut-focus { outline: 2px solid var(--accent); outline-offset: 3px; animation: tut-glow 1.2s ease-in-out infinite alternate; }
+@keyframes tut-glow { from { box-shadow: 0 0 2px rgba(240, 184, 74, 0.3); } to { box-shadow: 0 0 18px rgba(240, 184, 74, 0.8); } }

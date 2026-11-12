@@ -97,7 +97,38 @@ try {
   check(gpu.meshVerts > 50000 && gpu.slots > 10, `GPU mesher built ${gpu.meshVerts} terrain vertices across ${gpu.slots} chunk slots`);
 
   const docked = await page.evaluate(() => window.__game.bots.map((b) => b.state));
-  check(docked.length === 3 && docked.every((s) => s === 'docked'), `drones start docked at the base (${docked.join(',')})`);
+  check(docked.length === 1 && docked[0] === 'docked', `the shift starts with one drone, docked at the base (${docked.join(',')})`);
+
+  // Tutorial: a tour of the HUD, then objectives that complete as you play.
+  const tutorial = await page.evaluate(async () => {
+    const g = window.__game;
+    const wait = () => new Promise((r) => setTimeout(r, 300));
+    await wait();
+    const seen = [];
+    for (let n = 0; n < 5; n++) {
+      const panel = document.querySelector('.tutorial');
+      seen.push(`${panel?.querySelector('h4')?.textContent}|${document.querySelectorAll('.tut-focus').length}`);
+      panel?.querySelector('button')?.click();
+      await wait();
+    }
+    const quests = [];
+    const step = async (setup) => {
+      quests.push(document.querySelector('.tutorial h4')?.textContent + ' — ' + document.querySelector('.tutorial .progress')?.textContent);
+      setup();
+      for (let n = 0; n < 5; n++) g.update(1 / 30);
+      await wait();
+    };
+    await step(() => { g.oreDelivered = 5; });
+    await step(() => { g.platesMade = 3; });
+    await step(() => { g.resources.plates += 3; g.resources.goo += 2; g.buildBot(); });
+    return { seen, quests, done: !document.querySelector('.tutorial'), drones: g.bots.length, log: g.log.some((l) => /Tutorial complete/.test(l.text)) };
+  });
+  console.log('tutorial', JSON.stringify(tutorial));
+  check(tutorial.seen.every((s) => !s.startsWith('undefined')) && tutorial.seen.slice(1).every((s) => !s.endsWith('|0')),
+    `tutorial tours ${tutorial.seen.length} HUD areas, highlighting each`);
+  check(tutorial.quests.length === 3 && tutorial.done && tutorial.log && tutorial.drones === 2, 'tutorial objectives (ore, plates, drone) complete as they are met');
+  // A third drone for the mining tests below.
+  await page.evaluate(() => { const g = window.__game; g.resources.plates += 3; g.resources.goo += 2; g.buildBot(); });
 
   // Dig orders outside the drones' range are refused.
   const range = await page.evaluate(() => {
@@ -325,12 +356,23 @@ try {
     t.markDirty(ci - 2, cj - 5, ci + 2, cj);
     await run(0.5);
     const stretched = s.j1 - s.j0 + 1, brokenAfterStretch = s.broken;
-    // Order a dig another 2m down: that would take it past 4m, so it warns first.
+    // Order a dig another 2m down: that would take it past 4m, so it warns and asks first.
+    const order = () => { for (let y = (cj - 5) * 0.25; y > (cj - 12) * 0.25; y -= 0.2) g.designate((ci + 0.5) * 0.25, y, 0.3, true); };
     const logBefore = g.log.length;
     g.tool = 'dig';
-    for (let y = (cj - 5) * 0.25; y > (cj - 12) * 0.25; y -= 0.2) g.designate((ci + 0.5) * 0.25, y, 0.3, true);
+    order();
     const warned = g.log.slice(logBefore).some((l) => /undermine a strut/i.test(l.text));
     const atRisk = s.atRisk;
+    await new Promise((r) => setTimeout(r, 350));
+    const asked = !!document.querySelector('.confirm');
+    const held = g.exposedTargets({ x: (ci + 0.5) * 0.25, y: (cj - 5) * 0.25 }, g.bots[0]).length === 0;
+    // Cancel: the orders around the strut go and it is safe again.
+    document.querySelector('.confirm button:last-child').click();
+    const marksLeft = (() => { let n = 0; for (let j = cj - 12; j < cj; j++) n += t.digMark[j * W + ci] & 1; return n; })();
+    const safe = !s.atRisk && !g.strutConfirm;
+    // Order it again and dig anyway.
+    order();
+    g.resolveStrutConfirm(true);
     // Dig it for real: the strut gives up and stops supporting anything.
     for (let j = cj - 12; j < cj - 4; j++) for (let i = ci - 1; i <= ci + 1; i++) set(i, j, true);
     t.markDirty(ci - 2, cj - 13, ci + 2, cj - 4);
@@ -338,11 +380,12 @@ try {
     const broken = s.broken, bitsCleared = t.strut[(cj + 2) * W + ci] === 0;
     const tag = !!document.querySelector('.bubble.strut.broken');
     g.designate((ci + 0.5) * 0.25, (cj - 8) * 0.25, 3, false);
-    return { placed, stretched, brokenAfterStretch, warned, atRisk, broken, bitsCleared, tag };
+    return { placed, stretched, brokenAfterStretch, warned, atRisk, asked, held, marksLeft, safe, broken, bitsCleared, tag };
   });
   console.log('telescope', JSON.stringify(telescope));
   check(telescope.placed === 8 && telescope.stretched === 12 && !telescope.brokenAfterStretch, `a strut stretches when the floor under it is dug out (${telescope.placed} → ${telescope.stretched} cells)`);
-  check(telescope.warned && telescope.atRisk, 'a dig order that would undermine a strut warns first');
+  check(telescope.warned && telescope.atRisk && telescope.asked && telescope.held, 'a dig order that would undermine a strut is held and asks for confirmation');
+  check(telescope.marksLeft === 0 && telescope.safe, 'cancelling from the confirmation clears the digs around the strut');
   check(telescope.broken && telescope.bitsCleared && telescope.tag, 'a strut dug out past its limit stops supporting and is flagged');
 
   // The Scrap tool takes a strut down for 1 scrap back.

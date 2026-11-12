@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { DEPTH } from '../config';
-import type { Game, Overlay, Tool } from '../game/Game';
+import { TUTORIAL, type Game, type Overlay, type Tool } from '../game/Game';
 import { MATERIAL_KEY } from '../render/materials';
 import { inspect } from '../game/inspect';
 import { Icon, cursorFor } from './icons';
@@ -80,7 +80,7 @@ export function Hud({ game }: { game: Game }) {
           </ToolGroup>
           <ToolGroup title="Buildings">
             {BUILDINGS.map((t) => <ToolButton key={t.id} t={t} game={game} onPick={() => force((n) => n + 1)} />)}
-            <button className="build" title="A mining drone: 3 plates + 2 critter goo (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
+            <button className="build" data-tip="A mining drone: 3 plates + 2 critter goo (one per landing pad)" onClick={() => { unlockAudio(); game.buildBot(); force((n) => n + 1); }}>
               <Icon name="drone" /><span>Drone</span><kbd>B</kbd>
             </button>
           </ToolGroup>
@@ -91,7 +91,7 @@ export function Hud({ game }: { game: Game }) {
         <aside className="panel layers">
           <h3>Layers <span>T cycles</span></h3>
           {LAYERS.map((l, n) => (
-            <button key={l.label} title={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as Overlay; force((k) => k + 1); }}>
+            <button key={l.label} data-tip={l.hint} className={game.overlay === n ? 'active' : ''} onClick={() => { game.overlay = n as Overlay; force((k) => k + 1); }}>
               <Icon name={l.icon} />{l.label}
             </button>
           ))}
@@ -100,7 +100,7 @@ export function Hud({ game }: { game: Game }) {
               {MATERIAL_KEY.map((m) => {
                 const on = (game.materialMask >> m.id) & 1;
                 return (
-                  <button key={m.id} className={on ? 'on' : 'off'} title={`${on ? 'Hide' : 'Show'} ${m.name.toLowerCase()}`}
+                  <button key={m.id} className={on ? 'on' : 'off'} data-tip={`${on ? 'Hide' : 'Show'} ${m.name.toLowerCase()}`}
                     onClick={() => { game.materialMask ^= 1 << m.id; force((k) => k + 1); }}>
                     <i style={{ background: m.color }} />{m.name}
                   </button>
@@ -136,9 +136,54 @@ export function Hud({ game }: { game: Game }) {
       <aside className="panel log">
         {game.log.slice(-8).map((l) => <div key={l.id} className={l.kind}>{l.text}</div>)}
       </aside>
+      {game.strutConfirm && (
+        <div className="confirm panel">
+          <h3>⚠ This dig would undermine a strut</h3>
+          <p>A strut can only stretch to 4m. Dig here and it stops holding up the ceiling. The drones are holding off on the orders around it until you decide.</p>
+          <div>
+            <button className="danger" onClick={() => { game.resolveStrutConfirm(true); force((n) => n + 1); }}>Dig anyway</button>
+            <button onClick={() => { game.resolveStrutConfirm(false); force((n) => n + 1); }}>Cancel the digs near the strut</button>
+          </div>
+        </div>
+      )}
+
+      {game.intro.phase === 'done' && <Tutorial game={game} onChange={() => force((n) => n + 1)} />}
+
       <Bubbles game={game} />
       <Inspector game={game} />
     </div>
+  );
+}
+
+/**
+ * Tutorial: a short tour that highlights each part of the HUD, then objectives (mine ore, smelt
+ * plates, build a drone) that tick over by themselves as you play.
+ */
+function Tutorial({ game, onChange }: { game: Game; onChange: () => void }) {
+  const step = TUTORIAL[game.tutorial.step];
+  const focus = step?.focus;
+  useEffect(() => {
+    if (!focus) return;
+    const els = [...document.querySelectorAll(focus)];
+    els.forEach((e) => e.classList.add('tut-focus'));
+    return () => els.forEach((e) => e.classList.remove('tut-focus'));
+  }, [focus]);
+  if (!step) return null;
+  const tour = !step.goal;
+  const objectives = TUTORIAL.filter((t) => t.goal);
+  const n = objectives.indexOf(step);
+  const goal = step.goal?.(game);
+  return (
+    <aside className={`panel tutorial ${tour ? 'tour' : 'quest'}`}>
+      <h3>{tour ? `Tutorial ${game.tutorial.step + 1} / ${TUTORIAL.length - objectives.length}` : `Objective ${n + 1} / ${objectives.length}`}</h3>
+      <h4>{step.title}</h4>
+      <p>{step.text}</p>
+      {goal && <div className="progress">{goal.progress}</div>}
+      <div className="buttons">
+        {tour && <button onClick={() => { game.tutorialNext(); onChange(); }}>{game.tutorial.step === TUTORIAL.length - objectives.length - 1 ? 'Start' : 'Next'}</button>}
+        <button className="quiet" onClick={() => { game.skipTutorial(); onChange(); }}>Skip tutorial</button>
+      </div>
+    </aside>
   );
 }
 
@@ -153,7 +198,7 @@ function ToolGroup({ title, hint, children }: { title: string; hint?: string; ch
 
 function ToolButton({ t, game, onPick }: { t: ToolDef; game: Game; onPick: () => void }) {
   return (
-    <button className={game.tool === t.id ? 'active' : ''} title={t.hint} onClick={() => { game.tool = t.id; onPick(); }}>
+    <button className={game.tool === t.id ? 'active' : ''} data-tip={t.hint} onClick={() => { game.tool = t.id; onPick(); }}>
       <Icon name={t.id} /><span>{t.label}</span><kbd>{t.key}</kbd>
     </button>
   );

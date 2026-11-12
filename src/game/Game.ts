@@ -20,7 +20,7 @@ export type Overlay = 0 | 1 | 2 | 3 | 4;
 type Vec = { x: number; y: number };
 
 const BOT_RADIUS = 0.14;
-const BOT_SPEED = 3;
+const BOT_SPEED = 2.2;
 const DRILL_RATE = 3.2;
 /** Mining-laser range. */
 const DRILL_REACH = 1.2;
@@ -110,6 +110,44 @@ export interface Env { water: number; magma: number; o2: number; toxic: number; 
 
 let nextId = 1;
 
+/** One tutorial step: tour steps point at a UI area; objectives have a goal with progress text. */
+export interface TutorialStep {
+  title: string;
+  text: string;
+  /** CSS selector of the UI area to highlight. */
+  focus?: string;
+  goal?: (g: Game) => { done: boolean; progress: string };
+}
+
+export const TUTORIAL: TutorialStep[] = [
+  { title: 'Welcome to Clankworks', text: 'Your base has dug in. Drones mine whatever rock you mark, and the base turns what they bring back into something useful. A quick look around first.' },
+  { title: 'Stockpiles', focus: '.topbar', text: 'Ore, scrap, plates, goo and your drone count. The quota on the right is the long-term goal: 30 copper plates.' },
+  { title: 'Orders and buildings', focus: '.tools', text: 'Orders tell drones what to do: Dig, Cancel, Blast, Scrap. Buildings cost resources: struts hold up ceilings, smelters turn ore into plates, and Drone builds another drone. Hover any button for details.' },
+  { title: 'Layers', focus: '.layers', text: 'Switch how the world is drawn: heat, oxygen, structural stress, or the Material layer, which colour-codes rock so ore is easy to spot.' },
+  { title: 'Terrarium and log', focus: '.critters, .log', text: 'The critters make goo, which drones need. The log reports cave-ins, warnings and what the crew is up to. Hover anything in the world with the Select cursor to learn about it.' },
+  {
+    title: 'Mine some ore',
+    text: 'Copper ore is the rusty rock to the right of the base (the Material layer shows it in orange). Pick Dig and paint over it; your drone will mine it and bring it home.',
+    focus: '.tools',
+    goal: (g) => ({ done: g.oreDelivered >= 5, progress: `Ore delivered ${Math.min(5, g.oreDelivered).toFixed(1)} / 5` }),
+  },
+  {
+    title: 'Smelt plates',
+    text: 'Build a Smelter on open floor near the base (it costs scrap). It turns each ore into a copper plate.',
+    focus: '.tools',
+    goal: (g) => ({ done: g.platesMade >= 3, progress: `${g.smelters.length ? 'Smelter built ✓' : 'Build a smelter'} · plates ${Math.min(3, g.platesMade)} / 3` }),
+  },
+  {
+    title: 'Build a drone',
+    text: 'A new drone costs 3 plates and 2 goo from the terrarium. Press Drone (or B) to build one; it takes the next free landing pad.',
+    focus: '.tools',
+    goal: (g) => {
+      const n = g.bots.filter((b) => !b.dead).length;
+      return { done: n >= 2, progress: `Drones ${n} / 2 · plates ${Math.floor(g.resources.plates)} / 3 · goo ${g.resources.goo.toFixed(1)} / 2` };
+    },
+  },
+];
+
 export class Game {
   readonly layout: WorldLayout;
   readonly terrain: Terrain;
@@ -118,7 +156,19 @@ export class Game {
 
   time = 0;
   frames = 0;
-  resources = { ore: 0, scrap: 14, plates: 3, goo: 2 };
+  resources = { ore: 0, scrap: 14, plates: 0, goo: 2 };
+  /** Ore drones have brought home over the whole shift. */
+  oreDelivered = 0;
+  /**
+   * The tutorial: a short tour of the UI (steps 0..TOUR_STEPS-1), then objectives that advance by
+   * themselves as they're met (see TUTORIAL). `step` past the end means it's finished.
+   */
+  tutorial = { step: 0, skipped: false };
+  /**
+   * Dig orders that would undermine these struts are on hold until the player confirms or cancels
+   * them; drones leave orders near the struts alone meanwhile.
+   */
+  strutConfirm: { strutIds: number[] } | null = null;
   platesMade = 0;
   bots: Bot[] = [];
   debris: Debris[] = [];
@@ -211,7 +261,7 @@ export class Game {
     this.reveal(layout.depot.x, layout.depot.y + 1, 9);
     this.reveal(layout.terrarium.x, layout.terrarium.y + 1, 4);
 
-    for (let n = 0; n < 3; n++) this.spawnBot(false);
+    this.spawnBot(false);
     for (let n = 0; n < 4; n++) {
       const t = layout.terrarium;
       this.critters.push({
@@ -434,6 +484,73 @@ export class Game {
     this.finishIntro();
   }
 
+  // ---------------------------------------------------------------- strut dig confirmation
+
+  /**
+   * The area around a strut whose dig orders are held while the player decides: its column
+   * (± 1.5m) from 4m below its bottom plate to 4m above its top plate.
+   */
+  private strutArea(s: Strut) {
+    const pad = 6;
+    return { i0: s.i - pad, i1: s.i + pad, j0: Math.max(0, s.j0 - MAX_STRUT_CELLS - 2), j1: Math.min(H - 1, s.j1 + MAX_STRUT_CELLS + 2) };
+  }
+
+  private heldForStrut(k: number) {
+    if (!this.strutConfirm) return false;
+    const i = k % W, j = (k / W) | 0;
+    return this.strutConfirm.strutIds.some((id) => {
+      const s = this.struts.find((o) => o.id === id);
+      if (!s) return false;
+      const a = this.strutArea(s);
+      return i >= a.i0 && i <= a.i1 && j >= a.j0 && j <= a.j1;
+    });
+  }
+
+  /** The player's answer: dig anyway, or cancel the dig orders around the threatened struts. */
+  resolveStrutConfirm(dig: boolean) {
+    const confirm = this.strutConfirm;
+    this.strutConfirm = null;
+    if (!confirm || dig) return;
+    const t = this.terrain, marks = t.digMark;
+    for (const id of confirm.strutIds) {
+      const s = this.struts.find((o) => o.id === id);
+      if (!s) continue;
+      const a = this.strutArea(s);
+      for (let j = a.j0; j <= a.j1; j++) for (let i = Math.max(0, a.i0); i <= Math.min(W - 1, a.i1); i++) {
+        const k = cellIndex(i, j);
+        if (!(marks[k] & DIG_BIT)) continue;
+        marks[k] &= ~(DIG_BIT | REACH_BIT);
+        this.marked.delete(k);
+      }
+      t.touchMarks(a.i0, a.j0, a.i1, a.j1);
+    }
+    this.updateStruts(true);
+    this.reachAt = 0;
+    this.info('Cancelled the dig orders around the strut.');
+  }
+
+  // ---------------------------------------------------------------- tutorial
+
+  skipTutorial() {
+    this.tutorial = { step: TUTORIAL.length, skipped: true };
+  }
+
+  /** Advance the tour by hand, or the objectives when their goal is met. */
+  tutorialNext() {
+    if (this.tutorial.step < TUTORIAL.length) this.tutorial.step++;
+  }
+
+  private updateTutorial() {
+    const step = TUTORIAL[this.tutorial.step];
+    if (!step || this.intro.phase !== 'done' || !step.goal) return;
+    if (step.goal(this).done) {
+      this.tutorial.step++;
+      chirp(1, 4);
+      const next = TUTORIAL[this.tutorial.step];
+      this.info(next ? `Objective complete. Next: ${next.title}.` : 'Tutorial complete. The quarry is yours.');
+    }
+  }
+
   // ---------------------------------------------------------------- strut upkeep
 
   /**
@@ -580,6 +697,10 @@ export class Game {
       const risky = this.struts.filter((s) => s.atRisk).length;
       this.updateStruts(true);
       if (on && this.struts.filter((s) => s.atRisk).length > risky) {
+        // Hold the risky orders and ask the player (see strutConfirm).
+        const ids = new Set(this.strutConfirm?.strutIds ?? []);
+        for (const st of this.struts) if (st.atRisk) ids.add(st.id);
+        this.strutConfirm = { strutIds: [...ids] };
         this.warn(`This dig would undermine a strut: it can only stretch to ${MAX_STRUT_CELLS * CELL}m, then it stops holding up the ceiling.`);
       }
     }
@@ -768,6 +889,11 @@ export class Game {
     }
     this.updateStressMap();
     this.updateStruts();
+    this.updateTutorial();
+    if (this.strutConfirm) {
+      this.strutConfirm.strutIds = this.strutConfirm.strutIds.filter((id) => this.struts.some((s) => s.id === id && s.atRisk));
+      if (!this.strutConfirm.strutIds.length) this.strutConfirm = null;
+    }
 
     if (this.terrain.structuralDirty && this.time >= this.structuralAt) {
       this.structuralAt = this.time + 0.15;
@@ -1141,11 +1267,10 @@ export class Game {
         this.resources.goo += 0.02;
       } else {
         c.health -= bad.reduce((s, b) => s + b[2], 0) * 0.5;
-        if (wasHappy) this.warn(`Critter ${c.name} ${c.complaint}!`);
+        // Critter alerts are switched off for now; the terrarium panel still shows how they're doing.
       }
       if (c.health <= 0) {
         c.dead = true;
-        this.warn(`Critter ${c.name} has expired. A memo has been filed.`);
         this.entityVersion++;
       }
     }
@@ -1343,7 +1468,7 @@ export class Game {
       if (!(t.digMark[k] & DIG_BIT) || t.density[k] <= ISO) { this.marked.delete(k); continue; }
       const owner = this.claims.get(k);
       if (owner !== undefined && owner !== bot.id) continue;
-      if (!(t.digMark[k] & REACH_BIT) || (bot.blacklist.get(k) ?? 0) > this.time) continue;
+      if (!(t.digMark[k] & REACH_BIT) || (bot.blacklist.get(k) ?? 0) > this.time || this.heldForStrut(k)) continue;
       const i = k % W, j = (k / W) | 0;
       if (!this.exposed(i, j)) continue;
       out.push({ k, d: Math.hypot(cellCenter(i) - p.x, cellCenter(j) - p.y) });
@@ -1445,6 +1570,7 @@ export class Game {
   private unload(bot: Bot) {
     const ore = Math.floor(bot.cargo.ore * 10) / 10;
     this.resources.ore += bot.cargo.ore;
+    this.oreDelivered += bot.cargo.ore;
     this.resources.scrap += bot.cargo.scrap;
     if (ore >= 1) this.oreDeliveries.push(this.time);
     this.oreDeliveries = this.oreDeliveries.filter((t) => this.time - t < 60);

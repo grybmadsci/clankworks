@@ -20,6 +20,10 @@ clamp it to the back wall, and the conveyor, shelf, lamps and bulbs unfold (`Spa
 the base push it back as they go. Underground there is very little ambient light, so the base's
 gas lamps, the drones' headlamps, glowing machinery and magma provide most of it.
 
+A short tutorial follows: a tour of the HUD (each area is highlighted as it is described), then
+three objectives that tick over as you play: deliver 5 ore, smelt 3 plates, and build a second
+drone. You start with one drone and no plates. Skip it any time.
+
 Mining drones wait on the four brass landing pads on top of the base's boiler, so the fleet tops
 out at four. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
 red. Flying drains it, and the mining laser drains it faster. Below 25% a drone drops its job
@@ -47,7 +51,8 @@ partly dug rock. Struts
 follow the rock. Dig out the floor under a strut's bottom plate (or the rock above its
 top plate) and it stretches to the new floor or ceiling, up to its 4m limit. Ordering a dig
 that would take it past that warns you first, and the strut gets an "⚠ Dig will undermine
-strut" tag. If the dig goes ahead anyway, the strut stops supporting the ceiling, goes dark
+strut" tag. The drones hold off on the orders around that strut, and a panel asks whether to dig
+anyway or cancel the dig orders near the strut. If the dig goes ahead anyway, the strut stops supporting the ceiling, goes dark
 and rusty, and shows "⚠ Strut not supporting" until the gap is short enough to brace again.
 
 The integrity layer shows the stress map: green rock is sound, and ceilings turn yellow,
@@ -68,7 +73,8 @@ The toolbar has three sections:
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 
-The critters need 6–38 °C, oxygen, no toxic gas and dry feet. Breaching the toxic pocket under
+The critters need 6–38 °C, oxygen, no toxic gas and dry feet (their alerts are switched off for
+now; the terrarium panel shows how they're doing). Breaching the toxic pocket under
 the terrarium or flooding it from the aquifer will cost you critters. Drones shout the emotes from the design doc when their triggers fire (cave-in
 survivors, Carl's alcove, stuck drones, losses that still increased ore output, and so on).
 
