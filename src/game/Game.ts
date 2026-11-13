@@ -53,14 +53,19 @@ const VEHICLE_NAMES = ['Digby', 'Old Bessie', 'Rumbletum', 'Grindle', 'Mudlark',
 /** Loose rock keeps its material when it lands if it is ore (or junk); anything else is rubble. */
 const KEEPS_MATERIAL = new Set<number>([Mat.Copper, Mat.Junk, Mat.Iron, Mat.Titanium]);
 /** Vehicle geometry (world units, chassis frame): hull half-size, wheel offsets and radius, drill pivot and length. */
-const CHASSIS = { hw: 0.4, hh: 0.09, wheelX: 0.24, wheelY: -0.12, wheelR: 0.14, pivotX: 0.42, pivotY: 0.02, drillLen: 0.3 };
+export const CHASSIS = { hw: 0.4, hh: 0.09, wheelX: 0.24, wheelY: -0.12, wheelR: 0.14, pivotX: 0.42, pivotY: 0.12, drillLen: 0.42 };
 /**
- * The bore the drill cuts: a band `height` tall whose floor runs from just under the front wheel
- * along the drill's aim for `reach`, built from circles of `r` stacked up from that floor line.
+ * The bore the drill cuts: a band whose floor runs from just under the front wheel along the
+ * drill's aim for `reach`, built from circles of `r` stacked up from that floor line. The band is
+ * `height` tall aimed level or down, rising to `upHeight` aimed fully up: enough headroom over a
+ * level floor for an outpost. `bit` is the clearance cut around the drill bit itself, so the bit
+ * never sits in rock, whatever the floor line does.
  */
-const BORE = { reach: 0.65, height: 0.95, r: 0.2 };
+const BORE = { reach: 0.65, height: 1.2, upHeight: 1.75, r: 0.2, bit: 0.27 };
 /** How far the drill aims above or below level (radians), and how far the arm swings on the hull. */
 const DRILL_AIM = 0.45, ARM_SWING = 1.0;
+/** Seconds a vehicle takes to turn around (see Vehicle.turn). */
+export const TURN_TIME = 1.1;
 /** Cells of rock a drone takes from a vehicle's bucket per pickup trip. */
 const PICKUP_CELLS = 8;
 
@@ -140,6 +145,11 @@ export interface Vehicle {
   motors: RAPIER.RevoluteImpulseJoint[];
   /** Which way the drill points: 1 right, -1 left. */
   facing: 1 | -1;
+  /**
+   * Turning around: the drill and bucket retract, swap ends and redeploy while the hull and wheels
+   * hold still. `t` runs 0..TURN_TIME; `facing` flips to `to` halfway.
+   */
+  turn: { t: number; to: 1 | -1 } | null;
   /**
    * Where the drill aims: radians above (+) or below (-) level, whatever the hull's tilt (the arm
    * swings to hold it), so a ramp it cuts keeps one slope.
@@ -329,7 +339,7 @@ export class Game {
   vehicles: Vehicle[] = [];
   /** The vehicle the player is driving (the camera follows it, and the keys steer it). */
   driving: Vehicle | null = null;
-  /** Driving input, set by the camera rig from the keys: throttle and drill tilt -1..1. */
+  /** Driving input, set by the camera rig from the keys: throttle and drill tilt -1..1, and the drill toggle. */
   drive = { throttle: 0, tilt: 0, drill: false };
   /** A girder being dragged out with the Girder tool: where the drag started and where it is now. */
   girderDrag: { x0: number; y0: number; x1: number } | null = null;
@@ -392,12 +402,16 @@ export class Game {
   private drillY = 0;
   private drillFxAt = 0;
 
-  static async create(seed?: number) {
+  /**
+   * `debug` loads the debug level: the deployed base in a big, braced cavern with a smelter and a
+   * vehicle depot already built, and 100 of every resource.
+   */
+  static async create(seed?: number, debug = false) {
     await RAPIER.init();
-    return new Game(new WorldGen(seed));
+    return new Game(new WorldGen(seed, debug), debug);
   }
 
-  private constructor(gen: WorldGen) {
+  private constructor(gen: WorldGen, readonly debug = false) {
     this.layout = gen.layout;
     this.terrain = new Terrain();
     this.physics = new RAPIER.World({ x: 0, y: -9.81 });
@@ -444,6 +458,20 @@ export class Game {
     this.gpu = new GpuSim(renderer, this.terrain, this.fluidInit, this.tempInit);
     for (const id of this.chunks.resident) this.gpu.activate(id);
     this.gpu.setEmitters(this.emitters());
+    if (this.debug) this.setUpDebug();
+  }
+
+  /** The debug level's start (see create): skip the intro and tutorial, build, stock up. */
+  private setUpDebug() {
+    this.skipIntro();
+    this.skipTutorial();
+    const fill = () => { for (const r of Object.keys(this.resources) as Resource[]) this.resources[r] = 100; };
+    fill();
+    const i0 = toCell(this.layout.depot.x), y = this.layout.depot.y + 0.1;
+    this.placeSmelter(cellCenter(i0 - 12), y);
+    this.placeDepot((i0 + 12) * CELL + 0.1, y);
+    fill();
+    this.info('Debug level: 100 of everything, a smelter and a vehicle depot. Press V for a vehicle.');
   }
 
   // ---------------------------------------------------------------- chunk streaming
@@ -888,7 +916,8 @@ export class Game {
     const v = this.vehicleAt(x, y);
     if (v === this.driving) return;
     this.driving = v ?? null;
-    if (v) this.info(`Driving ${v.name}. A/D drive, W/S aim the drill, Space drills, E dumps the bucket, F turns around, Esc gets out.`, 'hints');
+    this.drive.drill = false;
+    if (v) this.info(`Driving ${v.name}. A/D drive, W/S aim the drill, Space starts and stops the drill, E dumps the bucket, Esc gets out. It turns itself around to drive the other way.`, 'hints');
   }
 
   /** Scrap tool: a vehicle, a girder or a strut, whichever is under the cursor. */
@@ -1301,7 +1330,7 @@ export class Game {
     const n = this.vehiclesBuilt++;
     const v: Vehicle = {
       id: nextId++, name: VEHICLE_NAMES[n % VEHICLE_NAMES.length] + (n >= VEHICLE_NAMES.length ? ' II' : ''), depotId: depot.id,
-      body, wheels, motors, facing: 1, drillAngle: 0, pickup: false, bore: null, drilling: false, bucket: {}, upset: 0, unloading: false, fullWarned: false, removed: false,
+      body, wheels, motors, facing: 1, turn: null, drillAngle: 0, pickup: false, bore: null, drilling: false, bucket: {}, upset: 0, unloading: false, fullWarned: false, removed: false,
     };
     this.vehicles.push(v);
     this.entityVersion++;
@@ -1374,7 +1403,8 @@ export class Game {
 
   /** Turn the vehicle being driven around, so the drill points the other way. */
   turnVehicle() {
-    if (this.driving) { this.driving.facing = this.driving.facing === 1 ? -1 : 1; this.entityVersion++; }
+    const v = this.driving;
+    if (v && !v.turn) v.turn = { t: 0, to: v.facing === 1 ? -1 : 1 };
   }
 
   /**
@@ -1452,10 +1482,18 @@ export class Game {
   private cutBore(v: Vehicle, amount: number, got: Yield, room: () => boolean) {
     const t = this.terrain, { b, dx, dy, s0, at } = this.boreLine(v);
     const above = (k: number) => cellCenter((k / W) | 0) > at(cellCenter(k % W)) && room();
+    const height = BORE.height + (BORE.upHeight - BORE.height) * Math.max(0, v.drillAngle / DRILL_AIM);
     for (let s = s0 - 0.1; s <= s0 + BORE.reach + 1e-6; s += BORE.r * 0.8) {
       // The lowest circles sit at cell-centre height over the floor line, so the row of cells just
       // above it is cut cleanly.
-      for (let h = CELL / 2; h <= BORE.height - BORE.r + 1e-6; h += BORE.r * 1.25) t.carve(b.x + dx * s, b.y + dy * s + h, BORE.r, amount, got, above);
+      for (let h = CELL / 2; h <= height - BORE.r + 1e-6; h += BORE.r * 1.25) t.carve(b.x + dx * s, b.y + dy * s + h, BORE.r, amount, got, above);
+    }
+    // The bit's own volume, floor line or not: aimed up from a hull that's pitched or still level,
+    // the bit can dip below the ramp it is starting.
+    const arm = this.armAngle(v);
+    for (let s = 0.08; s <= CHASSIS.drillLen + 1e-6; s += 0.08) {
+      const q = this.chassisPoint(v, v.facing * (CHASSIS.pivotX + Math.cos(arm) * s), CHASSIS.pivotY + Math.sin(arm) * s);
+      t.carve(q.x, q.y, BORE.bit, amount, got, room);
     }
     const xa = b.x + dx * (s0 - 0.1), xb = b.x + dx * (s0 + BORE.reach);
     const i0 = toCell(Math.min(xa, xb)), i1 = toCell(Math.max(xa, xb));
@@ -1478,18 +1516,31 @@ export class Game {
   private updateVehicles(dt: number) {
     for (const v of [...this.vehicles]) {
       const input = v === this.driving ? this.drive : { throttle: 0, tilt: 0, drill: false };
+      // The drill always leads: driving the other way turns the vehicle around first, and it holds
+      // still while it does.
+      if (v === this.driving && input.throttle && Math.sign(input.throttle) !== v.facing) this.turnVehicle();
+      if (v.turn) {
+        v.turn.t += dt;
+        if (v.turn.t >= TURN_TIME / 2 && v.facing !== v.turn.to) v.facing = v.turn.to;
+        if (v.turn.t >= TURN_TIME) v.turn = null;
+      }
+      const throttle = v.turn ? 0 : input.throttle;
       // Wheels spin clockwise (negative) to roll right.
-      for (const m of v.motors) m.configureMotorVelocity(-input.throttle * VEHICLE.wheelSpeed, input.throttle ? 30 : 12);
-      if (input.throttle) for (const w of v.wheels) w.wakeUp();
+      for (const m of v.motors) m.configureMotorVelocity(-throttle * VEHICLE.wheelSpeed, throttle ? 30 : v.turn ? 40 : 12);
+      if (throttle) for (const w of v.wheels) w.wakeUp();
       v.drillAngle = Math.max(-DRILL_AIM, Math.min(DRILL_AIM, v.drillAngle + input.tilt * dt * 1.2));
       const p = v.body.translation();
       if (p.y < -2) { this.removeVehicle(v); continue; }
 
       const load = bucketTotal(v);
-      v.drilling = input.drill && load < VEHICLE.bucket;
-      if (input.drill && load >= VEHICLE.bucket && !v.fullWarned) {
-        v.fullWarned = true;
-        this.warn(`${v.name}'s bucket is full. Drive it back to its depot to unload, or dump it (E).`, 'hints');
+      v.drilling = input.drill && !v.turn && load < VEHICLE.bucket;
+      if (input.drill && load >= VEHICLE.bucket) {
+        // The drill is a toggle: a full bucket switches it off.
+        if (v === this.driving) this.drive.drill = false;
+        if (!v.fullWarned) {
+          v.fullWarned = true;
+          this.warn(`${v.name}'s bucket is full. Drive it back to its depot to unload, or dump it (E).`, 'hints');
+        }
       }
       if (v.drilling) {
         const tip = this.drillTip(v), t = this.terrain;

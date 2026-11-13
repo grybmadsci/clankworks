@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:win": "node scripts/win.mjs scripts/smoke.mjs"
+    "smoke:win": "node scripts/win.mjs scripts/smoke.mjs",
+    "debug-level:win": "node scripts/win.mjs scripts/debug-level.mjs"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.21.0",

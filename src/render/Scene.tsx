@@ -131,9 +131,10 @@ function CameraRig({ game }: { game: Game }) {
     const wheel = (e: WheelEvent) => { e.preventDefault(); s.dist = Math.min(42, Math.max(6, s.dist * (1 + Math.sign(e.deltaY) * 0.1))); };
     const key = (e: KeyboardEvent) => {
       if (e.type === 'keydown') s.keys.add(e.key.toLowerCase()); else s.keys.delete(e.key.toLowerCase());
-      // The same keys drive a vehicle, when the player is driving one.
+      // The same keys drive a vehicle, when the player is driving one. Space toggles the drill.
       const k = (...names: string[]) => names.some((n) => s.keys.has(n)) ? 1 : 0;
-      game.drive = { throttle: k('d', 'arrowright') - k('a', 'arrowleft'), tilt: k('w', 'arrowup') - k('s', 'arrowdown'), drill: !!k(' ') };
+      const toggle = e.type === 'keydown' && e.key === ' ' && !e.repeat && !!game.driving;
+      game.drive = { throttle: k('d', 'arrowright') - k('a', 'arrowleft'), tilt: k('w', 'arrowup') - k('s', 'arrowdown'), drill: game.drive.drill !== toggle };
     };
     const menu = (e: Event) => e.preventDefault();
     el.addEventListener('pointerdown', down);

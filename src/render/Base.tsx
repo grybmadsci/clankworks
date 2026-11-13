@@ -7,6 +7,7 @@ import { HUB, dockSlot } from '../game/base';
 import { DEPLOY_TIME, type Game } from '../game/Game';
 import { ParticleKind } from '../gpu/GpuSim';
 import { rustMaterial } from './materials';
+import { GlowRing, TeslaCoil, VacuumTube } from './electro';
 
 const Z_HUB = -DEPTH * 0.62;
 const R = 0.4;
@@ -400,12 +401,18 @@ export function Base({ game }: { game: Game }) {
           </group>
         );
       })}
-      {[-0.62, -0.2, 0.22, 0.62].map((x) => (
+      {[-0.62, -0.2, 0.22, 0.62].map((x, n) => (
         <group key={x}>
-          <mesh position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.brass}><torusGeometry args={[R + 0.008, 0.016, 8, 40]} /></mesh>
+          {/* Brass bands at the ends, field coils glowing round the middle */}
+          {n % 3 ? <GlowRing radius={R + 0.008} tube={0.016} position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} />
+            : <mesh position={[x, 0.48, Z_HUB]} rotation={[0, Math.PI / 2, 0]} material={M.brass}><torusGeometry args={[R + 0.008, 0.016, 8, 40]} /></mesh>}
           <Rivets x={x} />
         </group>
       ))}
+      {/* Tesla coils on the boiler's back, and a rack of valves by the gauge */}
+      <TeslaCoil height={0.42} position={[-0.6, 0.84, Z_HUB - 0.22]} arcs={3} />
+      <TeslaCoil height={0.32} position={[0.25, 0.86, Z_HUB - 0.24]} />
+      {[0.5, 0.58, 0.66].map((x) => <VacuumTube key={x} height={0.09} position={[x, 0.1 + 0.03, Z_HUB + 0.36]} />)}
       {/* Portholes with firelight behind them, and the firebox hatch */}
       {[-0.42, 0.02].map((x) => (
         <group key={x} position={[x, 0.53, FRONT - 0.005]}>

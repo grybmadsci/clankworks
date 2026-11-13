@@ -708,26 +708,37 @@ try {
   await drive(['w'], 1.2);
   const aim = await page.evaluate(() => window.__game.vehicles[0].drillAngle);
   const face = await vstate();
-  for (let n = 0; n < 16; n++) { await drive(['d', ' '], 0.25); await drive([' '], 0.35); }
+  // Space toggles the drill: it keeps running after the key comes up.
+  await page.keyboard.press(' ');
+  const drillOn = await page.evaluate(() => window.__game.drive.drill);
+  for (let n = 0; n < 16; n++) { await drive(['d'], 0.25); await fastForward(0.35); }
   const ramp = await vstate();
   await shot('9-ramp');
   // Keep going up it: the slope holds at the aim rather than steepening.
-  await drive(['d', ' '], 3);
+  await drive(['d'], 3);
   const climbed = await vstate();
   console.log('ramp', JSON.stringify({ aim, face, ramp, climbed }));
+  check(drillOn, 'Space switches the drill on and it stays on');
   check(Math.abs(aim - 0.45) < 0.01, `the drill aims at most ${aim.toFixed(2)} rad up`);
   check(ramp.y - face.y > 0.05 && ramp.x > face.x && ramp.a > 0.3 && ramp.a < 0.6, `aimed up, creeping forward cuts a ramp it starts up (tilted ${ramp.a.toFixed(2)})`);
   check(climbed.y - face.y > 0.4 && climbed.a > 0.3 && climbed.a < 0.6, `driving on, it climbs the ramp at a steady slope (${(climbed.y - face.y).toFixed(2)}m up, tilted ${climbed.a.toFixed(2)})`);
   await drive(['s'], 0.375);
-  await drive(['d', ' '], 3);
+  await drive(['d'], 3);
   const drilled = await vstate();
   await shot('8-vehicle');
+  // A full bucket switches the drill off; so does Space.
+  const fullOff = await page.evaluate(() => !window.__game.vehicles[0].fullWarned || !window.__game.drive.drill);
+  if (await page.evaluate(() => window.__game.drive.drill)) await page.keyboard.press(' ');
   await drive(['a'], 4);
   await fastForward(4);
   const home = await vstate();
   console.log('drive', JSON.stringify({ across, drilled, home }));
   check(across.x > (room.ci - 3 + 1) * 0.25 + 0.4 && Math.abs(across.y - room.floor - 0.26) < 0.1, 'the vehicle drives across the girder over the pit');
   check((drilled.bucket[3] ?? 0) > 2 && Math.abs(drilled.a) < 0.6, `the drill cuts copper into the bucket (${(drilled.bucket[3] ?? 0).toFixed(1)} cells) without the vehicle rearing over`);
+  await page.keyboard.press(' ');
+  const toggled = await page.evaluate(() => window.__game.drive.drill);
+  await page.keyboard.press(' ');
+  check(fullOff && toggled && await page.evaluate(() => !window.__game.drive.drill), 'Space switches the drill off again, as does a full bucket');
   check(Object.keys(home.bucket).length === 0 && home.ore - drilled.ore > 2, `parking at the depot empties the bucket into the stockpile (+${(home.ore - drilled.ore).toFixed(1)} ore)`);
   const pickup = await page.evaluate(async () => {
     const g = window.__game, t = g.terrain, d = g.layout.depot, v = g.vehicles[0];

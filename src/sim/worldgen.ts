@@ -16,7 +16,12 @@ type Feature =
   | { kind: 'ellipse'; ci: number; cj: number; rx: number; ry: number; shell?: Mat; fill?: number }
   /** Flatten a floor: solid rock below `floorJ`, open air for a few rows above it. */
   | { kind: 'floor'; i0: number; i1: number; j0: number; floorJ: number; openI0: number; openI1: number }
-  | { kind: 'ore'; i0: number; i1: number; j0: number; j1: number; threshold: number; mat: Mat };
+  | { kind: 'ore'; i0: number; i1: number; j0: number; j1: number; threshold: number; mat: Mat }
+  /**
+   * Open a flat-floored room (inclusive cell bounds) whose sides curve over into the roof with
+   * radius `round` cells, lined with a granite shell `shell` cells thick.
+   */
+  | { kind: 'room'; i0: number; i1: number; j0: number; j1: number; round: number; shell: number };
 
 export interface WorldLayout {
   seed: number;
@@ -49,8 +54,11 @@ export class WorldGen {
   private readonly nB: (x: number, y: number) => number;
   private readonly nC: (x: number, y: number) => number;
   private readonly nD: (x: number, y: number) => number;
+  /** First solid row over the debug level's cavern (0 otherwise), so its struts reach it. */
+  private readonly roofJ: number;
 
-  constructor(seed = 1337) {
+  /** `debug` builds the debug level's start: a bigger cavern with a flat roof (see Game's debug setup). */
+  constructor(seed = 1337, debug = false) {
     const rand = mulberry32(seed);
     this.nA = makeNoise2(seed + 1); this.nB = makeNoise2(seed + 2); this.nC = makeNoise2(seed + 3); this.nD = makeNoise2(seed + 4);
     const surfaceRow = H - SKY_ROWS - 2;
@@ -70,6 +78,9 @@ export class WorldGen {
     // Starting cavern with a wide flat floor (room to build beside the base), and Carl's alcove.
     ellipse(i0, startJ, 20, 7, Mat.Granite);
     this.add({ kind: 'floor', i0: i0 - 17, i1: i0 + 17, j0: startJ - 9, floorJ, openI0: i0 - 16, openI1: i0 + 16 });
+    // The debug level widens it to 16m, 3m tall over most of the floor, its ends rounded over.
+    this.roofJ = debug ? floorJ + 12 : 0;
+    if (debug) this.add({ kind: 'room', i0: i0 - 32, i1: i0 + 31, j0: floorJ, j1: floorJ + 11, round: 8, shell: 3 });
     // Carl's alcove opens off the cavern's left end, under its own granite roof.
     ellipse(i0 - 23, startJ - 2, 4, 3, Mat.Granite);
     this.add({ kind: 'ore', i0: i0 + 18, i1: i0 + 32, j0: startJ - 10, j1: startJ + 8, threshold: 0.45, mat: Mat.Copper });
@@ -140,7 +151,7 @@ export class WorldGen {
       // Refined once the start chunks exist (see locate()).
       carl: { x: wx(i0 - 23), y: (startJ - 5) * CELL },
       terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 2.8, h: 2.2 },
-      strutCols: [i0 - 8, i0 + 8],
+      strutCols: debug ? [i0 - 24, i0 - 15, i0 - 5, i0 + 5, i0 + 15, i0 + 23] : [i0 - 8, i0 + 8],
       emitters,
       deposits,
       surfaceY: (surfaceRow + Math.round((this.nA(i0 * 0.05, 3.7) - 0.5) * 5) + 1) * CELL,
@@ -151,7 +162,8 @@ export class WorldGen {
     const pad = 5;
     const box: [number, number, number, number] = f.kind === 'ellipse'
       ? [f.ci - f.rx - pad, f.cj - f.ry - pad, f.ci + f.rx + pad, f.cj + f.ry + pad]
-      : f.kind === 'floor' ? [f.i0, f.j0, f.i1, f.floorJ + 3] : [f.i0, f.j0, f.i1, f.j1];
+      : f.kind === 'floor' ? [f.i0, f.j0, f.i1, f.floorJ + 3]
+      : f.kind === 'room' ? [f.i0 - f.shell, f.j0 - f.shell, f.i1 + f.shell, f.j1 + f.shell] : [f.i0, f.j0, f.i1, f.j1];
     this.features.push({ ...f, box });
   }
 
@@ -207,6 +219,21 @@ export class WorldGen {
         } else if (f.kind === 'floor') {
           if (j < f.floorJ) { t.density[k] = 1; t.material[k] = Mat.Granite; fluid.fill(0, k * 4, k * 4 + 4); }
           else if (i >= f.openI0 && i <= f.openI1) { t.density[k] = 0; t.material[k] = Mat.Air; }
+        } else if (f.kind === 'room') {
+          // Distance outside the room (cells; negative inside): a box whose top corners round over
+          // with radius `round`, and solid below the floor so it stays flat. The curved ends get a
+          // little wobble, like the default cavern's; the roof stays flat for the struts.
+          const r = f.round, hw = (f.i1 - f.i0 + 1) / 2, cx = (f.i0 + f.i1 + 1) / 2;
+          const qx = Math.abs(i + 0.5 - cx) - (hw - r), qy = j + 0.5 - (f.j1 + 1 - r);
+          const wobble = qx > -2 ? (nA(i * 0.2, j * 0.2) - 0.5) * 0.8 : 0;
+          const out = j < f.j0 ? 1 : (qx > 0 && qy > 0 ? Math.hypot(qx, qy) - r : Math.max(qx, qy) - r) + wobble;
+          const target = Math.min(1, Math.max(0, 0.5 + out));
+          if (target <= 0.5) {
+            t.density[k] = target; fluid.fill(0, k * 4, k * 4 + 4);
+            if (target === 0) t.material[k] = Mat.Air;
+          } else if (out < f.shell) {
+            t.density[k] = Math.max(t.density[k], target); t.material[k] = Mat.Granite;
+          }
         } else if (t.density[k] > 0.5 && t.material[k] !== Mat.Ice && nC(i * 0.3 + f.mat * 17, j * 0.3) > f.threshold) {
           t.material[k] = f.mat;
         }
@@ -220,7 +247,7 @@ export class WorldGen {
         // Caves near the surface start breathable unless they hold toxic gas.
         if (open && j >= startJ - 8 && fluid[k * 4 + TOXIC] === 0) fluid[k * 4 + OXYGEN] = 1;
         temp[k] = fluid[k * 4 + MAGMA] > 0 ? 1100 : geotherm(j);
-        if (open && this.layout.strutCols.includes(i) && j >= floorJ && j < startJ + 8) t.strut[k] = 1;
+        if (open && this.layout.strutCols.includes(i) && j >= floorJ && j < Math.max(startJ + 8, this.roofJ)) t.strut[k] = 1;
       }
     }
   }

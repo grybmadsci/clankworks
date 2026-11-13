@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
-import { DEPTH } from '../config';
+import { DEPTH, MATERIALS } from '../config';
 import { ALERTS, COST, TUTORIAL, bucketTotal, type AlertKind, type Game, type Overlay, type Tool } from '../game/Game';
 import { DEPOT, GIRDER, OUTPOST, TECHS, VEHICLE, type Cost } from '../game/tech';
 import { MATERIAL_KEY } from '../render/materials';
@@ -70,7 +70,7 @@ export function Hud({ game }: { game: Game }) {
       if (game.driving && e.key === 'e') game.dumpBucket();
       if (game.driving && e.key === 'f') game.turnVehicle();
       if (game.driving && e.key === 'p') game.requestPickup();
-      // Space drills while driving; keep it from pressing the focused button.
+      // Space toggles the drill while driving; keep it from pressing the focused button.
       if (game.driving && e.key === ' ') e.preventDefault();
       if (e.key === 'r') setTech(!techRef.current);
       if (e.key === 'q') game.brushSquare = !game.brushSquare;
@@ -183,8 +183,9 @@ export function Hud({ game }: { game: Game }) {
             <div className="bar"><div style={{ width: `${Math.min(100, (bucketTotal(game.driving) / VEHICLE.bucket) * 100)}%` }} /></div>
             <b>{bucketTotal(game.driving).toFixed(0)}/{VEHICLE.bucket}</b>
           </div>
+          <BucketContents bucket={game.driving.bucket} />
           {game.driving.pickup && <p className="pickup">Pickup requested: {game.bots.filter((b) => !b.dead && b.pickup === game.driving!.id).length} drones on the way</p>}
-          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill · <kbd>E</kbd> dump bucket · <kbd>P</kbd> {game.driving.pickup ? 'call off pickup' : 'request pickup'} · <kbd>F</kbd> turn around · <kbd>Esc</kbd> get out</p>
+          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill {game.drive.drill ? <b className="on">on</b> : 'off'} · <kbd>E</kbd> dump bucket · <kbd>P</kbd> {game.driving.pickup ? 'call off pickup' : 'request pickup'} · <kbd>F</kbd> turn around · <kbd>Esc</kbd> get out</p>
           <p className="sub">The bucket empties into the stockpiles when you park at the depot, or drones fetch it (P) while you're within a base's range.</p>
         </aside>
       )}
@@ -326,6 +327,13 @@ function applySettings(game: Game, s: SettingsData) {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* storage unavailable: settings last this session */ }
 }
 
+/** Reload the page into a level: the normal shift, or the debug level (see Game.create). */
+function loadLevel(level: 'debug' | null) {
+  const u = new URL(location.href);
+  if (level) u.searchParams.set('level', level); else u.searchParams.delete('level');
+  location.href = u.href;
+}
+
 /** Main menu: opened with Esc from the plain cursor. The game is paused behind it. */
 function MainMenu({ onResume, onSettings }: { onResume: () => void; onSettings: () => void }) {
   return (
@@ -335,7 +343,8 @@ function MainMenu({ onResume, onSettings }: { onResume: () => void; onSettings: 
         <p className="sub">Paused</p>
         <button autoFocus onClick={onResume}>Resume</button>
         <button onClick={onSettings}>Settings</button>
-        <button className="quiet" onClick={() => location.reload()}>Restart shift</button>
+        <button className="quiet" onClick={() => loadLevel(null)}>Restart shift</button>
+        <button className="quiet" onClick={() => loadLevel('debug')}>Load debug level</button>
       </div>
     </div>
   );
@@ -589,6 +598,37 @@ function inspectorHtml(info: Inspection) {
       `<span>${info.recipe.seconds}s each · ${Math.round(perMin)}/min</span></div>`;
   }
   return html + info.lines.map((l) => `<div>${esc(l)}</div>`).join('');
+}
+
+/**
+ * What's in a vehicle's bucket, most first: each material's cells and share of the load, and what
+ * it all comes to in the stockpiles once it's unloaded.
+ */
+function BucketContents({ bucket }: { bucket: Record<number, number> }) {
+  const held = Object.entries(bucket).map(([m, n]) => [Number(m), n] as const).filter(([, n]) => n >= 0.05).sort((a, b) => b[1] - a[1]);
+  if (!held.length) return <p className="contents empty">Empty. Space starts the drill; whatever it cuts lands here.</p>;
+  const total = held.reduce((s, [, n]) => s + n, 0);
+  const unloads: Record<string, number> = {};
+  for (const [m, n] of held) for (const [res, per] of Object.entries(MATERIALS[m].yields)) unloads[res] = (unloads[res] ?? 0) + per * n;
+  const worth = Object.entries(unloads).filter(([, n]) => n >= 0.05);
+  return (
+    <div className="contents">
+      {held.map(([m, n]) => (
+        <div key={m} className="row">
+          <i style={{ background: MATERIAL_KEY.find((k) => k.id === m)?.color ?? '#888' }} />
+          <span>{MATERIAL_KEY.find((k) => k.id === m)?.name ?? MATERIALS[m].name}</span>
+          <b>{n.toFixed(1)}</b>
+          <em>{Math.round((n / total) * 100)}%</em>
+        </div>
+      ))}
+      <div className="yield">
+        Unloads as{' '}
+        {worth.length ? worth.map(([res, n]) => (
+          <b key={res} style={{ color: RESOURCE_COLOR[res] }}><Icon name={RESOURCE_ICON[res]} size={13} />+{n.toFixed(1)} {RESOURCE_NAME[res]?.toLowerCase()}</b>
+        )) : <span>nothing worth keeping: spoil only</span>}
+      </div>
+    </div>
+  );
 }
 
 function Res({ res, label, value }: { res: string; label: string; value: string }) {

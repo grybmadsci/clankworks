@@ -19,7 +19,8 @@ export function App() {
 
   useEffect(() => {
     if (!navigator.gpu) { setError('This game needs WebGPU (compute shaders). Try a recent Chrome or Edge.'); return; }
-    Game.create().then((g) => { window.__game = g; setGame(g); }, (e) => setError(String(e)));
+    const debug = new URLSearchParams(location.search).get('level') === 'debug';
+    Game.create(undefined, debug).then((g) => { window.__game = g; setGame(g); }, (e) => setError(String(e)));
   }, []);
 
   if (error) return <div className="splash error">{error}</div>;

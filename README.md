@@ -9,6 +9,7 @@ npm install
 npm run dev        # http://localhost:5287 — needs a WebGPU browser (recent Chrome / Edge)
 npm run smoke      # end-to-end test in Chromium (see Testing)
 npm run smoke:win  # same test from WSL, in Windows Chrome on the real GPU
+npm run debug-level:win  # checks the debug level and the vehicle turning around
 npm run build
 ```
 
@@ -55,12 +56,17 @@ dug free at both ends tears loose. Buildings count a girder as flat ground, vehi
 and drones fly around it.
 
 **Vehicles.** A **vehicle depot** (6 scrap + 4 plates; one per base, within its dig range, on
-flat ground) builds one steam-driven mining vehicle at a time (8 plates, `V`). You drive it
+flat ground) builds one electro-steam mining vehicle at a time (8 plates, `V`). You drive it
 yourself: click it with the Select cursor, then `A`/`D` drive, `W`/`S` aim the drill (up to
-about 26° above or below level), `Space` drills, `E` dumps the bucket behind it, `P` calls drones
-to fetch the bucket, `F` turns it around, and `Esc` gets out; the camera follows it. The drill cuts
-a bore about 0.95m tall into any rock except bedrock (slowly for the hard stuff), into a 40-cell
-bucket. The bore's floor follows the aim along a line laid down when drilling starts, and its
+about 26° above or below level), `Space` switches the drill on or off (a full bucket switches it off), `E` dumps the bucket behind it, `P` calls drones
+to fetch the bucket, and `Esc` gets out; the camera follows it. The drill always leads: driving the
+other way (or `F`) turns it around, holding the hull and wheels still while the drill and bucket
+tuck in, swing past each other and redeploy at the opposite ends. The drill cuts
+a bore about 1.2m tall into any rock except bedrock (slowly for the hard stuff), into a 40-cell
+bucket; aimed fully up the bore is 1.75m tall, enough to clear headroom for an outpost, and it
+always clears the bit itself so the drill never sits in rock. The driving panel lists what's in
+the bucket and what it will unload as, and the bucket itself is drawn with its near side cut away
+so you can watch it fill. The bore's floor follows the aim along a line laid down when drilling starts, and its
 surface is shaved smooth, so aiming up cuts a steady ramp the wheels can climb (and aiming down a
 steady decline), however slowly you creep forward. The arm holds its aim relative to level ground
 as the hull tilts, so the slope doesn't steepen as the vehicle climbs. Parking at its depot empties the
@@ -103,6 +109,11 @@ enough to brace again.
 The integrity layer shows the stress map: green rock is sound, and ceilings turn yellow,
 then red, as they approach their limit. Cracking rock flashes.
 
+**Debug level.** The main menu's *Load debug level* (or `?level=debug`) starts with the base
+already deployed and the tutorial skipped, 100 of every resource, and a 16m-wide start cavern,
+3m tall with its ends rounding over into the roof, braced by six struts, with a smelter and a vehicle depot already built. *Restart shift* goes
+back to the normal game.
+
 Settings (from the main menu) has a master volume slider and switches for each kind of alert:
 cave-ins, near-collapse warnings, strut warnings, drone status, crew chatter, and invalid
 actions or hints. They are saved in the browser.
@@ -118,7 +129,7 @@ The toolbar has three sections:
 
 | Section | Input | Action |
 | --- | --- | --- |
-| Orders | `Esc` Select | The default plain cursor. `Esc` from Select opens the main menu (Resume, Settings, Restart shift) and pauses the game |
+| Orders | `Esc` Select | The default plain cursor. `Esc` from Select opens the main menu (Resume, Settings, Restart shift, Load debug level) and pauses the game |
 | Orders | `I` Info | Hover anything (a drone, strut, the base, a critter, rock or open cave) for a card of basic facts about it |
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc or square: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor. `Q` (or the Brush toggle above the toolbar) switches between a round and a square brush |
 | Orders | `X` Scrap | Take down what's under the cursor (highlighted red): a strut for 1 scrap back (whatever it held up is re-checked), a girder for half its plates, or a vehicle for its full cost, spilling its bucket |
@@ -130,7 +141,7 @@ The toolbar has three sections:
 | Buildings | `R` Research | Open the tech tree |
 | Buildings | `B` Drone | Build a drone (3 plates), one per landing pad in service |
 | Buildings | `V` Vehicle | Build a mining vehicle at a depot (8 plates) and take the wheel; if every depot's vehicle is out, take the wheel of one |
-| Driving | `A`/`D`, `W`/`S`, `Space`, `E`, `P`, `F`, `Esc` | Drive, aim the drill, drill, dump the bucket, request (or call off) a drone pickup, turn around, get out |
+| Driving | `A`/`D`, `W`/`S`, `Space`, `E`, `P`, `F`, `Esc` | Drive, aim the drill, toggle the drill, dump the bucket, request (or call off) a drone pickup, turn around, get out |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 

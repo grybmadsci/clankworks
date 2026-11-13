@@ -265,12 +265,13 @@ export function backWallMaterial(gpu: GpuSim) {
 /**
  * Weathered metal: blotchy rust patches, rust streaks running down from them, and pitting, over a
  * base colour. Rusty areas go rough and lose their shine. `tint` is the corrosion colour pair
- * (dark, light), e.g. orange-brown rust or green verdigris on copper.
+ * (dark, light), e.g. orange-brown rust or green verdigris on copper. Things that move pass
+ * `local`, so the rust is painted on in the mesh's own space instead of sliding over it.
  */
-export function rustMaterial(base: string, amount = 0.5, tint: [string, string] = ['#3a1a0e', '#6a3418']) {
+export function rustMaterial(base: string, amount = 0.5, tint: [string, string] = ['#3a1a0e', '#6a3418'], local = false) {
   const { color: tslColor } = TSL as any;
   const m = new THREE.MeshStandardNodeMaterial();
-  const p = positionWorld;
+  const p = local ? positionLocal : positionWorld;
   const blotch = noise(p.xy.mul(3.3).add(p.z.mul(2.1))).mul(0.5).add(0.5).add(noise(p.xy.mul(13).add(p.z.mul(7))).mul(0.18));
   const patches = smoothstep(0.85 - amount * 0.6, 0.95 - amount * 0.5, blotch);
   // Drips: long thin noise along the vertical, strongest just below the patches.

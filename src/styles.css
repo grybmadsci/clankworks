@@ -294,6 +294,15 @@ kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--edge); borde
 .driving .bucket .bar { flex: 1; height: 8px; background: #2b241d; border-radius: 4px; overflow: hidden; }
 .driving .bucket .bar div { height: 100%; background: #c98a2b; transition: width 0.2s; }
 .driving .bucket b { color: var(--text); min-width: 40px; text-align: right; }
+.driving .contents { margin-top: 6px; display: grid; gap: 2px; }
+.driving .contents.empty { color: var(--muted); font-size: 11px; }
+.driving .contents .row { display: grid; grid-template-columns: 10px 1fr 40px 36px; align-items: center; gap: 8px; color: #d8c8ae; }
+.driving .contents .row i { width: 10px; height: 10px; border-radius: 2px; }
+.driving .contents .row b { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.driving .contents .row em { color: var(--muted); font-style: normal; text-align: right; font-variant-numeric: tabular-nums; }
+.driving .contents .yield { margin-top: 2px; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.driving .contents .yield b { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+.driving p b.on { color: #7fd8ff; }
 
 /* Length and price of a girder being dragged out */
 .girder-label .err { color: #ff9a85; margin-top: 2px; }
