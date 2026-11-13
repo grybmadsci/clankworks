@@ -33,8 +33,14 @@ objectives follow: order a dig on copper ore and deliver 5 ore, build a smelter 
 plates, then save 3 plates and build a second drone. Objectives draw no pointer lines and can't
 be skipped. You start with one drone and no plates.
 
-Mining drones wait on the brass landing pads on top of the base's boiler. Only two of its four
-pads are in service at first; research brings the other two online.
+The base is a steam boiler powered by quantum energy, a bit worse for wear
+(`src/render/baseModel.tsx`): a riveted boiler hung off the back wall with its violet core seen through a
+copper-framed window cut in its shell, a steam engine turning a pair of cogs, an AI brain behind
+an open service door with nixie tubes turning over hex beneath it, live gauges, a side stack that
+puffs, and a raised landing deck with glowing circuitry. Mining drones wait on that deck's four
+pads. Only two are in service at first; research brings the other two online. The smelter, depot,
+outposts, drones and the vehicle share its look: matte brass, weathered copper and clean iron,
+small violet quantum ports, red nixies, gauges and glowing circuit traces.
 
 **Ores and expansion.** Copper ore lies around the starting cavern. Iron ore starts at the edge of
 the starting dig range and becomes common further out; titanium ore only appears 28m or more from
@@ -43,10 +49,13 @@ the start, and deeper. The smelter cooks whichever ore you have most of: copper 
 **outpost** (10 copper plates + 8 iron bars): a satellite base with two more landing pads and its
 own 11m dig range. It needs 2m of flat ground and must be at least 20m from any other base.
 
-**Research** (`R`) has five short branches: Fleet (third and fourth landing pads), Lasers (mine
+**Research** (`R`) has six short branches: Fleet (third and fourth landing pads), Lasers (mine
 50% faster, then twice as fast and able to cut titanium), Rotors (fly 25%, then 50% faster),
-Batteries (last 50% longer, then twice as long) and Girders (6m, then 8m spans). Each starts with
-a copper-plate project and continues with one that needs iron or titanium.
+Batteries (last 50% longer, then twice as long), Girders (6m, then 8m spans) and Vehicles (a bucket
+twice as big, then twice as big again, then a strut-laying arm). Each starts with a copper-plate project and
+continues with ones that need iron or titanium. The strut-laying arm braces any ceiling a vehicle
+drills past 90% of its safe span: it puts a strut (2 scrap) in the column nearest the ceiling's
+middle that isn't in the bore ahead, and warns if it runs out of scrap.
 
 **Girders** are flat steel floors through the whole depth of the cave, one cell thick. Drag one
 out sideways with the Girder tool: it runs along the row you pressed on, stops at rock and at
@@ -55,24 +64,35 @@ on rock, butt against a wall, a strut or another girder, or be bolted under the 
 dug free at both ends tears loose. Buildings count a girder as flat ground, vehicles drive on it,
 and drones fly around it.
 
+**Buildings hang off the wall.** Like the main base, the smelter, the vehicle depot and outposts
+are hung off the cavern's back wall rather than standing on the floor: a riveted plate bolted to
+the rock carries the smelter's hearth deck on gussets (its chimney strapped back to the plate),
+the depot's roof on tie rods, and an outpost's pad deck and the bracket shelf its tank stands on.
+New building models use the same `WallMount` (`src/render/mount.tsx`). The depot's floor is a
+platform 15cm up with a ramp down each side (real colliders, so vehicles drive up onto it), so it
+needs 3m of level floor.
+
 **Vehicles.** A **vehicle depot** (6 scrap + 4 plates; one per base, within its dig range, on
-flat ground) builds one electro-steam mining vehicle at a time (8 plates, `V`). You drive it
+flat ground) builds one Victorian electro-steam mining vehicle (hubless wheels, a boiler, a
+tricone drill turning at about 50 rpm on a boom) at a time (8 plates, `V`). You drive it
 yourself: click it with the Select cursor, then `A`/`D` drive, `W`/`S` aim the drill (up to
 about 26° above or below level), `Space` switches the drill on or off (a full bucket switches it off), `E` dumps the bucket behind it, `P` calls drones
-to fetch the bucket, and `Esc` gets out; the camera follows it. The drill always leads: driving the
+to fetch the bucket, and right-click gets out; the camera follows it. The drill always leads: driving the
 other way (or `F`) turns it around, holding the hull and wheels still while the drill and bucket
 tuck in, swing past each other and redeploy at the opposite ends. The drill cuts
 a bore about 1.2m tall into any rock except bedrock (slowly for the hard stuff), into a 40-cell
-bucket; aimed fully up the bore is 1.75m tall, enough to clear headroom for an outpost, and it
+bucket (more with research); aimed fully up the bore is 1.75m tall, enough to clear headroom for an outpost, and it
 always clears the bit itself so the drill never sits in rock. The driving panel lists what's in
 the bucket and what it will unload as, and the bucket itself is drawn with its near side cut away
-so you can watch it fill. The bore's floor follows the aim along a line laid down when drilling starts, and its
-surface is shaved smooth, so aiming up cuts a steady ramp the wheels can climb (and aiming down a
-steady decline), however slowly you creep forward. The arm holds its aim relative to level ground
+so you can watch it fill. The bore's floor follows the aim along a line laid down when drilling starts (from the
+rock face, if the vehicle has stopped just short of one), and its surface is shaved smooth, so
+aiming up cuts a steady ramp the wheels can climb (and aiming down a steady decline), however
+slowly you creep forward. While the drill is cutting rock the vehicle crawls no faster than it
+can cut, slower through hard rock, so it can't run up a half-cut face. The arm holds its aim relative to level ground
 as the hull tilts, so the slope doesn't steepen as the vehicle climbs. Parking at its depot empties the
 bucket into the stockpiles (ore as ore, spoil as a little scrap). Within a base's range, `P`
 requests a pickup instead: idle drones fly to the vehicle, take up to 8 cells each and carry them
-home until the bucket is empty (`P` again calls it off). A gyro keeps it from rearing over, and if
+home until the bucket is empty (`P` again calls it off). A gyro keeps it from rearing over (and its wheels let go if it's pitched up a face it isn't cutting, so it can't climb walls), and if
 it does end up on its back it hops upright again. Scrapping a vehicle refunds its full cost and spills its
 bucket onto the ground: ore lands as ore, other rock as rubble. Each drone has a battery gauge on its flanks: green, then yellow, then blinking
 red. Flying drains it, and the mining laser drains it faster. Below 25% a drone drops its job
@@ -111,7 +131,7 @@ then red, as they approach their limit. Cracking rock flashes.
 
 **Debug level.** The main menu's *Load debug level* (or `?level=debug`) starts with the base
 already deployed and the tutorial skipped, 100 of every resource, and a 16m-wide start cavern,
-3m tall with its ends rounding over into the roof, braced by six struts, with a smelter and a vehicle depot already built. *Restart shift* goes
+3m tall with its ends rounding over into the roof, braced by seven struts, with a smelter and a vehicle depot already built. *Restart shift* goes
 back to the normal game.
 
 Settings (from the main menu) has a master volume slider and switches for each kind of alert:
@@ -129,7 +149,8 @@ The toolbar has three sections:
 
 | Section | Input | Action |
 | --- | --- | --- |
-| Orders | `Esc` Select | The default plain cursor. `Esc` from Select opens the main menu (Resume, Settings, Restart shift, Load debug level) and pauses the game |
+| Orders | Right-click Select | The default plain cursor: a right-click (without dragging) returns to it from any tool, and gets out of a vehicle |
+| Menu | `Esc` | Opens the main menu (Resume, Settings, Restart shift, Load debug level) from anywhere and pauses the game; `Esc` again backs out |
 | Orders | `I` Info | Hover anything (a drone, strut, the base, a critter, rock or open cave) for a card of basic facts about it |
 | Orders | `1` Dig / `2` Cancel | Paint or erase dig designations (left-drag). The brush shows as a hatched disc or square: amber to dig, red to erase or when out of range, with a pickaxe or eraser cursor. `Q` (or the Brush toggle above the toolbar) switches between a round and a square brush |
 | Orders | `X` Scrap | Take down what's under the cursor (highlighted red): a strut for 1 scrap back (whatever it held up is re-checked), a girder for half its plates, or a vehicle for its full cost, spilling its bucket |
@@ -141,7 +162,7 @@ The toolbar has three sections:
 | Buildings | `R` Research | Open the tech tree |
 | Buildings | `B` Drone | Build a drone (3 plates), one per landing pad in service |
 | Buildings | `V` Vehicle | Build a mining vehicle at a depot (8 plates) and take the wheel; if every depot's vehicle is out, take the wheel of one |
-| Driving | `A`/`D`, `W`/`S`, `Space`, `E`, `P`, `F`, `Esc` | Drive, aim the drill, toggle the drill, dump the bucket, request (or call off) a drone pickup, turn around, get out |
+| Driving | `A`/`D`, `W`/`S`, `Space`, `E`, `P`, `F`, right-click | Drive, aim the drill, toggle the drill, dump the bucket, request (or call off) a drone pickup, turn around, get out |
 | Layers (top right) | `T` cycles, or click | Normal, heat, oxygen, structural integrity and material views. The material view shows each material in a high-contrast pastel, with a key you can click to hide or show each one |
 | | Right-drag / WASD, wheel | Pan, zoom |
 

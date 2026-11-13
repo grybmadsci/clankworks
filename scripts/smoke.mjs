@@ -145,7 +145,11 @@ try {
   await page.evaluate((d) => window.__view.goto(d.x, d.y + 1), d0);
   await page.waitForTimeout(400);
   await doStep(async () => { await page.hover('.topbar .quota'); await page.waitForTimeout(300); });
-  await doStep(async () => { for (const k of ['1', '3', 'Escape']) { await page.keyboard.press(k); await page.waitForTimeout(150); } });
+  await doStep(async () => {
+    for (const k of ['1', '3']) { await page.keyboard.press(k); await page.waitForTimeout(150); }
+    await page.mouse.click(640, 420, { button: 'right' });
+    await page.waitForTimeout(150);
+  });
   await doStep(async () => {
     await page.getByRole('button', { name: 'Material' }).click();
     await page.waitForTimeout(200);
@@ -589,8 +593,12 @@ try {
   await page.mouse.move(640, 300);
   check(resIcons === 8 && card && /8/.test(card.bar) && card.icons === 1, `resources have icons, and building cards lead with their cost (${card?.bar})`);
 
-  // Esc from the plain cursor opens the main menu and pauses; Settings can switch alerts off.
-  await page.evaluate(() => { window.__game.tool = 'select'; });
+  // Right-click drops back to the plain cursor; Esc opens the main menu from any tool and pauses;
+  // Settings can switch alerts off.
+  await page.keyboard.press('1');
+  await page.mouse.click(640, 300, { button: 'right' });
+  const rightClick = await page.evaluate(() => window.__game.tool);
+  await page.keyboard.press('3');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
   const t0 = await page.evaluate(() => window.__game.time);
@@ -608,7 +616,8 @@ try {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
   const resumed = await page.evaluate(() => ({ menu: !!document.querySelector('.modal'), paused: window.__game.paused }));
-  check(paused.menu && paused.frozen, 'Esc from the plain cursor opens the main menu and pauses the game');
+  check(rightClick === 'select', `right-click returns to the plain cursor (${rightClick})`);
+  check(paused.menu && paused.frozen, 'Esc opens the main menu from a building tool and pauses the game');
   check(silenced.hints === false && !silenced.logged && silenced.saved === false && !resumed.menu && !resumed.paused, 'Settings switch an alert category off (and Esc backs out of the dialogs)');
 
   // Expansion: ores by distance, research, smelting every ore, and outposts.
@@ -685,7 +694,7 @@ try {
     const girder = { span: [gd.i0 - ci, gd.i1 - ci, gd.j - cj], paid: plates0 - g.resources.plates, floor: t.isFloor(ci - 5, cj - 1), pitShut: !g.route(c(ci), c(cj + 2), c(ci - 4), c(cj - 2.5), 0.3) };
     g.resources.plates += 8; g.research('girder1');
     const noRange = g.depotSite(c(ci), c(pj + 1)).error ?? 'ok';
-    g.placeDepot(c(ci - 9), c(cj + 1));
+    g.placeDepot(c(ci - 6), c(cj + 1));
     const second = g.depotSite(c(ci + 4), c(cj + 1)).error ?? 'ok';
     g.buildVehicle(); g.buildVehicle();
     for (let n = 0; n < 30; n++) { g.update(1 / 30); await new Promise((r) => setTimeout(r, 15)); }
@@ -698,10 +707,12 @@ try {
   check(room.pitOpen && room.girder.pitShut, 'drones can\'t fly through a girder');
   check(room.max === 6, 'research lengthens girders');
   check(/dig range/.test(room.noRange) && /already has/.test(room.second) && room.depots === 1, 'one vehicle depot per base, within its dig range');
-  check(room.vehicles === 1 && room.driving && Math.abs(room.y0 - room.floor - 0.26) < 0.08, `the depot builds one vehicle at a time, which sits on the floor (${(room.y0 - room.floor).toFixed(2)}m up) and is driven`);
+  check(room.vehicles === 1 && room.driving && Math.abs(room.y0 - room.floor - 0.41) < 0.08, `the depot builds one vehicle at a time, which sits on its raised floor (${(room.y0 - room.floor).toFixed(2)}m up) and is driven`);
   const drive = async (keys, seconds) => { for (const k of keys) await page.keyboard.down(k); await fastForward(seconds); for (const k of keys) await page.keyboard.up(k); };
   const vstate = () => page.evaluate(() => { const g = window.__game, v = g.vehicles[0], p = v.body.translation(); return { x: p.x, y: p.y, a: v.body.rotation(), bucket: { ...v.bucket }, ore: g.resources.ore }; });
-  await drive(['d'], 2.5);
+  // Off the depot's ramp, over the girder and up to the copper face (pressed against a face for long,
+  // the wheels start to climb it).
+  await drive(['d'], 1.8);
   const across = await vstate();
   // Aiming up cuts a ramp even at a crawl: tap forward with the drill running and the vehicle
   // climbs. Then level the drill again.
@@ -723,7 +734,12 @@ try {
   check(ramp.y - face.y > 0.05 && ramp.x > face.x && ramp.a > 0.3 && ramp.a < 0.6, `aimed up, creeping forward cuts a ramp it starts up (tilted ${ramp.a.toFixed(2)})`);
   check(climbed.y - face.y > 0.4 && climbed.a > 0.3 && climbed.a < 0.6, `driving on, it climbs the ramp at a steady slope (${(climbed.y - face.y).toFixed(2)}m up, tilted ${climbed.a.toFixed(2)})`);
   await drive(['s'], 0.375);
-  await drive(['d'], 3);
+  // Drilling level off the top of the ramp: sample the tilt throughout, so a vehicle still easing
+  // off the slope isn't mistaken for one rearing over.
+  await page.keyboard.down('d');
+  let maxTilt = 0;
+  for (let n = 0; n < 15; n++) { await fastForward(0.2); maxTilt = Math.max(maxTilt, Math.abs((await vstate()).a)); }
+  await page.keyboard.up('d');
   const drilled = await vstate();
   await shot('8-vehicle');
   // A full bucket switches the drill off; so does Space.
@@ -734,7 +750,7 @@ try {
   const home = await vstate();
   console.log('drive', JSON.stringify({ across, drilled, home }));
   check(across.x > (room.ci - 3 + 1) * 0.25 + 0.4 && Math.abs(across.y - room.floor - 0.26) < 0.1, 'the vehicle drives across the girder over the pit');
-  check((drilled.bucket[3] ?? 0) > 2 && Math.abs(drilled.a) < 0.6, `the drill cuts copper into the bucket (${(drilled.bucket[3] ?? 0).toFixed(1)} cells) without the vehicle rearing over`);
+  check((drilled.bucket[3] ?? 0) > 2 && maxTilt < 0.7, `the drill cuts copper into the bucket (${(drilled.bucket[3] ?? 0).toFixed(1)} cells) without the vehicle rearing over (tilted at most ${maxTilt.toFixed(2)})`);
   await page.keyboard.press(' ');
   const toggled = await page.evaluate(() => window.__game.drive.drill);
   await page.keyboard.press(' ');
@@ -751,7 +767,8 @@ try {
     return { shaft: [cj + 8, j], depotRow: Math.floor(d.y / 0.25), pathTop: !!g.route(d.x, d.y + 1.5, (ci + 0.5) * 0.25, (j + 1) * 0.25, 0.3) };
   });
   // Away from the depot (or parking there would unload it), in reach of the shaft.
-  await drive(['d'], 1.3);
+  // (It turns round first: it drove home facing left.)
+  await drive(['d'], 2.6);
   await fastForward(1);
   const delivered0 = await page.evaluate(() => { const g = window.__game; g.vehicles[0].bucket = { 3: 10, 1: 6 }; return g.oreDelivered; });
   await page.keyboard.press('p');

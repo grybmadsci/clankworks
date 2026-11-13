@@ -5,13 +5,13 @@ import { ALERTS, COST, TUTORIAL, bucketTotal, type AlertKind, type Game, type Ov
 import { DEPOT, GIRDER, OUTPOST, TECHS, VEHICLE, type Cost } from '../game/tech';
 import { MATERIAL_KEY } from '../render/materials';
 import { inspect, type Inspection } from '../game/inspect';
-import { Icon, cursorFor, iconSvg } from './icons';
+import { Icon, MouseRight, cursorFor, iconSvg } from './icons';
 import { setVolume, unlockAudio } from '../game/audio';
 import { view } from '../render/Scene';
 
 interface ToolDef { id: Tool; key: string; label: string; hint: string }
 const ORDERS: ToolDef[] = [
-  { id: 'select', key: 'Esc', label: 'Select', hint: 'Plain cursor. Press Esc again for the menu' },
+  { id: 'select', key: 'RMB', label: 'Select', hint: 'Plain cursor: right-click anywhere to get back to it. Esc opens the menu' },
   { id: 'info', key: 'I', label: 'Info', hint: 'Hover anything in the world to see what it is' },
   { id: 'dig', key: '1', label: 'Dig', hint: 'Paint rock for the drones to mine, inside the dashed range ring. Amber hatching: drones can reach it. Red: no access yet' },
   { id: 'cancel', key: '2', label: 'Cancel', hint: 'Erase dig designations' },
@@ -48,13 +48,10 @@ export function Hud({ game }: { game: Game }) {
     const id = setInterval(() => force((n) => n + 1), 200);
     const key = (e: KeyboardEvent) => {
       unlockAudio();
-      // Esc: close a dialog, else drop back to the plain cursor, else open the menu.
+      // Esc: the main menu (over anything else open); from the menu it backs out again.
       if (e.key === 'Escape') {
-        if (techRef.current) { setTech(false); force((n) => n + 1); return; }
         if (menu.current) setMenu(menu.current === 'settings' ? 'main' : null);
-        else if (game.driving) game.driving = null;
-        else if (game.tool !== 'select' && game.intro.phase === 'done') game.tool = 'select';
-        else setMenu('main');
+        else { setTech(false); setMenu('main'); }
         force((n) => n + 1);
         return;
       }
@@ -158,7 +155,7 @@ export function Hud({ game }: { game: Game }) {
               })}
             </div>
           )}
-          <p className="help">Left-click: use tool · Right-drag / WASD: pan · Wheel: zoom · Click a vehicle to drive it</p>
+          <p className="help">Left-click: use tool · Right-click: plain cursor · Right-drag / WASD: pan · Wheel: zoom · Click a vehicle to drive it</p>
         </aside>
       )}
 
@@ -180,12 +177,12 @@ export function Hud({ game }: { game: Game }) {
           <h3>Driving {game.driving.name}</h3>
           <div className="bucket">
             <span>Bucket</span>
-            <div className="bar"><div style={{ width: `${Math.min(100, (bucketTotal(game.driving) / VEHICLE.bucket) * 100)}%` }} /></div>
-            <b>{bucketTotal(game.driving).toFixed(0)}/{VEHICLE.bucket}</b>
+            <div className="bar"><div style={{ width: `${Math.min(100, (bucketTotal(game.driving) / game.bucketSize) * 100)}%` }} /></div>
+            <b>{bucketTotal(game.driving).toFixed(0)}/{game.bucketSize}</b>
           </div>
           <BucketContents bucket={game.driving.bucket} />
           {game.driving.pickup && <p className="pickup">Pickup requested: {game.bots.filter((b) => !b.dead && b.pickup === game.driving!.id).length} drones on the way</p>}
-          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill {game.drive.drill ? <b className="on">on</b> : 'off'} · <kbd>E</kbd> dump bucket · <kbd>P</kbd> {game.driving.pickup ? 'call off pickup' : 'request pickup'} · <kbd>F</kbd> turn around · <kbd>Esc</kbd> get out</p>
+          <p><kbd>A</kbd><kbd>D</kbd> drive · <kbd>W</kbd><kbd>S</kbd> aim drill · <kbd>Space</kbd> drill {game.drive.drill ? <b className="on">on</b> : 'off'} · <kbd>E</kbd> dump bucket · <kbd>P</kbd> {game.driving.pickup ? 'call off pickup' : 'request pickup'} · <kbd>F</kbd> turn around · <kbd className="mouse"><MouseRight /></kbd> get out</p>
           <p className="sub">The bucket empties into the stockpiles when you park at the depot, or drones fetch it (P) while you're within a base's range.</p>
         </aside>
       )}
@@ -327,14 +324,14 @@ function applySettings(game: Game, s: SettingsData) {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* storage unavailable: settings last this session */ }
 }
 
-/** Reload the page into a level: the normal shift, or the debug level (see Game.create). */
+/** Reload the page into a level: the normal shift or the debug level (see Game.create). */
 function loadLevel(level: 'debug' | null) {
   const u = new URL(location.href);
   if (level) u.searchParams.set('level', level); else u.searchParams.delete('level');
   location.href = u.href;
 }
 
-/** Main menu: opened with Esc from the plain cursor. The game is paused behind it. */
+/** Main menu: opened with Esc. The game is paused behind it. */
 function MainMenu({ onResume, onSettings }: { onResume: () => void; onSettings: () => void }) {
   return (
     <div className="modal-backdrop">
@@ -489,7 +486,7 @@ function ToolButton({ t, game, onPick }: { t: ToolDef; game: Game; onPick: () =>
   return (
     <button className={game.tool === t.id ? 'active' : ''} data-tip={priced ? undefined : t.hint} onClick={() => { game.tool = t.id; onPick(); }}
       onMouseEnter={priced ? (e) => costCard.show(e.currentTarget, t.id, t.label, t.hint) : undefined} onMouseLeave={priced ? () => costCard.hide() : undefined}>
-      <Icon name={t.id} /><span>{t.label}</span><kbd>{t.key}</kbd>
+      <Icon name={t.id} /><span>{t.label}</span>{t.key === 'RMB' ? <kbd className="mouse"><MouseRight /></kbd> : <kbd>{t.key}</kbd>}
     </button>
   );
 }

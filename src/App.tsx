@@ -1,7 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import { useEffect, useState } from 'react';
 import * as THREE from 'three/webgpu';
-import { Game } from './game/Game';
+import { Game, type Level } from './game/Game';
 import { chooseQuality } from './render/quality';
 import { Scene } from './render/Scene';
 import { Hud } from './ui/Hud';
@@ -19,8 +19,9 @@ export function App() {
 
   useEffect(() => {
     if (!navigator.gpu) { setError('This game needs WebGPU (compute shaders). Try a recent Chrome or Edge.'); return; }
-    const debug = new URLSearchParams(location.search).get('level') === 'debug';
-    Game.create(undefined, debug).then((g) => { window.__game = g; setGame(g); }, (e) => setError(String(e)));
+    const param = new URLSearchParams(location.search).get('level');
+    const level: Level = param === 'debug' ? param : 'normal';
+    Game.create(undefined, level).then((g) => { window.__game = g; setGame(g); }, (e) => setError(String(e)));
   }, []);
 
   if (error) return <div className="splash error">{error}</div>;

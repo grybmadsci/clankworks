@@ -1,114 +1,144 @@
 import { useFrame } from '@react-three/fiber';
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as THREE from 'three/webgpu';
 
 /**
- * Electro-steampunk fittings shared by the buildings and vehicles: Tesla coils with crackling
- * arcs, glowing coil rings and vacuum tubes, in polished copper, chrome and porcelain. The glow is
- * one shared material that hums and flickers (see ElectroPulse); placement holograms pass a single
- * `material` that replaces everything.
+ * Victorian electro-steam fittings shared by the buildings and vehicles: faintly lit coil bands and
+ * vacuum tubes, sparks that now and then run along a seam, and brass finials and scrollwork, in
+ * polished copper, chrome and brass. The glow is one shared material that hums (see ElectroPulse);
+ * placement holograms pass a single `material` that replaces everything.
  */
 export const ELECTRO = {
-  /** Cold blue-white glow, HDR so the bloom picks it up. Animated by ElectroPulse. */
-  arc: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.9, 2.6, 3.4) }),
-  /** Bright arc bolts, shown in flickers. */
-  bolt: new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 4, 5) }),
+  /** Cold blue-white glow, kept low so it reads as a hint of current rather than a light show. */
+  arc: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.45, 1.25, 1.6) }),
+  /** A spark running along a seam: bright, briefly. */
+  spark: new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 5, 6), transparent: true, depthWrite: false }),
   copper: new THREE.MeshStandardMaterial({ color: '#c46a3a', metalness: 0.85, roughness: 0.32 }),
   chrome: new THREE.MeshStandardMaterial({ color: '#c8ccd2', metalness: 0.95, roughness: 0.18 }),
-  porcelain: new THREE.MeshStandardMaterial({ color: '#e9e2d0', metalness: 0, roughness: 0.3 }),
+  brass: new THREE.MeshStandardMaterial({ color: '#c9a050', metalness: 0.8, roughness: 0.3 }),
   glass: new THREE.MeshStandardMaterial({ color: '#9fd8e8', metalness: 0.1, roughness: 0.05, transparent: true, opacity: 0.35, depthWrite: false }),
 };
 
-/** Arc bolts currently mounted; ElectroPulse flicks them on and off. */
-const bolts = new Set<THREE.Object3D>();
-
-/** Drives the shared glow: a mains hum with the odd surge. Mount once. */
+/** Drives the shared glow: a slow mains hum with the odd flicker. Mount once. */
 export function ElectroPulse() {
   useFrame(({ clock }) => {
     const t = clock.elapsedTime;
-    const surge = Math.random() < 0.03 ? 1.6 : 1;
-    const k = (0.85 + Math.sin(t * 50) * 0.06 + Math.sin(t * 3.1) * 0.1) * surge;
-    ELECTRO.arc.color.setRGB(0.9 * k, 2.6 * k, 3.4 * k);
-    for (const b of bolts) {
-      if (b.visible ? Math.random() < 0.5 : Math.random() < 0.025) {
-        b.visible = !b.visible;
-        b.rotation.y = Math.random() * Math.PI * 2;
-      }
-    }
+    const k = 0.9 + Math.sin(t * 2.3) * 0.08 + (Math.random() < 0.02 ? 0.25 : 0);
+    ELECTRO.arc.color.setRGB(0.45 * k, 1.25 * k, 1.6 * k);
   });
   return null;
 }
 
-/** A jagged bolt from the origin out to about `length`, as a thin tube. */
-function boltGeometry(length: number, seed: number) {
-  let s = seed;
-  const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647 - 0.5; };
-  const pts = Array.from({ length: 6 }, (_, n) => {
-    const f = n / 5;
-    return new THREE.Vector3(f * length, (n && n < 5 ? rnd() * 0.5 : 0) * length * 0.5 - f * length * 0.35, rnd() * length * 0.25);
+type P3 = [number, number, number];
+
+/** Points round an arc in a plane: 'xy' (facing the camera), 'yz' (round the x axis) or 'xz'. */
+export function arcPath(c: P3, r: number, a0: number, a1: number, plane: 'xy' | 'yz' | 'xz' = 'xy', n = 12): P3[] {
+  return Array.from({ length: n + 1 }, (_, k) => {
+    const a = a0 + ((a1 - a0) * k) / n, u = Math.cos(a) * r, v = Math.sin(a) * r;
+    return plane === 'xy' ? [c[0] + u, c[1] + v, c[2]] : plane === 'yz' ? [c[0], c[1] + v, c[2] + u] : [c[0] + u, c[1], c[2] + v];
   });
-  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0), 12, 0.0035, 3, false);
 }
 
+const TAIL = 5;
+const sparkGeometry = new THREE.SphereGeometry(1, 6, 4);
+
 /**
- * A Tesla coil `height` tall (origin at its foot): porcelain insulator stack, copper winding,
- * chrome toroid crown with a glowing core, and arcs that crackle off the crown.
+ * Sparks that now and then race along a seam of a model: each path (in the model's own space) is a
+ * polyline, and every few seconds a bright bead with a fading tail runs along one of them. `every`
+ * is the mean seconds between sparks; `material` colours them (blue-white by default).
  */
-export function TeslaCoil({ height = 0.3, material, position, arcs = 2 }: { height?: number; material?: THREE.Material; position?: [number, number, number]; arcs?: number }) {
-  const m = (own: THREE.Material) => material ?? own;
-  const h = height, r = h * 0.12;
-  const bolt = useMemo(() => Array.from({ length: arcs }, (_, n) => boltGeometry(h * 0.55, 7 + n * 31 + Math.round(h * 1000))), [arcs, h]);
-  const group = useRef<THREE.Group>(null!);
-  useEffect(() => {
-    if (material) return;
-    const mine = [...group.current.children];
-    mine.forEach((b) => { b.visible = false; bolts.add(b); });
-    return () => mine.forEach((b) => bolts.delete(b));
-  }, [material]);
-  const turns = 7;
+export function SurfaceSparks({ paths, every = 4, size = 0.008, material = ELECTRO.spark }: { paths: P3[][]; every?: number; size?: number; material?: THREE.Material }) {
+  const beads = useRef<THREE.Mesh[]>([]);
+  const lines = useMemo(() => paths.map((p) => {
+    const pts = p.map((q) => new THREE.Vector3(...q));
+    const lens = [0];
+    for (let k = 1; k < pts.length; k++) lens.push(lens[k - 1] + pts[k].distanceTo(pts[k - 1]));
+    return { pts, lens, total: lens[lens.length - 1] };
+  }), [paths]);
+  const run = useRef<{ line: number; s: number; dir: number } | null>(null);
+  const at = (line: (typeof lines)[number], s: number, out: THREE.Vector3) => {
+    const d = Math.max(0, Math.min(line.total, s));
+    let k = 1;
+    while (k < line.lens.length - 1 && line.lens[k] < d) k++;
+    const f = (d - line.lens[k - 1]) / Math.max(1e-6, line.lens[k] - line.lens[k - 1]);
+    return out.copy(line.pts[k - 1]).lerp(line.pts[k], f);
+  };
+  useFrame((_, dt) => {
+    const r = run.current;
+    if (!r) {
+      beads.current.forEach((b) => { if (b) b.visible = false; });
+      if (lines.length && Math.random() < dt / every) run.current = { line: Math.floor(Math.random() * lines.length), s: 0, dir: Math.random() < 0.5 ? 1 : -1 };
+      return;
+    }
+    const line = lines[r.line];
+    r.s += dt * 1.6;
+    beads.current.forEach((b, k) => {
+      if (!b) return;
+      const s = r.s - k * 0.025;
+      b.visible = s >= 0 && s <= line.total && Math.random() > 0.08;
+      at(line, r.dir > 0 ? s : line.total - s, b.position);
+      b.scale.setScalar(size * (1 - k / TAIL) * (0.8 + Math.random() * 0.4));
+    });
+    if (r.s - TAIL * 0.025 > line.total) run.current = null;
+  });
   return (
-    <group position={position}>
-      {/* Insulator stack */}
-      {[0, 1, 2].map((n) => (
-        <mesh key={n} position={[0, h * (0.04 + n * 0.07), 0]} material={m(ELECTRO.porcelain)}><cylinderGeometry args={[r * (1.3 - n * 0.15), r * (1.45 - n * 0.15), h * 0.05, 12]} /></mesh>
+    <group>
+      {Array.from({ length: TAIL }, (_, k) => (
+        <mesh key={k} ref={(m) => { if (m) beads.current[k] = m; }} geometry={sparkGeometry} material={material} visible={false} />
       ))}
-      {/* Winding: copper turns on a dark former */}
-      <mesh position={[0, h * 0.5, 0]} material={m(ELECTRO.chrome)}><cylinderGeometry args={[r * 0.7, r * 0.7, h * 0.46, 10]} /></mesh>
-      {Array.from({ length: turns }, (_, n) => (
-        <mesh key={`t${n}`} position={[0, h * (0.3 + (n / (turns - 1)) * 0.4), 0]} rotation={[Math.PI / 2, 0, 0]} material={m(ELECTRO.copper)}>
-          <torusGeometry args={[r * 0.78, r * 0.12, 5, 14]} />
-        </mesh>
-      ))}
-      {/* Crown: chrome toroid round a glowing core */}
-      <mesh position={[0, h * 0.82, 0]} rotation={[Math.PI / 2, 0, 0]} material={m(ELECTRO.chrome)}><torusGeometry args={[r * 1.2, r * 0.45, 8, 18]} /></mesh>
-      <mesh position={[0, h * 0.86, 0]} material={m(ELECTRO.arc)}><sphereGeometry args={[r * 0.55, 10, 8]} /></mesh>
-      <group ref={group} position={[0, h * 0.86, 0]}>
-        {!material && bolt.map((g, n) => <mesh key={n} geometry={g} material={ELECTRO.bolt} />)}
-      </group>
     </group>
   );
 }
 
-/** A glowing coil band: a copper ring with a lit core, wrapped round a pipe or tank. */
+/** A faintly lit coil band: a copper ring with a thin glowing core, wrapped round a pipe or tank. */
 export function GlowRing({ radius, tube = 0.012, material, position, rotation = [Math.PI / 2, 0, 0] }: {
-  radius: number; tube?: number; material?: THREE.Material; position?: [number, number, number]; rotation?: [number, number, number];
+  radius: number; tube?: number; material?: THREE.Material; position?: P3; rotation?: P3;
 }) {
   return (
     <group position={position} rotation={rotation}>
-      <mesh material={material ?? ELECTRO.copper}><torusGeometry args={[radius, tube, 6, 28]} /></mesh>
-      <mesh material={material ?? ELECTRO.arc}><torusGeometry args={[radius + tube * 0.4, tube * 0.45, 4, 28]} /></mesh>
+      <mesh material={material ?? ELECTRO.copper}><torusGeometry args={[radius, tube, 6, 32]} /></mesh>
+      <mesh material={material ?? ELECTRO.arc}><torusGeometry args={[radius + tube * 0.75, tube * 0.3, 4, 32]} /></mesh>
     </group>
   );
 }
 
 /** An upright vacuum tube `height` tall: chrome base, glass envelope and a glowing filament. */
-export function VacuumTube({ height = 0.1, material, position }: { height?: number; material?: THREE.Material; position?: [number, number, number] }) {
+export function VacuumTube({ height = 0.1, material, position }: { height?: number; material?: THREE.Material; position?: P3 }) {
   const r = height * 0.28;
   return (
     <group position={position}>
-      <mesh position={[0, height * 0.1, 0]} material={material ?? ELECTRO.chrome}><cylinderGeometry args={[r * 1.1, r * 1.1, height * 0.2, 10]} /></mesh>
+      <mesh position={[0, height * 0.1, 0]} material={material ?? ELECTRO.brass}><cylinderGeometry args={[r * 1.1, r * 1.2, height * 0.2, 10]} /></mesh>
       <mesh position={[0, height * 0.55, 0]} material={material ?? ELECTRO.glass}><capsuleGeometry args={[r, height * 0.5, 4, 10]} /></mesh>
-      <mesh position={[0, height * 0.55, 0]} material={material ?? ELECTRO.arc}><cylinderGeometry args={[r * 0.18, r * 0.18, height * 0.55, 5]} /></mesh>
+      <mesh position={[0, height * 0.55, 0]} material={material ?? ELECTRO.arc}><cylinderGeometry args={[r * 0.15, r * 0.15, height * 0.5, 5]} /></mesh>
     </group>
   );
+}
+
+const finialGeometry = (() => {
+  // Turned brass: a collar, a ball, a waist and a spike, like the top of a Victorian railing post.
+  const g = new THREE.LatheGeometry([
+    [0.001, 0], [0.3, 0.02], [0.26, 0.1], [0.12, 0.2], [0.22, 0.26], [0.28, 0.38], [0.22, 0.5], [0.1, 0.62], [0.12, 0.72], [0.08, 0.9], [0.001, 1],
+  ].map(([x, y]) => new THREE.Vector2(x, y)), 14);
+  g.computeVertexNormals();
+  return g;
+})();
+
+/** A turned brass finial `height` tall, standing on `position`. */
+export function Finial({ height = 0.08, material, position }: { height?: number; material?: THREE.Material; position?: P3 }) {
+  return <mesh position={position} scale={[height, height, height]} geometry={finialGeometry} material={material ?? ELECTRO.brass} />;
+}
+
+const scrollGeometry = (() => {
+  // A brass curl: a spiral strip that winds in one and a half turns, like a cast-iron bracket.
+  const pts: THREE.Vector3[] = [];
+  for (let k = 0; k <= 40; k++) {
+    const a = (k / 40) * Math.PI * 3, r = 1 - (k / 40) * 0.75;
+    pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+  }
+  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 48, 0.09, 5, false);
+})();
+
+/** A brass scroll `size` across, facing the camera; `flip` mirrors it left-right. */
+export function Scroll({ size = 0.05, material, position, flip = false, rotation = 0 }: { size?: number; material?: THREE.Material; position?: P3; flip?: boolean; rotation?: number }) {
+  return <mesh position={position} rotation={[0, 0, rotation]} scale={[flip ? -size : size, size, size]} geometry={scrollGeometry} material={material ?? ELECTRO.brass} />;
 }

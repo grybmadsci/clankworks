@@ -73,7 +73,7 @@ export function Scene({ game }: { game: Game }) {
  */
 function CameraRig({ game }: { game: Game }) {
   const { camera, gl } = useThree();
-  const state = useRef({ x: game.layout.depot.x, y: game.layout.depot.y + 1, dist: 16, following: true, ndc: null as THREE.Vector2 | null, recast: null as null | (() => void), keys: new Set<string>(), painting: false, panning: null as null | { x: number; y: number } });
+  const state = useRef({ x: game.layout.depot.x, y: game.layout.depot.y + 1, dist: 16, following: true, ndc: null as THREE.Vector2 | null, recast: null as null | (() => void), keys: new Set<string>(), painting: false, panning: null as null | { x: number; y: number }, rightClick: null as null | { x: number; y: number } });
 
   useEffect(() => {
     view.camera = camera as THREE.PerspectiveCamera;
@@ -105,7 +105,12 @@ function CameraRig({ game }: { game: Game }) {
     };
     const down = (e: PointerEvent) => {
       unlockAudio();
-      if (e.button === 2 || e.button === 1) { s.panning = { x: e.clientX, y: e.clientY }; return; }
+      if (e.button === 2 || e.button === 1) {
+        s.panning = { x: e.clientX, y: e.clientY };
+        // A right-click that doesn't drag (see `up`) resets the cursor; dragging pans.
+        s.rightClick = e.button === 2 ? { x: e.clientX, y: e.clientY } : null;
+        return;
+      }
       const p = toWorld(e);
       if (!p) return;
       s.painting = true;
@@ -125,6 +130,13 @@ function CameraRig({ game }: { game: Game }) {
       }
     };
     const up = (e: PointerEvent) => {
+      const rc = s.rightClick;
+      s.rightClick = null;
+      if (e.button === 2 && rc && Math.hypot(e.clientX - rc.x, e.clientY - rc.y) < 6) {
+        s.painting = false; s.panning = null;
+        game.resetCursor();
+        return;
+      }
       if (s.painting) game.toolUp(toWorld(e)?.x);
       s.painting = false; s.panning = null;
     };

@@ -1,15 +1,18 @@
 import { useFrame } from '@react-three/fiber';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type Ref, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { CELL, DEPTH, ISO } from '../config';
 import { enabled } from '../debug';
 import { brickMaterial, groutMaterial, rustMaterial } from './materials';
-import { ELECTRO, ElectroPulse, GlowRing, TeslaCoil, VacuumTube } from './electro';
+import { WallMount, wallZ } from './mount';
+import { ELECTRO, ElectroPulse, Finial, GlowRing, Scroll, SurfaceSparks, VacuumTube, arcPath } from './electro';
 import { CHASSIS, TURN_TIME, bucketTotal, cargoTotal } from '../game/Game';
-import { DEPOT, OUTPOST, RECIPES, VEHICLE } from '../game/tech';
+import { DEPOT, OUTPOST, RECIPES } from '../game/tech';
 import { ParticleKind } from '../gpu/GpuSim';
 import type { BaseSite, Bot, Critter, Debris, Depot, Game, Girder, Smelter, Strut, Vehicle } from '../game/Game';
 import { Base } from './Base';
+import { BrainPanel, CLEAN_IRON, COG, Circuit, LiveGauge, NixieRow, QuantumPort } from './baseModel';
 
 export const Z_ACTORS = -DEPTH * 0.45;
 const DEBRIS_COLORS = ['#000', '#7a5236', '#6f6c6a', '#9a6440', '#9fc8dc', '#2b2a2e', '#6b5644', '#5f6450', '#7a3f2c', '#3c4250'];
@@ -43,13 +46,18 @@ export function Entities({ game }: { game: Game }) {
   );
 }
 
-const rust = '#c98a2b';
+/** The drones' shell: dark worn iron, like the base's boiler. */
+const hull = '#4a4038';
+/** The base's weathered copper, painted on in the drone's own space so it rides along as it flies. */
+const DRONE_COPPER = rustMaterial('#a65c34', 0.4, undefined, true);
 
 const ROTORS: [number, number][] = [[0.11, 0.09], [-0.11, 0.09], [0.11, -0.09], [-0.11, -0.09]];
 
 /**
- * A small mining quad-copter: four rotors on crossed arms, a cyclops sensor eye, a cargo pod
- * that fills with ore, and an under-slung mining laser. It banks into its flight direction.
+ * A small mining quad-copter in the base's style: a riveted iron shell banded in copper, a tiny
+ * violet quantum core under a glass blister on top, four matte-brass rotors on clean iron arms, a
+ * cyclops sensor eye, a copper cargo pod that fills with ore, and an under-slung mining laser. It
+ * banks into its flight direction.
  */
 function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
   const root = useRef<THREE.Group>(null!);
@@ -62,6 +70,7 @@ function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
   const gauges = useRef<(THREE.Mesh | null)[]>([]);
   const beam = useRef<THREE.Mesh>(null!);
   const spot = useRef<THREE.Mesh>(null!);
+  const core = useMemo(() => new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.5, 1.6) }), []);
   const state = useMemo(() => ({ phase: Math.random() * 10, spin: 0, angle: 0, z: Z_ACTORS }), []);
   useFrame(({ clock }, dt) => {
     if (bot.dead) return;
@@ -88,6 +97,8 @@ function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
     const blink = Math.sin(t * 5) > 0;
     const c = tantrum ? [3, 0.2, 0.1] : docked ? [0.2, blink ? 2 : 0.5, 0.4] : bot.state === 'toDepot' ? [0.3, 0.9, 2.5] : [2.5, 1.4, 0.2];
     led.current.color.setRGB(c[0], c[1], c[2]);
+    const k = 0.8 + Math.sin(t * 3) * 0.15;
+    core.color.setRGB(1 * k, 0.5 * k, 1.6 * k);
     // Battery gauges on both flanks: green, yellow, then blinking red; a slow pulse while charging.
     const level = bot.battery / 100;
     const charging = docked && bot.battery < 99.5;
@@ -121,20 +132,26 @@ function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
     <group ref={root}>
       <group ref={frame} scale={1.3}>
         {/* body shell and sensor eye */}
-        <mesh><boxGeometry args={[0.15, 0.06, 0.12]} /><meshStandardMaterial ref={shell} color={rust} roughness={0.55} metalness={0.4} /></mesh>
-        <mesh position={[0, 0.035, 0]}><boxGeometry args={[0.1, 0.02, 0.09]} /><meshStandardMaterial color="#3d3a33" metalness={0.5} /></mesh>
-        <mesh position={[0.075, 0, 0]} rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.026, 0.026, 0.02, 12]} /><meshStandardMaterial color="#8e8a80" metalness={0.6} roughness={0.35} /></mesh>
+        <mesh><boxGeometry args={[0.15, 0.06, 0.12]} /><meshStandardMaterial ref={shell} color={hull} roughness={0.62} metalness={0.45} /></mesh>
+        <mesh position={[0, 0.035, 0]} material={CLEAN_IRON}><boxGeometry args={[0.1, 0.02, 0.09]} /></mesh>
+        <mesh position={[0, 0.002, 0]} material={DRONE_COPPER}><boxGeometry args={[0.153, 0.012, 0.123]} /></mesh>
+        {[-1, 1].flatMap((sx) => [-1, 1].map((sz) => <mesh key={`${sx}${sz}`} position={[sx * 0.072, 0.024, sz * 0.058]} material={COG}><sphereGeometry args={[0.005, 6, 4]} /></mesh>))}
+        {/* The core under its glass blister, in a copper collar */}
+        <mesh position={[0, 0.047, 0]} material={DRONE_COPPER}><cylinderGeometry args={[0.026, 0.028, 0.008, 14]} /></mesh>
+        <mesh position={[0, 0.054, 0]} material={core}><sphereGeometry args={[0.011, 10, 8]} /></mesh>
+        <mesh position={[0, 0.05, 0]} material={ELECTRO.glass}><sphereGeometry args={[0.022, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+        <mesh position={[0.075, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={COG}><cylinderGeometry args={[0.026, 0.026, 0.02, 12]} /></mesh>
         <mesh position={[0.086, 0, 0]} rotation={[0, Math.PI / 2, 0]}><circleGeometry args={[0.018, 12]} /><meshStandardMaterial color="#111" emissive="#7fd8ff" emissiveIntensity={1.8} /></mesh>
         <mesh position={[-0.05, 0.05, 0]}><sphereGeometry args={[0.012, 8, 6]} /><meshBasicMaterial ref={led} /></mesh>
         {/* crossed arms, motors and rotors */}
         {[0.69, -0.69].map((a) => (
-          <mesh key={a} rotation={[0, a, 0]} position={[0, 0.01, 0]}><boxGeometry args={[0.3, 0.014, 0.018]} /><meshStandardMaterial color="#3d4248" metalness={0.7} roughness={0.4} /></mesh>
+          <mesh key={a} rotation={[0, a, 0]} position={[0, 0.01, 0]} material={CLEAN_IRON}><boxGeometry args={[0.3, 0.014, 0.018]} /></mesh>
         ))}
         {ROTORS.map(([x, z], n) => (
           <group key={n} position={[x, 0.025, z]}>
-            <mesh><cylinderGeometry args={[0.014, 0.016, 0.03, 8]} /><meshStandardMaterial color="#2c2b2a" metalness={0.6} /></mesh>
+            <mesh material={COG}><cylinderGeometry args={[0.014, 0.016, 0.03, 8]} /></mesh>
             <group ref={(g) => { rotors.current[n] = g; }} position={[0, 0.02, 0]}>
-              <mesh><boxGeometry args={[0.12, 0.003, 0.014]} /><meshStandardMaterial color="#c8c4bc" /></mesh>
+              <mesh material={COG}><boxGeometry args={[0.12, 0.003, 0.014]} /></mesh>
             </group>
             <mesh position={[0, 0.022, 0]} rotation={[-Math.PI / 2, 0, 0]}>
               <circleGeometry args={[0.062, 20]} />
@@ -155,7 +172,7 @@ function DroneModel({ bot, game }: { bot: Bot; game: Game }) {
           <mesh key={z} position={[0, -0.055, z]}><boxGeometry args={[0.13, 0.008, 0.008]} /><meshStandardMaterial color="#2c2b2a" /></mesh>
         ))}
         {/* cargo pod and laser emitter */}
-        <mesh ref={pod} position={[-0.01, -0.04, 0]}><boxGeometry args={[0.07, 0.04, 0.06]} /><meshStandardMaterial color="#9a6440" roughness={0.8} /></mesh>
+        <mesh ref={pod} position={[-0.01, -0.04, 0]} material={DRONE_COPPER}><boxGeometry args={[0.07, 0.04, 0.06]} /></mesh>
         <mesh position={[0.05, -0.05, 0]} rotation={[0, 0, 0.6]}><cylinderGeometry args={[0.008, 0.012, 0.04, 8]} /><meshStandardMaterial color="#bbb" metalness={0.8} roughness={0.3} /></mesh>
       </group>
       {/* Pure light: additive and kept out of the depth buffer, so ambient occlusion doesn't paint
@@ -402,11 +419,27 @@ function StrutModel({ strut, game }: { strut: Strut; game: Game }) {
   );
 }
 
+/**
+ * A riveted band round an upright tank or furnace, in the base's matte brass: `r` round the
+ * axis at (`x`, `z`), with a row of rivet heads round its front.
+ */
+function VBand({ x = 0, y, z = 0, r, material }: { x?: number; y: number; z?: number; r: number; material?: THREE.Material }) {
+  return (
+    <>
+      <mesh position={[x, y, z]} rotation={[Math.PI / 2, 0, 0]} material={material ?? COG}><torusGeometry args={[r + 0.006, 0.016, 8, 36]} /></mesh>
+      {!material && Array.from({ length: 11 }, (_, n) => {
+        const a = (n / 10) * Math.PI;
+        return <mesh key={n} position={[x + Math.cos(a) * (r + 0.02), y, z + Math.sin(a) * (r + 0.02)]} material={ELECTRO.brass}><sphereGeometry args={[0.0065, 6, 4]} /></mesh>;
+      })}
+    </>
+  );
+}
+
 const SMELTER_MATS = {
   brick: brickMaterial(),
   body: rustMaterial('#4a4038', 0.55),
   dark: rustMaterial('#2c2724', 0.35),
-  brass: new THREE.MeshStandardMaterial({ color: '#b8934a', metalness: 0.55, roughness: 0.5 }),
+  brass: COG,
   leather: new THREE.MeshStandardMaterial({ color: '#4a2f1c', roughness: 0.9 }),
   wood: new THREE.MeshStandardMaterial({ color: '#5a3b22', roughness: 0.85 }),
   ore: new THREE.MeshStandardMaterial({ color: '#a5602f', roughness: 0.8 }),
@@ -423,7 +456,8 @@ interface SmelterParts {
 }
 
 /**
- * A small crucible furnace on a firebrick plinth: rusty iron body with a domed top and chimney,
+ * A small crucible furnace on a firebrick hearth, on a deck hung off the cavern wall like the base
+ * (see WallMount), its chimney strapped back to the wall: rusty iron body with a domed top,
  * a fire door, an ore hopper feeding it from the right, hand bellows on the left, and a spout
  * pouring into an ingot mould. Origin at its base. Real smelters pass `parts` to animate; the
  * placement hologram passes one `material` for everything.
@@ -433,13 +467,28 @@ export function SmelterBody({ material, parts }: { material?: THREE.Material; pa
   const glow = (ref: Ref<THREE.MeshBasicMaterial> | undefined) => (material ? undefined : <meshBasicMaterial ref={ref} />);
   return (
     <>
-      <mesh position={[0, 0.08, 0]} material={m(SMELTER_MATS.brick)}><boxGeometry args={[0.92, 0.16, 0.6]} /></mesh>
+      <WallMount z={Z_ACTORS} width={1.0} height={1.55} deckWidth={0.96} deckTop={0.1} front={0.3} material={material} />
+      <mesh position={[0, 0.13, 0]} material={m(SMELTER_MATS.brick)}><boxGeometry args={[0.92, 0.06, 0.6]} /></mesh>
+      <mesh position={[-0.12, 1.05, (wallZ(Z_ACTORS) - 0.04) / 2]} material={m(SMELTER_MATS.dark)}><boxGeometry args={[0.03, 0.03, -wallZ(Z_ACTORS) - 0.08]} /></mesh>
       {/* Furnace body, bands, dome and chimney */}
       <mesh position={[-0.1, 0.41, 0]} material={m(SMELTER_MATS.body)}><cylinderGeometry args={[0.27, 0.29, 0.5, 20]} /></mesh>
-      {[0.22, 0.6].map((y) => <GlowRing key={y} radius={0.285} tube={0.014} position={[-0.1, y, 0]} material={material} />)}
-      {/* Induction coil on the plinth's back corner and a pair of valves on its front */}
-      <TeslaCoil height={0.36} position={[-0.36, 0.16, -0.2]} material={material} />
-      {[0.33, 0.4].map((x) => <VacuumTube key={x} height={0.08} position={[x, 0.16, 0.22]} material={material} />)}
+      {[0.22, 0.6].map((y) => <VBand key={y} x={-0.1} y={y} r={0.285} material={material} />)}
+      {/* In the base's style: a pair of nixies on the hearth turning over hex, a trace up to a
+          gauge on a stalk, and a small quantum port in the dome — the core that lights the fire.
+          Finials on the hearth's back corners, scrolls on its front ones, and now and then a
+          spark running round a band. */}
+      {material ? [0.33, 0.4].map((x) => <VacuumTube key={x} height={0.08} position={[x, 0.16, 0.22]} material={material} />) : (
+        <>
+          <NixieRow position={[0.365, 0.16, 0.22]} count={2} scale={0.9} />
+          <Circuit paths={[[[0.33, 0.2, 0.265], [0.24, 0.24, 0.26], [0.17, 0.4, 0.18]]]} />
+          <LiveGauge position={[0.12, 0.47, 0.26]} size={0.75} cracked />
+          <mesh position={[0.12, 0.47, 0.215]} rotation={[Math.PI / 2, 0, 0]} material={SMELTER_MATS.dark}><cylinderGeometry args={[0.01, 0.013, 0.07, 8]} /></mesh>
+          <QuantumPort position={[-0.1, 0.74, 0.245]} rotation={[-0.32, 0, 0]} r={0.05} />
+        </>
+      )}
+      {[-0.4, 0.4].map((x) => <Finial key={x} height={0.08} position={[x, 0.16, -0.24]} material={material} />)}
+      {[-1, 1].map((sx) => <Scroll key={`s${sx}`} size={0.025} flip={sx > 0} position={[sx * 0.42, 0.13, 0.305]} material={material} />)}
+      {!material && <SurfaceSparks paths={[0.22, 0.6].map((y) => arcPath([-0.1, y, 0], 0.3, 0, Math.PI, 'xz', 16))} />}
       <mesh position={[-0.1, 0.66, 0]} material={m(SMELTER_MATS.body)}><sphereGeometry args={[0.27, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
       <mesh position={[-0.12, 1.0, -0.04]} rotation={[0, 0, 0.05]} material={m(SMELTER_MATS.dark)}><cylinderGeometry args={[0.05, 0.065, 0.5, 10]} /></mesh>
       <mesh position={[-0.13, 1.27, -0.04]} material={m(SMELTER_MATS.dark)}><coneGeometry args={[0.1, 0.07, 10]} /></mesh>
@@ -553,12 +602,12 @@ function Carl({ game }: { game: Game }) {
 const OUTPOST_MATS = {
   tank: rustMaterial('#4a4440', 0.45),
   frame: rustMaterial('#2c2724', 0.35),
-  brass: new THREE.MeshStandardMaterial({ color: '#b8934a', metalness: 0.55, roughness: 0.5 }),
+  brass: COG,
 };
 
 /**
- * An outpost: a rusty pressure tank on a skid with a deck on legs above it, two brass landing pads,
- * a stack and a beacon. Origin at its base, centred. Real outposts pass `rings`/`beacon` to light;
+ * An outpost: a rusty pressure tank on a wall bracket with a wall-hung deck above it, two brass
+ * landing pads, a stack and a beacon. Origin at its base, centred. Real outposts pass `rings`/`beacon` to light;
  * the placement hologram passes one `material`.
  */
 export function OutpostBody({ material, rings, beacon }: { material?: THREE.Material; rings?: Ref<THREE.Group>; beacon?: Ref<THREE.MeshBasicMaterial> }) {
@@ -567,15 +616,25 @@ export function OutpostBody({ material, rings, beacon }: { material?: THREE.Mate
   const deckY = OUTPOST.height;
   return (
     <>
-      <mesh position={[0, 0.05, z]} material={m(OUTPOST_MATS.frame)}><boxGeometry args={[OUTPOST.width - 0.2, 0.1, 0.7]} /></mesh>
-      <mesh position={[0, 0.42, z]} material={m(OUTPOST_MATS.tank)}><cylinderGeometry args={[0.3, 0.3, 0.62, 18]} /></mesh>
-      <mesh position={[0, 0.74, z]} material={m(OUTPOST_MATS.tank)}><sphereGeometry args={[0.3, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
-      {[0.2, 0.62].map((y) => <GlowRing key={y} radius={0.305} tube={0.012} position={[0, y, z]} material={material} />)}
-      {/* Deck on four legs, carrying the two pads */}
-      {[-0.75, 0.75].flatMap((x) => [z - 0.25, z + 0.25].map((lz) => (
-        <mesh key={`${x}${lz}`} position={[x, deckY / 2, lz]} material={m(OUTPOST_MATS.frame)}><cylinderGeometry args={[0.025, 0.03, deckY, 6]} /></mesh>
-      )))}
-      <mesh position={[0, deckY - 0.02, z]} material={m(OUTPOST_MATS.frame)}><boxGeometry args={[1.6, 0.04, 0.66]} /></mesh>
+      {/* Hung off the cavern wall (see WallMount): a plate carrying the pad deck on gussets, and a
+          bracket shelf below it that the tank stands on */}
+      <WallMount z={0} width={OUTPOST.width - 0.1} height={1.65} deckWidth={1.6} deckTop={deckY} front={Z_ACTORS + 0.18} material={material} />
+      <WallMount z={0} width={0.8} height={0.1} plate={false} deckWidth={0.72} deckTop={0.11} front={z + 0.3} material={material} />
+      {/* The tank stops short of the deck: its domed top clears the deck's underside */}
+      <mesh position={[0, 0.33, z]} material={m(OUTPOST_MATS.tank)}><cylinderGeometry args={[0.28, 0.28, 0.44, 18]} /></mesh>
+      <mesh position={[0, 0.55, z]} scale={[1, 0.8, 1]} material={m(OUTPOST_MATS.tank)}><sphereGeometry args={[0.28, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+      {[0.2, 0.5].map((y) => <VBand key={y} y={y} z={z} r={0.285} material={material} />)}
+      {/* Its own quantum core behind a port in the tank, a gauge on a stalk, and a trace from
+          the core up to the pad deck */}
+      {!material && (
+        <>
+          <QuantumPort position={[0, 0.35, z + 0.285]} r={0.085} />
+          <LiveGauge position={[0.23, 0.36, z + 0.24]} size={0.65} />
+          <mesh position={[0.23, 0.36, z + 0.205]} rotation={[Math.PI / 2, 0, 0]} material={OUTPOST_MATS.frame}><cylinderGeometry args={[0.009, 0.012, 0.06, 8]} /></mesh>
+          <Circuit paths={[[[-0.1, 0.44, z + 0.27], [-0.2, 0.6, z + 0.2], [-0.42, 0.78, -0.4]]]} />
+        </>
+      )}
+      {/* The two pads on the deck */}
       {[-0.35, 0.35].map((x) => (
         <mesh key={x} position={[x, deckY + 0.012, Z_ACTORS]} material={m(OUTPOST_MATS.brass)}><cylinderGeometry args={[0.17, 0.17, 0.025, 24]} /></mesh>
       ))}
@@ -586,7 +645,13 @@ export function OutpostBody({ material, rings, beacon }: { material?: THREE.Mate
           </mesh>
         ))}
       </group>
-      <TeslaCoil height={0.4} position={[0, deckY, z - 0.15]} material={material} arcs={3} />
+      {/* A turned railing along the back of the deck, with finials at its ends */}
+      {Array.from({ length: 13 }, (_, n) => (
+        <mesh key={`b${n}`} position={[-0.6 + n * 0.1, deckY + 0.06, z - 0.29]} material={m(OUTPOST_MATS.brass)}><cylinderGeometry args={[0.008, 0.011, 0.1, 6]} /></mesh>
+      ))}
+      <mesh position={[0, deckY + 0.115, z - 0.29]} rotation={[0, 0, Math.PI / 2]} material={m(OUTPOST_MATS.brass)}><cylinderGeometry args={[0.012, 0.012, 1.24, 8]} /></mesh>
+      {[-0.62, 0.62].map((x) => <Finial key={x} height={0.07} position={[x, deckY + 0.115, z - 0.29]} material={material} />)}
+      {!material && <SurfaceSparks paths={[0.2, 0.5].map((y) => arcPath([0, y, z], 0.3, 0, Math.PI, 'xz', 16))} />}
       {/* Stack and beacon */}
       <mesh position={[0.7, deckY + 0.3, z - 0.2]} rotation={[0, 0, 0.04]} material={m(OUTPOST_MATS.frame)}><cylinderGeometry args={[0.05, 0.06, 0.6, 10]} /></mesh>
       <mesh position={[-0.7, deckY + 0.25, z - 0.2]} material={m(OUTPOST_MATS.frame)}><cylinderGeometry args={[0.012, 0.016, 0.5, 6]} /></mesh>
@@ -673,29 +738,57 @@ function GirderModel({ girder }: { girder: Girder }) {
 const DEPOT_MATS = {
   wall: rustMaterial('#5a4a3a', 0.5),
   frame: rustMaterial('#2c2724', 0.35),
-  brass: new THREE.MeshStandardMaterial({ color: '#b8934a', metalness: 0.55, roughness: 0.5 }),
+  brass: COG,
   stripe: new THREE.MeshStandardMaterial({ color: '#d9a21a', roughness: 0.7 }),
   black: new THREE.MeshStandardMaterial({ color: '#141210', roughness: 0.8 }),
   bench: new THREE.MeshStandardMaterial({ color: '#5a3b22', roughness: 0.85 }),
 };
 
 /**
- * A vehicle depot: an open-fronted corrugated shed with a rolled-up shutter, hazard-striped
- * lintel, a chain hoist, a workbench and a status lamp. Origin at its floor, centred.
+ * A vehicle depot: an open-fronted corrugated shed hung off the cavern wall (see WallMount), its
+ * roof carried on tie rods from the wall plate, with a rolled-up shutter, hazard-striped lintel,
+ * a chain hoist, a workbench and a status lamp. Origin at its floor, centred.
  */
+/** The front face of the depot's platform and ramps (z). */
+const DEPOT_FRONT = -DEPTH / 2 + (DEPTH * 0.85) / 2;
+/** One of the depot's ramps in side view: a wedge from the platform's edge (x = 0) out and down to the floor. */
+const depotRamp = (() => {
+  const g = new THREE.ExtrudeGeometry(new THREE.Shape([new THREE.Vector2(0, 0), new THREE.Vector2(DEPOT.ramp, 0), new THREE.Vector2(0, DEPOT.deck)]), { depth: DEPTH * 0.85, bevelEnabled: false });
+  g.translate(0, 0, DEPOT_FRONT - DEPTH * 0.85);
+  return g;
+})();
+
 export function DepotBody({ material, lamp }: { material?: THREE.Material; lamp?: Ref<THREE.MeshBasicMaterial> }) {
   const m = (own: THREE.Material) => material ?? own;
   const w = DEPOT.width, h = DEPOT.height, back = -DEPTH * 0.9;
   return (
     <>
-      <mesh position={[0, 0.01, -DEPTH / 2]} material={m(DEPOT_MATS.frame)}><boxGeometry args={[w, 0.02, DEPTH * 0.85]} /></mesh>
+      {/* The raised floor the vehicle parks on, with brass-edged ramps down to the cavern floor
+          either side (the game gives them matching colliders) */}
+      <mesh position={[0, DEPOT.deck / 2, -DEPTH / 2]} material={m(DEPOT_MATS.frame)}><boxGeometry args={[w, DEPOT.deck, DEPTH * 0.85]} /></mesh>
+      {[-1, 1].map((sx) => (
+        <group key={sx} position={[sx * (w / 2), 0, 0]} scale={[sx, 1, 1]}>
+          <mesh geometry={depotRamp} material={m(DEPOT_MATS.frame)} />
+          <mesh position={[DEPOT.ramp / 2, DEPOT.deck / 2 + 0.004, DEPOT_FRONT + 0.004]} rotation={[0, 0, -Math.atan2(DEPOT.deck, DEPOT.ramp)]} material={m(DEPOT_MATS.brass)}>
+            <boxGeometry args={[Math.hypot(DEPOT.ramp, DEPOT.deck), 0.008, 0.008]} />
+          </mesh>
+        </group>
+      ))}
+      {[-1, 1].map((sx) => <mesh key={`e${sx}`} position={[sx * (w / 2 - 0.01), DEPOT.deck, DEPOT_FRONT + 0.004]} material={m(DEPOT_MATS.stripe)}><boxGeometry args={[0.02, 0.012, 0.01]} /></mesh>)}
+      <group position={[0, DEPOT.deck, 0]}>
       <mesh position={[0, h / 2, back]} material={m(DEPOT_MATS.wall)}><boxGeometry args={[w, h, 0.05]} /></mesh>
       {Array.from({ length: 12 }, (_, n) => (
         <mesh key={n} position={[-w / 2 + 0.06 + n * ((w - 0.12) / 11), h / 2, back + 0.035]} material={m(DEPOT_MATS.wall)}><boxGeometry args={[0.03, h - 0.04, 0.02]} /></mesh>
       ))}
-      {[-w / 2, w / 2].flatMap((x) => [-0.1, back].map((z) => (
-        <mesh key={`${x}${z}`} position={[x, h / 2, z]} material={m(DEPOT_MATS.frame)}><boxGeometry args={[0.06, h, 0.06]} /></mesh>
-      )))}
+      <WallMount z={0} width={w + 0.3} height={h + 0.55} bottom={-0.05} material={material} />
+      {[-w / 2, w / 2].map((x) => (
+        <mesh key={x} position={[x, h / 2, back]} material={m(DEPOT_MATS.frame)}><boxGeometry args={[0.06, h, 0.06]} /></mesh>
+      ))}
+      {/* Tie rods from the top of the wall plate down to the roof's front corners */}
+      {[-w / 2 + 0.05, w / 2 - 0.05].map((x) => {
+        const z0 = wallZ(0) + 0.03, y0 = h + 0.42, z1 = -0.1, y1 = h + 0.06, len = Math.hypot(z1 - z0, y1 - y0);
+        return <mesh key={`t${x}`} position={[x, (y0 + y1) / 2, (z0 + z1) / 2]} rotation={[Math.atan2(z0 - z1, y0 - y1), 0, 0]} material={m(DEPOT_MATS.brass)}><cylinderGeometry args={[0.009, 0.009, len, 6]} /></mesh>;
+      })}
       {/* Roof with a lip, the rolled-up shutter and a hazard-striped lintel */}
       <mesh position={[0, h + 0.03, -DEPTH / 2 + 0.02]} rotation={[0.05, 0, 0]} material={m(DEPOT_MATS.wall)}><boxGeometry args={[w + 0.14, 0.05, DEPTH * 0.95]} /></mesh>
       <mesh position={[0, h - 0.05, -0.14]} rotation={[0, 0, Math.PI / 2]} material={m(DEPOT_MATS.frame)}><cylinderGeometry args={[0.055, 0.055, w - 0.06, 12]} /></mesh>
@@ -704,8 +797,10 @@ export function DepotBody({ material, lamp }: { material?: THREE.Material; lamp?
           <boxGeometry args={[0.07, 0.05, 0.02]} />
         </mesh>
       ))}
-      {/* A charging coil on the roof, feeding a glowing bus bar under the lintel */}
-      <TeslaCoil height={0.34} position={[-w / 2 + 0.22, h + 0.055, -DEPTH / 2]} material={material} />
+      {/* A faintly lit bus bar under the lintel that sparks now and then, and finials on the
+          roof's front corners */}
+      {[-1, 1].map((sx) => <Finial key={sx} height={0.09} position={[sx * (w / 2 + 0.03), h + 0.055, -0.08]} material={material} />)}
+      {!material && <SurfaceSparks every={3} paths={[[[-w / 2 + 0.1, h - 0.17, -0.044], [w / 2 - 0.1, h - 0.17, -0.044]]]} />}
       <mesh position={[0, h - 0.17, -0.06]} material={m(ELECTRO.copper)}><boxGeometry args={[w - 0.16, 0.018, 0.02]} /></mesh>
       <mesh position={[0, h - 0.17, -0.048]} material={m(ELECTRO.arc)}><boxGeometry args={[w - 0.2, 0.006, 0.006]} /></mesh>
       {/* Chain hoist on a beam */}
@@ -716,8 +811,19 @@ export function DepotBody({ material, lamp }: { material?: THREE.Material; lamp?
       <mesh position={[-0.5, 0.28, back + 0.16]} material={m(DEPOT_MATS.bench)}><boxGeometry args={[0.4, 0.04, 0.22]} /></mesh>
       {[-0.67, -0.33].map((x) => <mesh key={x} position={[x, 0.13, back + 0.16]} material={m(DEPOT_MATS.frame)}><boxGeometry args={[0.03, 0.26, 0.18]} /></mesh>)}
       <mesh position={[-0.55, 0.34, back + 0.16]} material={m(DEPOT_MATS.stripe)}><boxGeometry args={[0.14, 0.08, 0.08]} /></mesh>
+      {/* In the base's style: a little brain panel over the bench, nixies on it turning over hex, a
+          gauge on the back post and a trace from the brain to the bus bar */}
+      {!material && (
+        <>
+          <BrainPanel position={[-0.45, 0.62, back + 0.04]} w={0.26} h={0.16} seed={21} density={2} />
+          <NixieRow position={[-0.36, 0.3, back + 0.17]} count={3} scale={0.8} />
+          <LiveGauge position={[w / 2 - 0.12, 0.55, back + 0.06]} size={0.8} />
+          <Circuit paths={[[[-0.3, 0.68, back + 0.05], [0.1, 0.68, back + 0.05], [0.2, h - 0.25, back + 0.05], [0.5, h - 0.25, back + 0.05]]]} />
+        </>
+      )}
       {/* Status lamp: green with a vehicle to build, amber while its vehicle is out */}
       <mesh position={[w / 2 - 0.1, h - 0.22, -0.1]} material={material}><sphereGeometry args={[0.03, 10, 8]} />{material ? null : <meshBasicMaterial ref={lamp} />}</mesh>
+      </group>
     </>
   );
 }
@@ -732,7 +838,7 @@ function DepotModel({ depot, game }: { depot: Depot; game: Game }) {
   return (
     <group position={[depot.x, depot.y, 0]}>
       <DepotBody lamp={lamp} />
-      <pointLight position={[0, DEPOT.height - 0.2, -0.3]} color="#ffd9a8" distance={3.5} decay={1.5} intensity={1.2} />
+      <pointLight position={[0, DEPOT.deck + DEPOT.height - 0.2, -0.3]} color="#ffd9a8" distance={3.5} decay={1.5} intensity={1.2} />
     </group>
   );
 }
@@ -743,8 +849,8 @@ const VEHICLE_MATS = {
   paint: rustMaterial('#7a3c1e', 0.6, undefined, true),
   frame: rustMaterial('#2c2724', 0.45, undefined, true),
   iron: rustMaterial('#3b3530', 0.75, undefined, true),
-  verdigris: rustMaterial('#ad6038', 0.45, ['#2f5a48', '#6aa486'], true),
-  brass: new THREE.MeshStandardMaterial({ color: '#c9a050', metalness: 0.65, roughness: 0.4 }),
+  copper: rustMaterial('#a65c34', 0.4, undefined, true),
+  brass: COG,
   steel: new THREE.MeshStandardMaterial({ color: '#8f9399', metalness: 0.8, roughness: 0.35 }),
   tyre: new THREE.MeshStandardMaterial({ color: '#1a1816', roughness: 0.95 }),
   glass: new THREE.MeshStandardMaterial({ color: '#1d2a30', metalness: 0.2, roughness: 0.15 }),
@@ -761,6 +867,60 @@ const bucketSide = (() => {
   return new THREE.ExtrudeGeometry(shape, { depth: 0.012, bevelEnabled: false });
 })();
 const BUCKET_TAIL = { len: Math.hypot(BUCKET.mouth[0] - BUCKET.floor[0], BUCKET.h), ang: Math.atan2(BUCKET.h, BUCKET.mouth[0] - BUCKET.floor[0]) };
+
+/**
+ * The load in the tub at a given fill level (0-1, in FILL_STEPS steps): the tub's own profile cut
+ * off at that height and kept a wall's thickness inside it, so it never pokes through the raked
+ * tail. Cached per step.
+ */
+const FILL_STEPS = 40;
+const fillCache = new Map<number, THREE.ExtrudeGeometry>();
+function fillGeometry(step: number) {
+  let g = fillCache.get(step);
+  if (g) return g;
+  const { floor: [f0, f1], mouth: [m0], h } = BUCKET, inset = 0.012;
+  const top = Math.max(0.004, (step / FILL_STEPS) * (h - 0.025));
+  const back = (y: number) => f0 + (m0 - f0) * (y / h) + inset;
+  g = new THREE.ExtrudeGeometry(new THREE.Shape([
+    new THREE.Vector2(back(0.002), 0.002), new THREE.Vector2(f1 - inset, 0.002), new THREE.Vector2(f1 - inset, top), new THREE.Vector2(back(top), top),
+  ]), { depth: BUCKET.d - 0.03, bevelEnabled: false });
+  g.translate(0, 0, -(BUCKET.d - 0.03) / 2 - 0.005);
+  fillCache.set(step, g);
+  return g;
+}
+
+/**
+ * Digby's tricone bit, as the real thing: a threaded pin and shoulder, a forged body with three
+ * legs, and on each leg's journal a cone pointing in and forward toward the bit's middle — turned
+ * like a real one, convex with a rounded heel — studded with rows of tungsten-carbide buttons and
+ * a gauge row round its heel. Jet nozzles sit between the legs. `journal` is the cones' angle in
+ * from the bit's axis; `rpm` how fast the bit turns while drilling.
+ */
+const TRICONE = (() => {
+  // The cone's profile, heel (y = 0) to nose: (radius, height).
+  const profile: [number, number][] = [[0.001, 0], [0.056, 0], [0.066, 0.012], [0.063, 0.03], [0.05, 0.052], [0.032, 0.07], [0.013, 0.082], [0.001, 0.086]];
+  const cone = new THREE.LatheGeometry(profile.map(([r, h]) => new THREE.Vector2(r, h)), 20);
+  cone.computeVertexNormals();
+  const radiusAt = (h: number) => {
+    for (let k = 1; k < profile.length; k++) {
+      const [r0, h0] = profile[k - 1], [r1, h1] = profile[k];
+      if (h <= h1) return r0 + ((r1 - r0) * (h - h0)) / Math.max(1e-6, h1 - h0);
+    }
+    return 0;
+  };
+  // Rows of buttons (height, count, size), the gauge row round the heel first; rows staggered.
+  // All of a cone's buttons in one geometry: a draw call per cone rather than per button.
+  const inserts = mergeGeometries(([[0.012, 14, 0.0055], [0.03, 12, 0.0075], [0.05, 9, 0.0075], [0.068, 6, 0.0065]] as const).flatMap(([h, count, size], row) =>
+    Array.from({ length: count }, (_, k) => {
+      const a = ((k + (row % 2) * 0.5) / count) * Math.PI * 2, r = radiusAt(h);
+      return new THREE.SphereGeometry(size, 8, 6).translate(Math.cos(a) * r, h, Math.sin(a) * r);
+    })))!;
+  const std = (color: string, metalness: number, roughness: number) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
+  return {
+    cone, inserts, journal: 0.6, rpm: 50,
+    mats: { body: std('#4f5358', 0.85, 0.42), cone: std('#686c71', 0.8, 0.38), carbide: std('#c4c8cc', 0.6, 0.25), dark: std('#26282b', 0.7, 0.5) },
+  };
+})();
 
 /** Bucket fill colour by material id (what's mostly in it). */
 const SPOIL_COLORS = ['#000', '#6b4a32', '#5f5d5b', '#9a6440', '#9fc8dc', '#2b2a2e', '#5e4c3c', '#5f6450', '#7a3f2c', '#3c4250'];
@@ -791,6 +951,7 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
   const bucket = useRef<THREE.Group>(null!);
   const arm = useRef<THREE.Group>(null!);
   const bit = useRef<THREE.Group>(null!);
+  const cones = useRef<THREE.Group[]>([]);
   const fill = useRef<THREE.Mesh>(null!);
   const heap = useRef<THREE.Mesh>(null!);
   const heapMat = useRef<THREE.MeshStandardMaterial>(null!);
@@ -814,21 +975,28 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
     drill.current.position.set((from + (to - from) * swap) * reachD, CHASSIS.pivotY, 0.2 * round);
     drill.current.rotation.y = yaw * side;
     drill.current.scale.set(side * scale, scale, scale);
-    bucket.current.position.set(-(from + (to - from) * swap) * reachB, 0.02, -0.2 * round);
+    // Each bucket upgrade draws it 10% bigger, set further back so it clears the hull.
+    const grow = 1 + 0.1 * game.bucketLevel;
+    bucket.current.position.set(-(from + (to - from) * swap) * (reachB + (grow - 1) * 0.12), 0.02, -0.2 * round);
     bucket.current.rotation.y = yaw * side;
-    bucket.current.scale.set(side * scale, scale, scale);
+    bucket.current.scale.set(side * scale * grow, scale * grow, scale * grow);
     // Tucked in, the arm folds up against the hull.
     arm.current.rotation.z = 1.3 + (game.armAngle(vehicle) - 1.3) * out;
-    state.spin += dt * (vehicle.drilling ? 30 : 0);
+    // The bit turns at about 50 rpm while it drills.
+    state.spin += dt * (vehicle.drilling ? TRICONE.rpm * (Math.PI / 30) : 0);
     bit.current.rotation.x = state.spin;
-    const load = Math.min(1, bucketTotal(vehicle) / VEHICLE.bucket);
-    // The load fills the tub from the floor, widening with it; a heap mounds up on top.
-    fill.current.visible = load > 0.01;
-    fill.current.scale.set(1 + 0.35 * load, Math.max(0.01, load), 1);
-    fill.current.position.set(-0.035 * load, 0.012 + 0.09 * load, -0.005);
-    heap.current.visible = load > 0.3;
-    heap.current.scale.set(0.11 + 0.03 * load, 0.02 + 0.05 * (load - 0.3), 0.12);
-    heap.current.position.set(-0.035 * load, 0.012 + 0.18 * load, -0.005);
+    // Each cone rolls on its journal against the rock, a little faster than the bit and the other way.
+    for (const c of cones.current) c.rotation.y = -state.spin * 1.4;
+    const load = Math.min(1, bucketTotal(vehicle) / game.bucketSize);
+    // The load fills the tub from the floor, shaped to it (see fillGeometry); once it's a third
+    // full a heap mounds up on top, spanning the tub at that height.
+    const step = Math.round(load * FILL_STEPS);
+    fill.current.visible = step > 0;
+    if (step > 0) fill.current.geometry = fillGeometry(step);
+    const level = (step / FILL_STEPS) * (BUCKET.h - 0.025), rear = BUCKET.floor[0] + (BUCKET.mouth[0] - BUCKET.floor[0]) * (level / BUCKET.h) + 0.012;
+    heap.current.visible = load > 0.33;
+    heap.current.scale.set((BUCKET.floor[1] - 0.012 - rear) / 2, 0.015 + 0.045 * (load - 0.33), BUCKET.d / 2 - 0.03);
+    heap.current.position.set((BUCKET.floor[1] - 0.012 + rear) / 2, level, -0.005);
     let top = 0, most = 0;
     for (const [m, n] of Object.entries(vehicle.bucket)) if (n > most) { most = n; top = Number(m); }
     fillMat.current.color.set(SPOIL_COLORS[top] ?? '#5e4c3c');
@@ -852,28 +1020,55 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
     state.puff -= dt;
     if (driven && (game.drive.throttle || vehicle.drilling) && state.puff <= 0 && game.gpu) {
       state.puff = 0.25;
-      const a = vehicle.body.rotation(), lx = -0.12, ly = 0.34;
+      const a = vehicle.body.rotation(), lx = -0.13, ly = 0.41;
       game.gpu.burst(p.x + lx * Math.cos(a) - ly * Math.sin(a), p.y + lx * Math.sin(a) + ly * Math.cos(a), 3, ParticleKind.Steam, 0.4, 0.03);
     }
   });
   return (
     <>
       <group ref={root}>
-        {/* Hull: riveted frame and painted body with chrome trim, a rusty boiler banded with
-            glowing coils, a chrome stack, a Tesla coil, and a glass cab dome over a valve */}
+        {/* Hull: riveted frame and a painted body lined in brass, a rusty boiler on saddles with a
+            brass steam dome and a crowned stack, finials on the back corners, and a glass cab
+            dome over a valve. Faint field coils round the boiler; now and then a spark runs
+            along the lining or round a coil. */}
         <mesh position={[0, -0.03, 0]} material={VEHICLE_MATS.frame}><boxGeometry args={[0.82, 0.08, 0.34]} /></mesh>
         <mesh position={[0.02, 0.06, 0]} material={VEHICLE_MATS.paint}><boxGeometry args={[0.56, 0.12, 0.3]} /></mesh>
-        <mesh position={[0.02, 0.105, 0.152]} material={ELECTRO.chrome}><boxGeometry args={[0.56, 0.012, 0.006]} /></mesh>
-        {[-0.22, -0.11, 0, 0.11, 0.22].map((x) => <mesh key={x} position={[x + 0.02, 0.03, 0.152]} rotation={[Math.PI / 2, 0, 0]} material={VEHICLE_MATS.brass}><cylinderGeometry args={[0.008, 0.008, 0.008, 6]} /></mesh>)}
-        <mesh position={[-0.04, 0.17, 0]} rotation={[0, 0, Math.PI / 2]} material={VEHICLE_MATS.iron}><cylinderGeometry args={[0.07, 0.07, 0.3, 14]} /></mesh>
-        {[-0.19, 0.11].map((x) => <mesh key={x} position={[x, 0.17, 0]} rotation={[0, 0, Math.PI / 2]} material={VEHICLE_MATS.verdigris}><cylinderGeometry args={[0.074, 0.074, 0.012, 14]} /></mesh>)}
-        {[-0.12, -0.04, 0.04].map((x) => <GlowRing key={x} radius={0.073} tube={0.007} position={[x, 0.17, 0]} rotation={[0, Math.PI / 2, 0]} />)}
-        <mesh position={[-0.13, 0.28, -0.04]} material={ELECTRO.chrome}><cylinderGeometry args={[0.026, 0.02, 0.14, 10]} /></mesh>
-        <mesh position={[-0.13, 0.36, -0.04]} material={ELECTRO.chrome}><cylinderGeometry args={[0.045, 0.026, 0.04, 10]} /></mesh>
-        <TeslaCoil height={0.15} position={[0.07, 0.22, -0.02]} />
-        <mesh position={[0.2, 0.12, 0]} material={ELECTRO.chrome}><cylinderGeometry args={[0.085, 0.085, 0.015, 14]} /></mesh>
-        <VacuumTube height={0.07} position={[0.2, 0.125, 0]} />
-        <mesh position={[0.2, 0.125, 0]} material={ELECTRO.glass}><sphereGeometry args={[0.08, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+        {/* Brass lining, broken round the quantum port */}
+        {[0.1, 0.02].flatMap((y) => [[-0.205, 0.05], [0.09, 0.36]].map(([x, len]) => (
+          <mesh key={`${y}${x}`} position={[x, y, 0.151]} material={VEHICLE_MATS.brass}><boxGeometry args={[len, 0.006, 0.004]} /></mesh>
+        )))}
+        <QuantumPort position={[-0.12, 0.06, 0.153]} r={0.028} />
+        {[-0.25, 0.29].flatMap((x) => [0.1, 0.02].map((y) => (
+          <mesh key={`${x}${y}`} position={[x, y, 0.152]} material={VEHICLE_MATS.brass}><sphereGeometry args={[0.011, 8, 6]} /></mesh>
+        )))}
+        {[-0.11, 0.06].map((x) => <mesh key={x} position={[x, 0.13, 0]} material={VEHICLE_MATS.frame}><boxGeometry args={[0.035, 0.03, 0.15]} /></mesh>)}
+        <mesh position={[-0.04, 0.19, 0]} rotation={[0, 0, Math.PI / 2]} material={VEHICLE_MATS.iron}><cylinderGeometry args={[0.07, 0.07, 0.3, 16]} /></mesh>
+        {[-0.19, 0.11].map((x) => <mesh key={x} position={[x, 0.19, 0]} rotation={[0, 0, Math.PI / 2]} material={VEHICLE_MATS.copper}><cylinderGeometry args={[0.074, 0.074, 0.012, 16]} /></mesh>)}
+        {[-0.07, 0.03].map((x) => <GlowRing key={x} radius={0.071} tube={0.006} position={[x, 0.19, 0]} rotation={[0, Math.PI / 2, 0]} />)}
+        <mesh position={[0.02, 0.255, 0]} material={VEHICLE_MATS.brass}><sphereGeometry args={[0.035, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+        <Finial height={0.04} position={[0.02, 0.288, 0]} />
+        <mesh position={[-0.13, 0.31, -0.03]} material={VEHICLE_MATS.frame}><cylinderGeometry args={[0.024, 0.028, 0.12, 10]} /></mesh>
+        <mesh position={[-0.13, 0.385, -0.03]} material={VEHICLE_MATS.brass}><cylinderGeometry args={[0.042, 0.024, 0.04, 10]} /></mesh>
+        {[-1, 1].map((sz) => <Finial key={sz} height={0.05} position={[-0.24, 0.12, sz * 0.125]} />)}
+        <mesh position={[0.22, 0.125, 0]} material={VEHICLE_MATS.brass}><cylinderGeometry args={[0.07, 0.072, 0.012, 16]} /></mesh>
+        <NixieRow position={[0.22, 0.125, 0]} count={1} scale={0.55} />
+        <mesh position={[0.22, 0.13, 0]} material={ELECTRO.glass}><sphereGeometry args={[0.065, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+        <SurfaceSparks every={5} size={0.007} paths={[
+          [[-0.23, 0.1, 0.154], [0.27, 0.1, 0.154]],
+          arcPath([-0.07, 0.19, 0], 0.078, -Math.PI / 2, Math.PI / 2, 'yz', 12),
+        ]} />
+        {/* Mudguards over the wheels, edged in brass, each carrying the fixed inner ring a
+            hubless wheel turns on */}
+        {[-1, 1].flatMap((sx) => [-0.2, 0.2].map((z) => (
+          <group key={`${sx}${z}`} position={[sx * CHASSIS.wheelX, CHASSIS.wheelY, z]}>
+            <mesh rotation={[Math.PI / 2, 0, 0]} material={VEHICLE_MATS.paint}><cylinderGeometry args={[0.168, 0.168, 0.08, 20, 1, true, Math.PI * 0.65, Math.PI * 0.7]} /></mesh>
+            <mesh position={[0, 0, Math.sign(z) * 0.04]} rotation={[0, 0, Math.PI * 0.15]} material={VEHICLE_MATS.brass}><torusGeometry args={[0.168, 0.006, 5, 20, Math.PI * 0.7]} /></mesh>
+            <mesh material={ELECTRO.chrome}><torusGeometry args={[0.07, 0.009, 6, 24]} /></mesh>
+            <mesh position={[0, 0, Math.sign(z) * 0.009]} material={ELECTRO.arc}><torusGeometry args={[0.07, 0.003, 4, 24]} /></mesh>
+            {/* The ring's hanger reaches in from the hull side, through the open centre */}
+            <mesh position={[0, 0.062, -Math.sign(z) * 0.03]} material={VEHICLE_MATS.frame}><boxGeometry args={[0.03, 0.018, 0.06]} /></mesh>
+          </group>
+        )))}
         {/* Dump bucket at the back: a tub on a hinge, raised by a brass ram, its near side cut
             away to show what the drill has cut */}
         <group ref={bucket}>
@@ -890,16 +1085,22 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
               <mesh key={z} position={[(BUCKET.mouth[0] + BUCKET.mouth[1]) / 2, BUCKET.h, z]} rotation={[0, 0, Math.PI / 2]} material={ELECTRO.chrome}><cylinderGeometry args={[0.008, 0.008, BUCKET.mouth[1] - BUCKET.mouth[0] + 0.02, 6]} /></mesh>
             ))}
             <mesh position={[0, -0.004, BUCKET.d / 2]} rotation={[0, 0, Math.PI / 2]} material={ELECTRO.chrome}><cylinderGeometry args={[0.007, 0.007, 0.21, 6]} /></mesh>
-            <mesh ref={fill} position={[0, 0.06, 0]}><boxGeometry args={[0.19, 0.18, BUCKET.d - 0.03]} /><meshStandardMaterial ref={fillMat} roughness={0.95} /></mesh>
+            <mesh ref={fill} geometry={fillGeometry(1)}><meshStandardMaterial ref={fillMat} roughness={0.95} /></mesh>
             <mesh ref={heap}><sphereGeometry args={[1, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2]} /><meshStandardMaterial ref={heapMat} roughness={0.95} /></mesh>
           </group>
           {/* Hinge at the tail and the ram that tips it */}
           <mesh position={[-0.1, -0.005, 0]} rotation={[Math.PI / 2, 0, 0]} material={ELECTRO.chrome}><cylinderGeometry args={[0.014, 0.014, BUCKET.d + 0.02, 8]} /></mesh>
           <mesh position={[0.09, -0.02, 0.05]} rotation={[0, 0, -1.1]} material={VEHICLE_MATS.brass}><cylinderGeometry args={[0.014, 0.014, 0.1, 8]} /></mesh>
         </group>
-        {/* Drill arm and bit, with the lamp over it */}
+        {/* The drill: a boom of two side plates from inside the hull out to the pivot, with the
+            lamp on its side; at the pivot the arm tilts the bit (see armAngle) */}
         <group ref={drill}>
-          <mesh position={[-0.12, -0.04, 0.12]}><sphereGeometry args={[0.025, 10, 8]} /><meshBasicMaterial ref={eye} /></mesh>
+          {[-1, 1].map((sz) => (
+            <mesh key={sz} position={[-0.15, -0.03, sz * 0.066]} rotation={[0, 0, Math.atan2(0.06, 0.3)]} material={VEHICLE_MATS.paint}><boxGeometry args={[0.32, 0.05, 0.014]} /></mesh>
+          ))}
+          <mesh position={[-0.2, -0.04, 0]} material={VEHICLE_MATS.frame}><boxGeometry args={[0.03, 0.03, 0.12]} /></mesh>
+          <mesh position={[-0.12, -0.035, 0.083]} rotation={[Math.PI / 2, 0, 0]} material={VEHICLE_MATS.brass}><torusGeometry args={[0.024, 0.006, 6, 14]} /></mesh>
+          <mesh position={[-0.12, -0.035, 0.086]}><sphereGeometry args={[0.02, 10, 8]} /><meshBasicMaterial ref={eye} /></mesh>
           <pointLight ref={light} position={[0.08, 0.08, 0.3]} color="#ffe0a8" distance={4} decay={1.4} intensity={0} />
           <group ref={arm}>
             <mesh position={[0.03, 0, 0]} material={VEHICLE_MATS.frame}><boxGeometry args={[0.1, 0.06, 0.12]} /></mesh>
@@ -907,19 +1108,32 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
             {/* Field coils round the drive collar */}
             <mesh position={[0.065, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={ELECTRO.copper}><cylinderGeometry args={[0.07, 0.07, 0.03, 12]} /></mesh>
             <GlowRing radius={0.072} tube={0.007} position={[0.065, 0, 0]} rotation={[0, Math.PI / 2, 0]} />
-            {/* The bit, as long as the arm's reach (CHASSIS.drillLen) and about as fat as the
-                clearance the drill cuts round itself */}
+            {/* The tricone bit (see TRICONE) */}
             <group ref={bit} position={[0.08, 0, 0]}>
-              <mesh position={[(CHASSIS.drillLen - 0.08) / 2, 0, 0]} rotation={[0, 0, -Math.PI / 2]} material={VEHICLE_MATS.steel}><coneGeometry args={[0.16, CHASSIS.drillLen - 0.08, 9]} /></mesh>
+              {/* Threaded pin screwed into the drive collar, and the shoulder it seats against */}
+              <mesh position={[-0.01, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={TRICONE.mats.body}><cylinderGeometry args={[0.045, 0.05, 0.06, 16]} /></mesh>
+              {[-0.034, -0.022, -0.01, 0.002].map((x) => <mesh key={x} position={[x, 0, 0]} rotation={[0, Math.PI / 2, 0]} material={TRICONE.mats.body}><torusGeometry args={[0.048, 0.004, 4, 20]} /></mesh>)}
+              <mesh position={[0.03, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={TRICONE.mats.dark}><cylinderGeometry args={[0.075, 0.075, 0.02, 20]} /></mesh>
+              {/* The forged body */}
+              <mesh position={[0.085, 0, 0]} rotation={[0, 0, Math.PI / 2]} material={TRICONE.mats.body}><cylinderGeometry args={[0.105, 0.085, 0.09, 18]} /></mesh>
               {[0, 1, 2].map((n) => (
-                <mesh key={n} position={[0.12, 0, 0]} rotation={[(n * Math.PI * 2) / 3, 0, 0]} material={VEHICLE_MATS.brass}>
-                  <boxGeometry args={[0.24, 0.016, 0.016]} />
-                </mesh>
-              ))}
-              {[0, 1, 2].map((n) => (
-                <mesh key={`f${n}`} position={[0.12, Math.cos((n * Math.PI * 2) / 3) * 0.09, Math.sin((n * Math.PI * 2) / 3) * 0.09]} rotation={[(n * Math.PI * 2) / 3, 0, -0.38]} material={VEHICLE_MATS.brass}>
-                  <boxGeometry args={[0.2, 0.016, 0.028]} />
-                </mesh>
+                <group key={n} rotation={[(n * Math.PI * 2) / 3, 0, 0]}>
+                  {/* A leg running forward to its journal, its shirttail wrapping the cone's heel */}
+                  <mesh position={[0.17, 0.122, 0]} rotation={[0, 0, -0.12]} material={TRICONE.mats.body}><boxGeometry args={[0.16, 0.036, 0.075]} /></mesh>
+                  <mesh position={[0.245, 0.118, 0]} rotation={[0, 0, -0.6]} material={TRICONE.mats.body}><boxGeometry args={[0.04, 0.03, 0.07]} /></mesh>
+                  {/* Its cone, pointing in and forward, rolling on the journal */}
+                  <group position={[0.245, 0.092, 0]} rotation={[0, 0, -(Math.PI / 2 + TRICONE.journal)]}>
+                    <group ref={(g) => { if (g) cones.current[n] = g; }}>
+                      <mesh geometry={TRICONE.cone} material={TRICONE.mats.cone} />
+                      <mesh geometry={TRICONE.inserts} material={TRICONE.mats.carbide} />
+                    </group>
+                  </group>
+                  {/* A jet nozzle between this leg and the next */}
+                  <group rotation={[Math.PI / 3, 0, 0]}>
+                    <mesh position={[0.15, 0.065, 0]} rotation={[0, 0, Math.PI / 2]} material={TRICONE.mats.dark}><cylinderGeometry args={[0.013, 0.015, 0.05, 10]} /></mesh>
+                    <mesh position={[0.177, 0.065, 0]} rotation={[0, Math.PI / 2, 0]} material={VEHICLE_MATS.brass}><torusGeometry args={[0.011, 0.003, 4, 12]} /></mesh>
+                  </group>
+                </group>
               ))}
             </group>
           </group>
@@ -927,16 +1141,18 @@ function VehicleModel({ vehicle, game }: { vehicle: Vehicle; game: Game }) {
         {/* "You're driving this one" marker */}
         <mesh ref={marker} rotation={[0, 0, Math.PI]}><coneGeometry args={[0.06, 0.1, 3]} /><meshBasicMaterial color={[0.4, 2.4, 3]} /></mesh>
       </group>
+      {/* Hubless wheels: a tyre round an open rim, turning on the fixed inner ring the mudguard
+          carries; the tread shows them roll */}
       {vehicle.wheels.map((_, n) => (
         <group key={n} ref={(g) => { wheels.current[n] = g; }}>
           {[0.2, -0.2].map((z) => (
             <group key={z} position={[0, 0, z]}>
-              <mesh rotation={[Math.PI / 2, 0, 0]} material={VEHICLE_MATS.tyre}><cylinderGeometry args={[0.14, 0.14, 0.07, 18]} /></mesh>
-              <mesh position={[0, 0, z > 0 ? 0.036 : -0.036]} rotation={[Math.PI / 2, 0, 0]} material={ELECTRO.chrome}><cylinderGeometry args={[0.075, 0.075, 0.01, 12]} /></mesh>
-              <GlowRing radius={0.105} tube={0.006} position={[0, 0, z > 0 ? 0.037 : -0.037]} rotation={[0, 0, 0]} />
-              {[0, 1, 2].map((s) => (
-                <mesh key={s} position={[0, 0, z > 0 ? 0.042 : -0.042]} rotation={[0, 0, (s * Math.PI) / 3]} material={VEHICLE_MATS.frame}><boxGeometry args={[0.13, 0.018, 0.008]} /></mesh>
-              ))}
+              <mesh material={VEHICLE_MATS.tyre}><torusGeometry args={[0.114, 0.026, 8, 28]} /></mesh>
+              <mesh material={VEHICLE_MATS.brass}><torusGeometry args={[0.093, 0.007, 5, 28]} /></mesh>
+              {Array.from({ length: 14 }, (_, k) => {
+                const a = (k / 14) * Math.PI * 2;
+                return <mesh key={k} position={[Math.cos(a) * 0.131, Math.sin(a) * 0.131, 0]} rotation={[0, 0, a]} material={VEHICLE_MATS.tyre}><boxGeometry args={[0.016, 0.016, 0.05]} /></mesh>;
+              })}
             </group>
           ))}
         </group>

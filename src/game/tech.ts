@@ -29,6 +29,9 @@ export const TECHS: Tech[] = [
   { id: 'cell2', branch: 'Batteries', name: 'Iron-core cells', effect: 'Drone batteries last twice as long', cost: { ironBars: 5 }, requires: 'cell1' },
   { id: 'girder1', branch: 'Girders', name: 'Riveted girders', effect: 'Girders span up to 6m', cost: { plates: 8 } },
   { id: 'girder2', branch: 'Girders', name: 'Lattice girders', effect: 'Girders span up to 8m', cost: { ironBars: 6 }, requires: 'girder1' },
+  { id: 'bucket1', branch: 'Vehicles', name: 'Deep bucket', effect: 'Vehicle buckets hold twice as much (80 cells)', cost: { plates: 8 } },
+  { id: 'bucket2', branch: 'Vehicles', name: 'Riveted hopper', effect: 'Vehicle buckets double again (160 cells)', cost: { ironBars: 6 }, requires: 'bucket1' },
+  { id: 'autostrut', branch: 'Vehicles', name: 'Strut-laying arm', effect: 'Vehicles brace a ceiling they dig past 90% of its safe span with a strut (2 scrap each)', cost: { ironBars: 8 }, requires: 'bucket2' },
 ];
 
 /** An outpost: a satellite base with two landing pads and its own dig range. */
@@ -50,14 +53,17 @@ export const GIRDER = {
   maxLength: [4, 6, 8],
 };
 
-/** A vehicle depot: one per base, building one mining vehicle at a time. */
-export const DEPOT = { cost: { scrap: 6, plates: 4 } as Cost, width: 1.5, height: 1.1 };
+/**
+ * A vehicle depot: one per base, building one mining vehicle at a time. Its floor is a platform
+ * `deck` high with a ramp `ramp` long down to the floor on each side.
+ */
+export const DEPOT = { cost: { scrap: 6, plates: 4 } as Cost, width: 1.5, height: 1.1, deck: 0.15, ramp: 0.75 };
 
 /** The wheeled mining vehicle: a drill on the front, a bucket on the back. */
 export const VEHICLE = {
   cost: { plates: 8 } as Cost,
-  /** What the bucket holds, in cells of rock. */
-  bucket: 40,
+  /** What the bucket holds, in cells of rock: before research, then with each Vehicles bucket project. */
+  bucket: [40, 80, 160],
   /** Drilling speed (density per second at hardness 1). */
   drillRate: 4,
   /** Top wheel speed (rad/s). */

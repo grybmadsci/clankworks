@@ -57,8 +57,9 @@ export class WorldGen {
   /** First solid row over the debug level's cavern (0 otherwise), so its struts reach it. */
   private readonly roofJ: number;
 
-  /** `debug` builds the debug level's start: a bigger cavern with a flat roof (see Game's debug setup). */
-  constructor(seed = 1337, debug = false) {
+  /** `level` 'debug' builds the debug level's start: a bigger cavern with a flat roof (see Game's debug setup). */
+  constructor(seed = 1337, level: 'normal' | 'debug' = 'normal') {
+    const debug = level === 'debug';
     const rand = mulberry32(seed);
     this.nA = makeNoise2(seed + 1); this.nB = makeNoise2(seed + 2); this.nC = makeNoise2(seed + 3); this.nD = makeNoise2(seed + 4);
     const surfaceRow = H - SKY_ROWS - 2;
@@ -151,7 +152,7 @@ export class WorldGen {
       // Refined once the start chunks exist (see locate()).
       carl: { x: wx(i0 - 23), y: (startJ - 5) * CELL },
       terrarium: { x: wx(i0 - 42), y: (terrJ - 5) * CELL, w: 2.8, h: 2.2 },
-      strutCols: debug ? [i0 - 24, i0 - 15, i0 - 5, i0 + 5, i0 + 15, i0 + 23] : [i0 - 8, i0 + 8],
+      strutCols: debug ? [i0 - 24, i0 - 5, i0 + 5, i0 + 9, i0 + 19, i0 + 23] : [i0 - 8, i0 + 8],
       emitters,
       deposits,
       surfaceY: (surfaceRow + Math.round((this.nA(i0 * 0.05, 3.7) - 0.5) * 5) + 1) * CELL,

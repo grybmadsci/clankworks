@@ -222,11 +222,14 @@ fn thermalStep(src: ptr<storage, array<f32>, read>, dst: ptr<storage, array<f32>
  * in `dirty` are rebuilt.
  */
 const meshHelpers = wgslFn(/* wgsl */ `
-fn wallOffset(p: vec2f, z: f32, ring: i32) -> vec2f {
+fn wallOffset(p: vec2f, z: f32, ring: i32, open: vec2f) -> vec2f {
   if (ring == 0) { return vec2f(0.0); }
   let q = vec3f(p * 2.3, z * 2.3);
   let amp = select(0.08, 0.13, ring == 3);
-  return (vec2f(vnoise(q), vnoise(q + vec3f(17.3, 4.1, 9.7))) - 0.5) * 2.0 * amp;
+  let o = (vec2f(vnoise(q), vnoise(q + vec3f(17.3, 4.1, 9.7))) - 0.5) * 2.0 * amp;
+  // Only ever back into the rock, never out into the open: a floor that bulged up at depth would
+  // swallow the wheels of anything driving on the line the physics uses.
+  return o - open * max(0.0, dot(o, open));
 }
 fn ringZ(r: i32) -> f32 {
   return -${f(DEPTH)} * select(select(select(1.0, 0.7, r == 2), 0.35, r == 1), 0.0, r == 0);
@@ -238,9 +241,10 @@ fn pushTri(verts: ptr<function, array<vec4f, 48>>, cnt: ptr<function, u32>, a: v
   (*verts)[*cnt + 2u] = vec4f(c, m);
   *cnt = *cnt + 3u;
 }
-fn emitPoly(verts: ptr<function, array<vec4f, 48>>, cnt: ptr<function, u32>, poly: array<vec2f, 6>, edge: array<u32, 6>, n: u32, m: f32) {
+fn emitPoly(verts: ptr<function, array<vec4f, 48>>, cnt: ptr<function, u32>, poly: array<vec2f, 6>, edge: array<u32, 6>, opens: array<vec2f, 6>, n: u32, m: f32) {
   var pts = poly;
   var edges = edge;
+  var nrm = opens;
   for (var t = 1u; t + 1u < n; t++) {
     pushTri(verts, cnt, vec3f(pts[0], 0.0), vec3f(pts[t], 0.0), vec3f(pts[t + 1u], 0.0), m);
   }
@@ -252,14 +256,22 @@ fn emitPoly(verts: ptr<function, array<vec4f, 48>>, cnt: ptr<function, u32>, pol
     for (var r = 0; r < 3; r++) {
       let z0 = ringZ(r);
       let z1 = ringZ(r + 1);
-      let a0 = vec3f(a + wallOffset(a, z0, r), z0);
-      let b0 = vec3f(b + wallOffset(b, z0, r), z0);
-      let a1 = vec3f(a + wallOffset(a, z1, r + 1), z1);
-      let b1 = vec3f(b + wallOffset(b, z1, r + 1), z1);
+      let a0 = vec3f(a + wallOffset(a, z0, r, nrm[v]), z0);
+      let b0 = vec3f(b + wallOffset(b, z0, r, nrm[w]), z0);
+      let a1 = vec3f(a + wallOffset(a, z1, r + 1, nrm[v]), z1);
+      let b1 = vec3f(b + wallOffset(b, z1, r + 1, nrm[w]), z1);
       pushTri(verts, cnt, a0, b0, b1, m + 16.0);
       pushTri(verts, cnt, a0, b1, a1, m + 16.0);
     }
   }
+}
+fn nodeDensity(solid: ptr<storage, array<f32>, read>, i: i32, j: i32) -> f32 {
+  ${GRID}
+  return (*solid)[u32(clamp(j, 0, H - 1) * W + clamp(i, 0, W - 1))];
+}
+// Density gradient at a grid node (central differences): the same wherever it's asked from.
+fn nodeGradient(solid: ptr<storage, array<f32>, read>, i: i32, j: i32) -> vec2f {
+  return vec2f(nodeDensity(solid, i + 1, j) - nodeDensity(solid, i - 1, j), nodeDensity(solid, i, j + 1) - nodeDensity(solid, i, j - 1));
 }
 `, [noiseFns]);
 
@@ -301,14 +313,20 @@ fn meshCell(solid: ptr<storage, array<f32>, read>, mat: ptr<storage, array<u32>,
       // Walk the square counter-clockwise collecting inside corners and edge crossings.
       var poly: array<vec2f, 6>;
       var edge: array<u32, 6>;
+      var opens: array<vec2f, 6>;
+      var node = array<vec2i, 4>(vec2i(i, j), vec2i(i + 1, j), vec2i(i + 1, j + 1), vec2i(i, j + 1));
       var n = 0u;
       for (var c = 0u; c < 4u; c++) {
         let nx = (c + 1u) % 4u;
-        if (inside[c] && n < 6u) { poly[n] = corner[c]; edge[n] = 0u; n++; }
+        if (inside[c] && n < 6u) { poly[n] = corner[c]; edge[n] = 0u; opens[n] = vec2f(0.0); n++; }
         if (inside[c] != inside[nx] && n < 6u) {
           let t = clamp((ISO - dv[c]) / (dv[nx] - dv[c]), 0.0, 1.0);
           poly[n] = mix(corner[c], corner[nx], t);
           edge[n] = 1u;
+          // Which way is open air from this crossing: down the density gradient, taken between the
+          // two grid nodes it lies on so neighbouring cells agree on it exactly.
+          let g = mix(nodeGradient(solid, node[c].x, node[c].y), nodeGradient(solid, node[nx].x, node[nx].y), t);
+          opens[n] = select(vec2f(0.0), -normalize(g), dot(g, g) > 1e-8);
           n++;
         }
       }
@@ -320,13 +338,14 @@ fn meshCell(solid: ptr<storage, array<f32>, read>, mat: ptr<storage, array<u32>,
         let o = select(0u, 5u, inside[0]);
         var pa: array<vec2f, 6>;
         var ea: array<u32, 6>;
+        var na: array<vec2f, 6>;
         ea[0] = 1u; ea[1] = 0u; ea[2] = 1u;
         for (var half = 0u; half < 2u; half++) {
-          for (var q = 0u; q < 3u; q++) { pa[q] = poly[(o + half * 3u + q) % 6u]; }
-          emitPoly(&verts, &cnt, pa, ea, 3u, m);
+          for (var q = 0u; q < 3u; q++) { pa[q] = poly[(o + half * 3u + q) % 6u]; na[q] = opens[(o + half * 3u + q) % 6u]; }
+          emitPoly(&verts, &cnt, pa, ea, na, 3u, m);
         }
       } else {
-        emitPoly(&verts, &cnt, poly, edge, n, m);
+        emitPoly(&verts, &cnt, poly, edge, opens, n, m);
       }
     }
   }

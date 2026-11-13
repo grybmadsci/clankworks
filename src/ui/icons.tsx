@@ -42,6 +42,17 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
   );
 }
 
+/** A mouse with its right button lit: the key hint for a right-click. */
+export function MouseRight({ size = 14 }: { size?: number }) {
+  return (
+    <svg className="icon mouse-right" width={size * 0.75} height={size} viewBox="0 0 18 24" role="img" aria-label="Right-click">
+      <path d="M9 2.5 H13 A3.5 3.5 0 0 1 16.5 6 V9.5 H9 Z" fill="currentColor" opacity={0.95} />
+      <path d="M9 2.5 H5 A3.5 3.5 0 0 0 1.5 6 V16.5 A6 6 0 0 0 7.5 22.5 H10.5 A6 6 0 0 0 16.5 16.5 V6 A3.5 3.5 0 0 0 13 2.5 Z M1.5 9.5 H16.5 M9 2.5 V9.5"
+        fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" opacity={0.75} />
+    </svg>
+  );
+}
+
 /** An icon as an SVG string, for HUD bits built outside React. */
 export function iconSvg(name: string, size = 16, color = 'currentColor') {
   const icon = ICONS[name];

@@ -53,17 +53,22 @@ const VEHICLE_NAMES = ['Digby', 'Old Bessie', 'Rumbletum', 'Grindle', 'Mudlark',
 /** Loose rock keeps its material when it lands if it is ore (or junk); anything else is rubble. */
 const KEEPS_MATERIAL = new Set<number>([Mat.Copper, Mat.Junk, Mat.Iron, Mat.Titanium]);
 /** Vehicle geometry (world units, chassis frame): hull half-size, wheel offsets and radius, drill pivot and length. */
-export const CHASSIS = { hw: 0.4, hh: 0.09, wheelX: 0.24, wheelY: -0.12, wheelR: 0.14, pivotX: 0.42, pivotY: 0.12, drillLen: 0.42 };
+export const CHASSIS = { hw: 0.4, hh: 0.09, wheelX: 0.252, wheelY: -0.12, wheelR: 0.14, pivotX: 0.42, pivotY: 0.12, drillLen: 0.42 };
 /**
  * The bore the drill cuts: a band whose floor runs from just under the front wheel along the
  * drill's aim for `reach`, built from circles of `r` stacked up from that floor line. The band is
  * `height` tall aimed level or down, rising to `upHeight` aimed fully up: enough headroom over a
- * level floor for an outpost. `bit` is the clearance cut around the drill bit itself, so the bit
- * never sits in rock, whatever the floor line does.
+ * level floor for an outpost. Round the drill bit itself it also cuts clearance, so the bit never
+ * sits in rock whatever the floor line does: `bit` is the cone's radius at its base (it tapers to
+ * a point at the tip) and `margin` the clearance beyond it.
  */
-const BORE = { reach: 0.65, height: 1.2, upHeight: 1.75, r: 0.2, bit: 0.27 };
+const BORE = { reach: 0.65, height: 1.2, upHeight: 1.75, r: 0.2, bit: 0.16, margin: 0.08 };
 /** How far the drill aims above or below level (radians), and how far the arm swings on the hull. */
 const DRILL_AIM = 0.45, ARM_SWING = 1.0;
+/** How far past its safe span (as a fraction) a ceiling a vehicle digs gets braced (see braceBore). */
+const AUTO_STRUT = 0.9;
+/** Which level a game loads: the normal shift, the debug level, or the base-concepts demo. */
+export type Level = 'normal' | 'debug';
 /** Seconds a vehicle takes to turn around (see Vehicle.turn). */
 export const TURN_TIME = 1.1;
 /** Cells of rock a drone takes from a vehicle's bucket per pickup trip. */
@@ -130,7 +135,7 @@ export interface Smelter { id: number; x: number; y: number; hp: number; smeltTi
 export interface Girder { id: number; i0: number; i1: number; j: number; cost: number; collider: RAPIER.Collider }
 
 /** A vehicle depot, belonging to the base it was built at. It keeps one vehicle at a time. */
-export interface Depot { id: number; baseId: string; x: number; y: number }
+export interface Depot { id: number; baseId: string; x: number; y: number; colliders: RAPIER.Collider[] }
 
 /**
  * A wheeled mining vehicle the player drives: a drill on an arm at the front, a bucket at the back
@@ -165,6 +170,15 @@ export interface Vehicle {
   bore: { x: number; y: number; aim: number; facing: number } | null;
   drilling: boolean;
   bucket: Record<number, number>;
+  /** Game time of the strut-laying arm's next look at the ceiling (see Game.braceBore). */
+  braceAt: number;
+  /**
+   * Top wheel speed (rad/s) while the drill is cutting rock: about as fast as it cuts, so the
+   * vehicle can't run up a half-cut face. Infinity when it isn't cutting.
+   */
+  crawl: number;
+  /** Its wheels have let go while it was rearing up a face (see updateVehicles), until it settles. */
+  slipping: boolean;
   /** How long it has been lying on its back or side (it rights itself after a moment). */
   upset: number;
   unloading: boolean;
@@ -262,7 +276,7 @@ export const TUTORIAL: TutorialStep[] = [
     items: [
       { label: 'Pick the Dig tool (1)', done: (g) => g.tool === 'dig' },
       { label: 'Pick a building: Strut (3) or Smelter (4)', done: (g) => g.tool === 'strut' || g.tool === 'smelter' },
-      { label: 'Go back to the Select cursor (Esc)', done: (g, t) => t.checked[0] && t.checked[1] && g.tool === 'select' },
+      { label: 'Go back to the Select cursor (right-click)', done: (g, t) => t.checked[0] && t.checked[1] && g.tool === 'select' },
     ],
   },
   {
@@ -403,15 +417,18 @@ export class Game {
   private drillFxAt = 0;
 
   /**
-   * `debug` loads the debug level: the deployed base in a big, braced cavern with a smelter and a
+   * `level` 'debug' loads the debug level: the deployed base in a big, braced cavern with a smelter and a
    * vehicle depot already built, and 100 of every resource.
    */
-  static async create(seed?: number, debug = false) {
+  static async create(seed?: number, level: Level = 'normal') {
     await RAPIER.init();
-    return new Game(new WorldGen(seed, debug), debug);
+    return new Game(new WorldGen(seed, level), level);
   }
 
-  private constructor(gen: WorldGen, readonly debug = false) {
+  /** The debug level (see create). */
+  get debug() { return this.level === 'debug'; }
+
+  private constructor(gen: WorldGen, readonly level: Level = 'normal') {
     this.layout = gen.layout;
     this.terrain = new Terrain();
     this.physics = new RAPIER.World({ x: 0, y: -9.81 });
@@ -458,7 +475,7 @@ export class Game {
     this.gpu = new GpuSim(renderer, this.terrain, this.fluidInit, this.tempInit);
     for (const id of this.chunks.resident) this.gpu.activate(id);
     this.gpu.setEmitters(this.emitters());
-    if (this.debug) this.setUpDebug();
+    if (this.level !== 'normal') this.setUpDebug();
   }
 
   /** The debug level's start (see create): skip the intro and tutorial, build, stock up. */
@@ -468,8 +485,8 @@ export class Game {
     const fill = () => { for (const r of Object.keys(this.resources) as Resource[]) this.resources[r] = 100; };
     fill();
     const i0 = toCell(this.layout.depot.x), y = this.layout.depot.y + 0.1;
-    this.placeSmelter(cellCenter(i0 - 12), y);
-    this.placeDepot((i0 + 12) * CELL + 0.1, y);
+    this.placeSmelter(cellCenter(i0 + 12), y);
+    this.placeDepot((i0 - 12) * CELL + 0.1, y);
     fill();
     this.info('Debug level: 100 of everything, a smelter and a vehicle depot. Press V for a vehicle.');
   }
@@ -903,6 +920,15 @@ export class Game {
     }
   }
 
+  /** Right-click: back to the plain Select cursor, dropping any drag and getting out of a vehicle. */
+  resetCursor() {
+    if (this.intro.phase !== 'done') return;
+    this.tool = 'select';
+    this.girderDrag = null;
+    this.driving = null;
+    this.drive.drill = false;
+  }
+
   /** The mouse button came up: a dragged-out girder is built. */
   toolUp(x?: number) {
     const drag = this.girderDrag;
@@ -917,7 +943,7 @@ export class Game {
     if (v === this.driving) return;
     this.driving = v ?? null;
     this.drive.drill = false;
-    if (v) this.info(`Driving ${v.name}. A/D drive, W/S aim the drill, Space starts and stops the drill, E dumps the bucket, Esc gets out. It turns itself around to drive the other way.`, 'hints');
+    if (v) this.info(`Driving ${v.name}. A/D drive, W/S aim the drill, Space starts and stops the drill, E dumps the bucket, right-click gets out. It turns itself around to drive the other way.`, 'hints');
   }
 
   /** Scrap tool: a vehicle, a girder or a strut, whichever is under the cursor. */
@@ -1167,6 +1193,10 @@ export class Game {
   // ---------------------------------------------------------------- girders
 
   /** Longest girder the player can build now (m). */
+  /** Cells a vehicle's bucket holds, with the Vehicles research. */
+  get bucketSize() { return VEHICLE.bucket[this.bucketLevel]; }
+  /** Bucket projects researched (0-2): each doubles what it holds and draws it 10% bigger. */
+  get bucketLevel() { return this.researched.has('bucket2') ? 2 : this.researched.has('bucket1') ? 1 : 0; }
   get girderMax() { return GIRDER.maxLength[this.researched.has('girder2') ? 2 : this.researched.has('girder1') ? 1 : 0]; }
 
   /** Plates a girder of n cells costs. */
@@ -1272,22 +1302,35 @@ export class Game {
     if (!t.isClear(i, j)) return { x, y, error: 'Vehicle depots must be placed in open space.' };
     while (j > 0 && t.isClear(i, j - 1)) j--;
     const site = { x: i * CELL, y: j * CELL };
-    const ground = this.footprint(i, j, -3, 2, 5);
-    if (ground === 'flat') return { ...site, error: 'Vehicle depots need flat ground: the floor under it must be level.' };
-    if (ground === 'room') return { ...site, error: 'Not enough room for a vehicle depot (needs 1.5m × 1.25m).' };
-    if (ground === 'built') return { ...site, error: 'Something is already built there.' };
+    // Whether it may go here at all comes first: no use fitting it where it can't be built.
     const base = this.baseFor(site.x, site.y);
     if (!base) return { ...site, error: `Vehicle depots must be built within a base's dig range (${DIG_RADIUS}m).` };
     if (this.depots.some((d) => d.baseId === base.id)) return { ...site, baseId: base.id, error: 'This base already has a vehicle depot: one per base.' };
+    // The shed, then the ramps either side, which need level floor and a cell of headroom.
+    const ramp = Math.round(DEPOT.ramp / CELL);
+    const ground = this.footprint(i, j, -3, 2, 5) ?? this.footprint(i, j, -3 - ramp, 2 + ramp, 1);
+    if (ground === 'flat') return { ...site, baseId: base.id, error: 'Vehicle depots need flat ground: the floor under it and its ramps must be level (3m).' };
+    if (ground === 'room') return { ...site, baseId: base.id, error: 'Not enough room for a vehicle depot (needs 1.5m × 1.25m).' };
+    if (ground === 'built') return { ...site, baseId: base.id, error: 'Something is already built there.' };
     if (!this.canAfford(DEPOT.cost)) return { ...site, baseId: base.id, error: 'A vehicle depot needs 6 scrap and 4 copper plates.' };
     return { ...site, baseId: base.id };
   }
 
-  placeDepot(x: number, y: number) {
-    const site = this.depotSite(x, y);
+  placeDepot(atX: number, atY: number) {
+    const site = this.depotSite(atX, atY);
     if (site.error || !site.baseId || !this.pay(DEPOT.cost)) return this.warn(site.error ?? 'A vehicle depot needs 6 scrap and 4 copper plates.', 'hints');
-    this.depots.push({ id: nextId++, baseId: site.baseId, x: site.x, y: site.y });
-    this.occupy(site.x - DEPOT.width / 2 + 0.05, site.y, site.x + DEPOT.width / 2 - 0.05, site.y + DEPOT.height, 1);
+    // A raised floor the vehicle drives up onto, with a ramp down each side.
+    const { x, y } = site, hw = DEPOT.width / 2, groupsT = groups(G_TERRAIN, G_BOT | G_DEBRIS | G_VEHICLE);
+    const solid = (desc: RAPIER.ColliderDesc) => this.physics.createCollider(desc.setFriction(0.9).setCollisionGroups(groupsT), this.terrainBody);
+    const colliders = [
+      solid(RAPIER.ColliderDesc.cuboid(hw, DEPOT.deck / 2).setTranslation(x, y + DEPOT.deck / 2)),
+      ...[-1, 1].map((s) => solid(RAPIER.ColliderDesc.triangle(
+        { x: x + s * hw, y }, { x: x + s * (hw + DEPOT.ramp), y }, { x: x + s * hw, y: y + DEPOT.deck },
+      )!)),
+    ];
+    this.depots.push({ id: nextId++, baseId: site.baseId, x, y, colliders });
+    this.occupy(x - hw - DEPOT.ramp + 0.05, y, x + hw + DEPOT.ramp - 0.05, y + DEPOT.deck, 1);
+    this.occupy(x - hw + 0.05, y, x + hw - 0.05, y + DEPOT.deck + DEPOT.height, 1);
     this.entityVersion++;
     this.info('Vehicle depot built. Press Vehicle (V) to build a mining vehicle there.');
   }
@@ -1314,7 +1357,7 @@ export class Game {
   }
 
   private spawnVehicle(depot: Depot) {
-    const x = depot.x, y = depot.y + 0.3;
+    const x = depot.x, y = depot.y + DEPOT.deck + 0.3;
     const chassisGroups = groups(G_VEHICLE, G_TERRAIN | G_DEBRIS);
     const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y).setCcdEnabled(true).setAngularDamping(1.5));
     this.physics.createCollider(RAPIER.ColliderDesc.cuboid(CHASSIS.hw, CHASSIS.hh).setDensity(3).setFriction(0.05).setCollisionGroups(chassisGroups), body);
@@ -1330,7 +1373,7 @@ export class Game {
     const n = this.vehiclesBuilt++;
     const v: Vehicle = {
       id: nextId++, name: VEHICLE_NAMES[n % VEHICLE_NAMES.length] + (n >= VEHICLE_NAMES.length ? ' II' : ''), depotId: depot.id,
-      body, wheels, motors, facing: 1, turn: null, drillAngle: 0, pickup: false, bore: null, drilling: false, bucket: {}, upset: 0, unloading: false, fullWarned: false, removed: false,
+      body, wheels, motors, facing: 1, turn: null, drillAngle: 0, pickup: false, bore: null, drilling: false, bucket: {}, braceAt: 0, crawl: Infinity, slipping: false, upset: 0, unloading: false, fullWarned: false, removed: false,
     };
     this.vehicles.push(v);
     this.entityVersion++;
@@ -1469,7 +1512,17 @@ export class Game {
     let b = v.bore;
     const along = (q: Vec) => (q.x - b!.x) * dx + (q.y - b!.y) * dy;
     const off = () => Math.abs((ground.x - b!.x) * dy - (ground.y - b!.y) * dx);
-    if (!b || b.aim !== v.drillAngle || b.facing !== v.facing || off() > 0.2 || along(ground) < -0.5) b = v.bore = { ...ground, aim: v.drillAngle, facing: v.facing };
+    if (!b || b.aim !== v.drillAngle || b.facing !== v.facing || off() > 0.2 || along(ground) < -0.5) {
+      // Start it at the rock face if there's one just ahead: laid from under the wheel, a ramp
+      // meets a face the vehicle stopped short of partway up, leaving a step at its foot taller
+      // than the wheel can climb. (Close enough that `off` stays under its limit.)
+      let x = ground.x;
+      for (let d = 0; d <= 0.4; d += CELL / 4) {
+        const k = cellIndex(toCell(ground.x + v.facing * d), toCell(ground.y + 0.06));
+        if (this.terrain.density[k] > ISO) { x = ground.x + v.facing * d; break; }
+      }
+      b = v.bore = { x, y: ground.y, aim: v.drillAngle, facing: v.facing };
+    }
     return { b, dx, dy, s0: along(ground), at: (x: number) => b.y + ((x - b.x) / dx) * dy };
   }
 
@@ -1481,21 +1534,28 @@ export class Game {
    */
   private cutBore(v: Vehicle, amount: number, got: Yield, room: () => boolean) {
     const t = this.terrain, { b, dx, dy, s0, at } = this.boreLine(v);
-    const above = (k: number) => cellCenter((k / W) | 0) > at(cellCenter(k % W)) && room();
+    // Only cells wholly above the floor line: ones it passes through are shaved below instead. Cut
+    // whole, a cell whose centre is just over the line leaves a step the wheels can catch on.
+    const above = (k: number) => cellCenter((k / W) | 0) > at(cellCenter(k % W)) + CELL / 2 && room();
     const height = BORE.height + (BORE.upHeight - BORE.height) * Math.max(0, v.drillAngle / DRILL_AIM);
-    for (let s = s0 - 0.1; s <= s0 + BORE.reach + 1e-6; s += BORE.r * 0.8) {
+    // From just behind the front wheel, but never back past where the line starts: behind that
+    // (when it starts at a face ahead) it runs on into the floor the vehicle is standing on.
+    const from = Math.max(0, s0 - 0.1);
+    for (let s = from; s <= s0 + BORE.reach + 1e-6; s += BORE.r * 0.8) {
       // The lowest circles sit at cell-centre height over the floor line, so the row of cells just
       // above it is cut cleanly.
       for (let h = CELL / 2; h <= height - BORE.r + 1e-6; h += BORE.r * 1.25) t.carve(b.x + dx * s, b.y + dy * s + h, BORE.r, amount, got, above);
     }
     // The bit's own volume, floor line or not: aimed up from a hull that's pitched or still level,
-    // the bit can dip below the ramp it is starting.
-    const arm = this.armAngle(v);
-    for (let s = 0.08; s <= CHASSIS.drillLen + 1e-6; s += 0.08) {
+    // the bit can dip below the ramp it is starting. The clearance tapers with the cone: kept as
+    // fat as its base all the way along, it gouges the ramp just ahead of the front wheel into a
+    // lip the wheel can't climb.
+    const arm = this.armAngle(v), base = 0.08, len = CHASSIS.drillLen - base;
+    for (let s = base; s <= CHASSIS.drillLen + 1e-6; s += 0.06) {
       const q = this.chassisPoint(v, v.facing * (CHASSIS.pivotX + Math.cos(arm) * s), CHASSIS.pivotY + Math.sin(arm) * s);
-      t.carve(q.x, q.y, BORE.bit, amount, got, room);
+      t.carve(q.x, q.y, BORE.bit * (1 - (s - base) / len) + BORE.margin, amount, got, room);
     }
-    const xa = b.x + dx * (s0 - 0.1), xb = b.x + dx * (s0 + BORE.reach);
+    const xa = b.x + dx * from, xb = b.x + dx * (s0 + BORE.reach);
     const i0 = toCell(Math.min(xa, xb)), i1 = toCell(Math.max(xa, xb));
     let j0 = H, j1 = 0;
     for (let i = i0; i <= i1; i++) {
@@ -1507,6 +1567,39 @@ export class Game {
     }
     if (j0 <= j1) t.markDirty(i0, j0, i1, j1);
   }
+
+  /**
+   * The strut-laying arm (Vehicles research): any ceiling round the drill now past AUTO_STRUT of
+   * its safe span gets a strut, in the column nearest its middle that isn't ahead of the hull's
+   * middle, where the bore is about to cut (and would take the strut's ceiling plate with it).
+   */
+  private braceBore(v: Vehicle) {
+    const t = this.terrain, tip = this.drillTip(v), p = v.body.translation();
+    const region = { i0: toCell(tip.x - 3), i1: toCell(tip.x + 3), j0: toCell(tip.y - 1.5), j1: toCell(tip.y + 2.5) };
+    const back = p.x, front = tip.x + v.facing * (BORE.reach + BORE.r);
+    const lo = Math.min(back, front), hi = Math.max(back, front);
+    // Only ceilings over the drill (ones it is digging), and only columns near it: a long ceiling
+    // reaching into the area from elsewhere isn't this vehicle's to brace.
+    const near = (i: number) => Math.abs(cellCenter(i) - tip.x) <= 3;
+    for (const c of ceilings(t, region)) {
+      if (c.span / c.maxSpan <= AUTO_STRUT || !c.cols.some((i) => Math.abs(cellCenter(i) - tip.x) <= 1)) continue;
+      const mid = (c.cols[0] + c.cols[c.cols.length - 1]) / 2;
+      const cols = c.cols.filter((i) => near(i) && (cellCenter(i) < lo || cellCenter(i) > hi)).sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid));
+      for (const i of cols) {
+        const x = cellCenter(i), y = cellCenter(c.rowOf.get(i)! - 1);
+        const site = this.strutSite(x, y);
+        if (site.error) {
+          if (this.canAfford(COST.strut)) continue;
+          if (this.time >= this.braceWarnAt) { this.braceWarnAt = this.time + 30; this.warn(`${v.name}'s strut arm is out of scrap: a ceiling it dug is near its limit.`, 'strut'); }
+          return;
+        }
+        this.placeStrut(x, y);
+        this.gpu?.burst(x, (site.j0 + site.j1 + 1) * CELL / 2, 24, ParticleKind.Spark, 2, 0.2);
+        break;
+      }
+    }
+  }
+  private braceWarnAt = 0;
 
   /**
    * Drive, drill and unload. The driven vehicle's wheels follow the throttle (the others brake);
@@ -1525,16 +1618,30 @@ export class Game {
         if (v.turn.t >= TURN_TIME) v.turn = null;
       }
       const throttle = v.turn ? 0 : input.throttle;
+      // Traction cut: pitched up past anything a cut ramp needs and still driving uphill (into a
+      // face it isn't cutting, say, once the bucket's full), the wheels let go rather than climb
+      // the wall, until it has settled back to a ramp's pitch.
+      const pitch = Math.atan2(Math.sin(v.body.rotation()), Math.cos(v.body.rotation()));
+      const uphill = throttle * pitch > 0;
+      if (uphill && Math.abs(pitch) > DRILL_AIM + 0.15) v.slipping = true;
+      else if (!uphill || Math.abs(pitch) < DRILL_AIM) v.slipping = false;
+      const rearing = v.slipping;
       // Wheels spin clockwise (negative) to roll right.
-      for (const m of v.motors) m.configureMotorVelocity(-throttle * VEHICLE.wheelSpeed, throttle ? 30 : v.turn ? 40 : 12);
+      // The motor pushes in proportion to how far the wheel is off its target speed, so a crawl
+      // stiffens it to keep the same pull from a standstill: enough to climb a ramp slowly.
+      const want = Math.abs(throttle) * VEHICLE.wheelSpeed, speed = Math.sign(throttle) * Math.min(want, v.crawl);
+      for (const m of v.motors) {
+        if (rearing) m.configureMotorVelocity(0, 0);
+        else m.configureMotorVelocity(-speed, throttle ? (30 * want) / Math.abs(speed) : v.turn ? 40 : 12);
+      }
       if (throttle) for (const w of v.wheels) w.wakeUp();
       v.drillAngle = Math.max(-DRILL_AIM, Math.min(DRILL_AIM, v.drillAngle + input.tilt * dt * 1.2));
       const p = v.body.translation();
       if (p.y < -2) { this.removeVehicle(v); continue; }
 
       const load = bucketTotal(v);
-      v.drilling = input.drill && !v.turn && load < VEHICLE.bucket;
-      if (input.drill && load >= VEHICLE.bucket) {
+      v.drilling = input.drill && !v.turn && load < this.bucketSize;
+      if (input.drill && load >= this.bucketSize) {
         // The drill is a toggle: a full bucket switches it off.
         if (v === this.driving) this.drive.drill = false;
         if (!v.fullWarned) {
@@ -1542,16 +1649,25 @@ export class Game {
           this.warn(`${v.name}'s bucket is full. Drive it back to its depot to unload, or dump it (E).`, 'hints');
         }
       }
+      v.crawl = Infinity;
       if (v.drilling) {
         const tip = this.drillTip(v), t = this.terrain;
         const k = cellIndex(Math.max(0, Math.min(W - 1, toCell(tip.x))), Math.max(0, Math.min(H - 1, toCell(tip.y))));
         const hard = Math.max(0.4, t.density[k] > ISO ? t.hardness(k) : 1);
         if (Number.isFinite(hard)) {
           const got: Yield = {};
-          const room = () => bucketTotal(v) + Object.values(got).reduce((s, n) => s + n, 0) < VEHICLE.bucket;
+          const room = () => bucketTotal(v) + Object.values(got).reduce((s, n) => s + n, 0) < this.bucketSize;
           this.cutBore(v, (dt * VEHICLE.drillRate) / hard, got, room);
           let cut = 0;
-          for (const [m, n] of Object.entries(got)) { v.bucket[Number(m)] = (v.bucket[Number(m)] ?? 0) + n; cut += n; }
+          let hardest = 0;
+          for (const [m, n] of Object.entries(got)) {
+            v.bucket[Number(m)] = (v.bucket[Number(m)] ?? 0) + n;
+            cut += n;
+            if (n > 1e-4) hardest = Math.max(hardest, MATERIALS[Number(m)].hardness);
+          }
+          // Cutting a face, advance about three cells per cell's worth of cutting in the hardest
+          // rock: the bore reaches well ahead of the wheel, so that keeps it on the cut floor.
+          if (cut > 1e-3) v.crawl = (3 * CELL * VEHICLE.drillRate) / Math.max(0.4, hardest) / CHASSIS.wheelR;
           if (cut > 0 && Math.random() < dt * 20) {
             this.gpu?.burst(tip.x, tip.y, 5, t.material[k] || Mat.Dirt, 2, 0.12);
             if (hard > 1.4) this.gpu?.burst(tip.x, tip.y, 3, ParticleKind.Spark, 3, 0.06);
@@ -1560,9 +1676,14 @@ export class Game {
         }
       }
 
+      if (v.drilling && this.researched.has('autostrut') && this.time >= v.braceAt) {
+        v.braceAt = this.time + 0.5;
+        this.braceBore(v);
+      }
+
       // Unload at the depot.
       const depot = this.depots.find((d) => d.id === v.depotId);
-      v.unloading = !!depot && !v.drilling && load > 0 && dist(p, { x: depot.x, y: depot.y + 0.3 }) < 1.4;
+      v.unloading = !!depot && !v.drilling && load > 0 && dist(p, { x: depot.x, y: depot.y + DEPOT.deck + 0.3 }) < 1.4;
       if (v.unloading) {
         let room = dt * 12;
         for (const [m, n] of Object.entries(v.bucket)) {

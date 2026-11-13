@@ -43,7 +43,8 @@ try {
   check(start.floorW >= 60 && start.floorW <= 68 && start.minH >= 12, `the start cavern is about 16m wide (${start.floorW * 0.25}m) and 3m tall across its middle 12m`);
   check(start.topW < start.floorW - 8, `its ends round over into the roof (${start.topW * 0.25}m wide at the top)`);
   await fastForward(8);
-  const settled = await page.evaluate(() => ({ unstable: window.__game.unstable.length, broken: window.__game.struts.filter((s) => s.broken || s.atRisk).length, struts: window.__game.struts.length }));
+  const settled = await page.evaluate(() => ({ detail: JSON.stringify({ u: window.__game.unstable, s: window.__game.struts.map((s) => [s.i - Math.floor(window.__game.layout.depot.x / 0.25), s.j0, s.j1, s.broken, s.atRisk]) }), unstable: window.__game.unstable.length, broken: window.__game.struts.filter((s) => s.broken || s.atRisk).length, struts: window.__game.struts.length }));
+  console.log('settled', settled.detail);
   check(settled.unstable === 0 && settled.broken === 0 && settled.struts >= 6, `its struts brace the roof: nothing unstable (${settled.struts} struts)`);
   await page.screenshot({ path: 'smoke-debug-level.png' });
 
@@ -72,6 +73,39 @@ try {
     await page.screenshot({ path: `smoke-turn-${t}.png` });
   }
   await page.evaluate(() => { const g = window.__game; g.vehicles[0].turn = null; g.paused = false; });
+
+  // Vehicle research: bigger buckets, and the strut-laying arm bracing a tunnel dug into soft dirt
+  // (which only spans about 2m) at the cavern's right end.
+  const research = await page.evaluate(() => {
+    const g = window.__game, t = g.terrain, d = g.layout.depot, i0 = Math.floor(d.x / 0.25), j0 = Math.round(d.y / 0.25);
+    const sizes = [g.bucketSize];
+    for (const id of ['bucket1', 'bucket2', 'autostrut']) { g.research(id); sizes.push(g.bucketSize); }
+    for (let j = j0 - 1; j <= j0 + 20; j++) for (let i = i0 + 28; i <= i0 + 60; i++) { const k = j * 512 + i; t.density[k] = 1; t.material[k] = 1; }
+    t.markDirty(i0 + 27, j0 - 2, i0 + 61, j0 + 21);
+    g.resources.scrap = 100;
+    return { sizes, struts: g.struts.length, wall: (i0 + 28) * 0.25 - d.x, done: ['bucket1', 'bucket2', 'autostrut'].every((id) => g.researched.has(id)) };
+  });
+  await page.keyboard.press(' ');
+  await page.keyboard.down('d');
+  let braced = null;
+  for (let n = 0; n < 20 && !braced; n++) {
+    await fastForward(1);
+    braced = await page.evaluate((n0) => {
+      const g = window.__game, d = g.layout.depot, s = g.struts.slice(n0);
+      return s.length ? { struts: s.map((x) => [+((x.i + 0.5) * 0.25 - d.x).toFixed(2), +((x.j1 - x.j0 + 1) * 0.25).toFixed(2)]), x: g.vehicles[0].body.translation().x - d.x } : null;
+    }, research.struts);
+  }
+  await page.keyboard.up('d');
+  await page.keyboard.press(' ');
+  await fastForward(16);
+  const after = await page.evaluate((n0) => ({ kept: window.__game.struts.slice(n0).filter((s) => !s.broken).length, debris: window.__game.debris.length, unstable: window.__game.unstable.length }), research.struts);
+  await page.evaluate(() => { const p = window.__game.vehicles[0].body.translation(); window.__view.goto(p.x - 0.5, p.y + 0.4); });
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: 'smoke-autostrut.png' });
+  console.log('vehicle research', JSON.stringify({ research, braced, after }));
+  check(research.done && research.sizes.join() === '40,80,160,160', `bucket research grows the bucket (${research.sizes.join(' → ')} cells)`);
+  check(braced && braced.struts.every(([x]) => x > research.wall) && after.kept >= 1 && after.debris === 0,
+    `the strut-laying arm braces a tunnel the vehicle digs before its ceiling gives (strut at ${braced?.struts.map(([x, h]) => `+${x}m, ${h}m tall`).join('; ')})`);
   check(errors.length === 0, `no console errors (${errors.length})`);
   if (errors.length) console.log(errors.join('\n'));
 } finally {
